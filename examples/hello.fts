@@ -1,0 +1,42 @@
+! Fortis: a Fortran-flavored language. Keywords are case-insensitive.
+
+function square(real :: x) -> real
+  return x * x
+end function
+
+function fib(integer :: n) -> integer
+  if n < 2 then
+    return n
+  end if
+  return fib(n - 1) + fib(n - 2)
+end function
+
+program demo
+  integer :: i, count = 0
+  real :: total = 0.0
+  real :: xs(5)
+  integer :: ys(5) = [1, 2, 3, 4, 5]
+
+  do i = 1, 5
+    xs(i) = square(real(i))
+    total = total + xs(i)
+  end do
+  print "squares:", xs
+  print "total =", total
+
+  ys = ys * 2 + 1                 ! whole-array arithmetic
+  print "ys =", ys, " middle =", ys(2:4)
+
+  do i = 1, 20
+    if mod(i, 3) == 0 then
+      cycle
+    else if i > 10 then
+      exit
+    else
+      count = count + 1
+    end if
+  end do
+  print "kept", count
+
+  print "fib(15) =", fib(15)
+end program demo

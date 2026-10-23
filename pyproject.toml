@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fortis"
+version = "0.1.0"
+description = "A Fortran-flavored programming language"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.scripts]
+fortis = "fortis.cli:main"
+
+[tool.setuptools]
+packages = ["fortis"]
