@@ -1,0 +1,43 @@
+! Subroutines return results through intent(out) / intent(inout) arguments.
+! Parameters default to intent(in) and cannot be assigned inside the callee.
+
+subroutine swap(integer, intent(inout) :: a, integer, intent(inout) :: b)
+  integer :: t
+  t = a
+  a = b
+  b = t
+end subroutine
+
+subroutine swap_real(real, intent(inout) :: a, real, intent(inout) :: b)
+  real :: t
+  t = a
+  a = b
+  b = t
+end subroutine
+
+subroutine circle(real, intent(in) :: r, real, intent(out) :: area, real, intent(out) :: circumference)
+  area = 3.14159 * r ** 2
+  circumference = 2.0 * 3.14159 * r
+end subroutine
+
+subroutine scale(real, intent(in) :: k, real, intent(inout) :: xs)
+  xs = xs * k
+end subroutine
+
+program demo
+  integer :: x = 1, y = 2
+  real :: a, c
+  real :: v(3) = [1.0, 2.0, 3.0]
+
+  call swap(x, y)
+  print "after swap:", x, y
+
+  call circle(3.0, a, c)
+  print "circle r=3:", a, c
+
+  call scale(10.0, v)
+  print "scaled:", v
+
+  call swap_real(v(1), v(3))          ! array elements work too
+  print "swapped ends:", v
+end program

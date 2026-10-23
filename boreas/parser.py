@@ -44,13 +44,17 @@ class Exit: pass
 class Cycle: pass
 @dataclass
 class ExprStmt: expr: object
+@dataclass
+class Call: name: str; args: list; line: int
 
 @dataclass
 class Function:
+    """A function or, when is_sub is set, a subroutine."""
     name: str
-    params: list          # [(type, name)]
+    params: list          # [(type, name, intent)], intent in {"in", "out", "inout"}
     ret: str | None
     body: list
+    is_sub: bool = False
 @dataclass
 class Program: name: str; body: list
 @dataclass
@@ -106,15 +110,17 @@ class Parser:
         funcs, prog = {}, None
         self.skip_newlines()
         while self.tok.kind != "eof":
-            if self.at("function"):
-                f = self.function()
+            if self.at("function", "subroutine"):
+                f = self.procedure()
+                if f.name in funcs:
+                    raise LangError(f"'{f.name}' is defined more than once")
                 funcs[f.name] = f
             elif self.at("program"):
                 if prog:
                     self.error("only one program allowed")
                 prog = self.program()
             else:
-                self.error("expected 'function' or 'program'")
+                self.error("expected 'function', 'subroutine' or 'program'")
             self.skip_newlines()
         if not prog:
             raise LangError("no program found")
@@ -130,28 +136,44 @@ class Parser:
             self.next()
         return Program(name, body)
 
-    def function(self):
-        self.expect("function")
+    def procedure(self):
+        kind = self.next().text           # "function" or "subroutine"
+        is_sub = kind == "subroutine"
         name = self.ident()
+        params = self.params(is_sub)
+        ret = None
+        if not is_sub and self.accept("->"):
+            ret = self.type_name()
+        self.newline()
+        body = self.block(kind)
+        self.expect(kind)
+        if self.tok.kind == "ident":
+            self.next()
+        return Function(name, params, ret, body, is_sub)
+
+    def params(self, is_sub):
+        """`(real :: x, integer, intent(inout) :: n)`; intent defaults to `in`."""
         self.expect("(")
         params = []
         if not self.at(")"):
             while True:
                 t = self.type_name()
+                intent = "in"
+                if self.accept(","):
+                    self.expect("intent")
+                    self.expect("(")
+                    if not self.at("in", "out", "inout"):
+                        self.error("expected in, out or inout")
+                    intent = self.next().text
+                    self.expect(")")
+                    if intent != "in" and not is_sub:
+                        self.error("only subroutines may have out or inout parameters")
                 self.expect("::")
-                params.append((t, self.ident()))
+                params.append((t, self.ident(), intent))
                 if not self.accept(","):
                     break
         self.expect(")")
-        ret = None
-        if self.accept("->"):
-            ret = self.type_name()
-        self.newline()
-        body = self.block("function")
-        self.expect("function")
-        if self.tok.kind == "ident":
-            self.next()
-        return Function(name, params, ret, body)
+        return params
 
     def type_name(self):
         if self.tok.kind != "ident" or self.tok.text not in TYPES:
@@ -190,6 +212,18 @@ class Parser:
                 args.append(self.expr())
             self.newline()
             return Print(args)
+        if self.at("call"):
+            self.next()
+            name = self.ident()
+            args = []
+            if self.accept("("):
+                if not self.at(")"):
+                    args.append(self.arg())
+                    while self.accept(","):
+                        args.append(self.arg())
+                self.expect(")")
+            self.newline()
+            return Call(name, args, t.line)
         if self.at("return"):
             self.next()
             val = None if self.tok.kind == "nl" else self.expr()
