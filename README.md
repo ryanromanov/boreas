@@ -23,3 +23,7 @@ Currently a tree-walking interpreter written in Python.
       integer :: ys(3) = [1, 2, 3]
       print "squares:", ys * ys, square(2.5)
     end program
+
+## License
+
+MIT. See [LICENSE](LICENSE).
