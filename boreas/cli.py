@@ -10,7 +10,7 @@ def run_source(src, out=print):
 
 def main():
     if len(sys.argv) != 2:
-        sys.exit("usage: fortis FILE.fts")
+        sys.exit("usage: boreas FILE.bor")
     try:
         run_source(open(sys.argv[1]).read())
     except LangError as e:

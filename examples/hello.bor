@@ -1,4 +1,4 @@
-! Fortis: a Fortran-flavored language. Keywords are case-insensitive.
+! Boreas: a Fortran-flavored language. Keywords are case-insensitive.
 
 function square(real :: x) -> real
   return x * x

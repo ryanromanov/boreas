@@ -1,7 +1,7 @@
 import os, sys, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from fortis import run_source
-from fortis.lexer import LangError
+from boreas import run_source
+from boreas.lexer import LangError
 
 
 def run(body, funcs=""):

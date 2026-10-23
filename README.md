@@ -1,4 +1,4 @@
-# Fortis
+# Boreas
 
 A small programming language with Fortran's look and stricter rules: every
 variable is declared, arrays are bounds-checked, and conditions must be logical.
@@ -7,7 +7,7 @@ Currently a tree-walking interpreter written in Python.
 ## Install and run
 
     pip install .
-    fortis examples/hello.fts
+    boreas examples/hello.bor
 
 ## Test
 
