@@ -160,5 +160,108 @@ end subroutine"""
             run("integer :: x\nprint x")
 
 
+M = "integer :: m(2, 3) = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n"   # columns: [1,2] [3,4] [5,6]
+
+
+class MultiDimTests(unittest.TestCase):
+    def test_column_major_reshape(self):
+        self.assertEqual(run(M + "print m"), ["[[1, 3, 5], [2, 4, 6]]"])
+
+    def test_element_and_shape(self):
+        self.assertEqual(run(M + "print m(2, 3), m(1, 2), shape(m), size(m), size(m, 2)"),
+                         ["6 3 [2, 3] 6 3"])
+
+    def test_row_and_column_sections(self):
+        self.assertEqual(run(M + "print m(1, :), m(:, 2)"), ["[1, 3, 5] [3, 4]"])
+
+    def test_block_section(self):
+        self.assertEqual(run(M + "print m(1:2, 2:3)"), ["[[3, 5], [4, 6]]"])
+
+    def test_element_assignment(self):
+        self.assertEqual(run(M + "m(2, 2) = 40\nprint m"), ["[[1, 3, 5], [2, 40, 6]]"])
+
+    def test_section_assignment_scalar_and_array(self):
+        out = run(M + "m(1, :) = 0\nm(:, 3) = [9, 8]\nprint m")
+        self.assertEqual(out, ["[[0, 0, 9], [2, 4, 8]]"])
+
+    def test_whole_array_arithmetic(self):
+        self.assertEqual(run(M + "print m * 2 - m"), ["[[1, 3, 5], [2, 4, 6]]"])
+
+    def test_transpose_and_matmul(self):
+        out = run(M + "print transpose(m)\nprint matmul(m, transpose(m))\nprint matmul(m, [1, 0, 1])")
+        self.assertEqual(out, ["[[1, 2], [3, 4], [5, 6]]", "[[35, 44], [44, 56]]", "[6, 8]"])
+
+    def test_reductions_and_elemental(self):
+        out = run(M + "print sum(m), maxval(m), minval(m), any(m > 5), all(m > 5)\nprint sqrt(real(m(:, 1)) * 4.0)")
+        self.assertEqual(out, ["21 6 1 true false", "[2.0, 2.8284271247461903]"])
+
+    def test_dot_product(self):
+        self.assertEqual(run("print dot_product([1, 2, 3], [4, 5, 6])"), ["32"])
+
+    def test_zero_initialised_and_scalar_fill(self):
+        self.assertEqual(run("real :: g(2, 2)\nreal :: h(2) = 1.5\nprint g, h"), ["[[0.0, 0.0], [0.0, 0.0]] [1.5, 1.5]"])
+
+    def test_subscript_count_checked(self):
+        with self.assertRaisesRegex(LangError, "2 dimension\\(s\\) but 1"):
+            run(M + "print m(1)")
+
+    def test_bounds_name_the_dimension(self):
+        with self.assertRaisesRegex(LangError, "index 4 out of bounds 1..3 in dimension 2"):
+            run(M + "print m(1, 4)")
+
+    def test_shape_mismatch_in_arithmetic(self):
+        with self.assertRaisesRegex(LangError, "shape mismatch"):
+            run(M + "print m + transpose(m)")
+
+    def test_shape_mismatch_in_assignment(self):
+        with self.assertRaisesRegex(LangError, "shape mismatch"):
+            run(M + "m(1, :) = [1, 2]")
+
+    def test_bad_initializer_shape(self):
+        with self.assertRaisesRegex(LangError, "initializer has shape"):
+            run("integer :: m(2, 2) = [1, 2, 3, 4]")
+
+    def test_reshape_checks_element_count(self):
+        with self.assertRaisesRegex(LangError, "cannot fill"):
+            run("print reshape([1, 2, 3], [2, 2])")
+
+    def test_type_checked_on_section_write(self):
+        with self.assertRaisesRegex(LangError, "cannot assign real to integer"):
+            run(M + "m(1, :) = 1.5")
+
+    def test_matmul_inner_dimension_checked(self):
+        with self.assertRaisesRegex(LangError, "inner dimensions"):
+            run(M + "print matmul(m, m)")
+
+    def test_pass_matrix_and_section_to_subroutine(self):
+        sub = """subroutine zero_row(inout integer :: r)
+  r = 0
+end subroutine
+subroutine total(integer :: a, out integer :: t)
+  t = sum(a)
+end subroutine"""
+        out = run(M + "integer :: t\ncall zero_row(m(2, :))\ncall total(m, t)\nprint m, t", sub)
+        self.assertEqual(out, ["[[1, 3, 5], [0, 0, 0]] 9"])
+
+    def test_in_parameter_matrix_is_read_only(self):
+        sub = "subroutine bad(integer :: a)\n a(1, 1) = 0\nend subroutine"
+        with self.assertRaisesRegex(LangError, "'in' parameter"):
+            run(M + "call bad(m)", sub)
+
+    def test_overlapping_sections_alias(self):
+        sub = "subroutine two(inout integer :: a, inout integer :: b)\nend subroutine"
+        with self.assertRaisesRegex(LangError, "alias"):
+            run(M + "call two(m(1, :), m(:, 1))", sub)
+
+    def test_disjoint_sections_do_not_alias(self):
+        sub = "subroutine two(inout integer :: a, inout integer :: b)\n a = 7\n b = 8\nend subroutine"
+        out = run(M + "call two(m(1, :), m(2, :))\nprint m", sub)
+        self.assertEqual(out, ["[[7, 7, 7], [8, 8, 8]]"])
+
+    def test_nested_loops(self):
+        body = "integer :: i, j\nreal :: g(2, 2)\ndo j = 1, 2\n do i = 1, 2\n  g(i, j) = i * 10 + j\n end do\nend do\nprint g"
+        self.assertEqual(run(body), ["[[11.0, 12.0], [21.0, 22.0]]"])
+
+
 if __name__ == "__main__":
     unittest.main()

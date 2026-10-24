@@ -25,7 +25,7 @@ class Unary: op: str; operand: object
 class Binary: op: str; left: object; right: object
 
 @dataclass
-class Decl: type: str; name: str; size: object; init: object; line: int
+class Decl: type: str; name: str; dims: object; init: object; line: int   # dims: list of exprs or None
 @dataclass
 class Assign: target: object; value: object; line: int
 @dataclass
@@ -247,12 +247,14 @@ class Parser:
         decls = []
         while True:
             name = self.ident()
-            size = None
+            dims = None
             if self.accept("("):
-                size = self.expr()
+                dims = [self.expr()]
+                while self.accept(","):
+                    dims.append(self.expr())
                 self.expect(")")
             init = self.expr() if self.accept("=") else None
-            decls.append(Decl(typ, name, size, init, line))
+            decls.append(Decl(typ, name, dims, init, line))
             if not self.accept(","):
                 break
         self.newline()

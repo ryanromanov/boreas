@@ -24,6 +24,21 @@ Currently a tree-walking interpreter written in Python.
       print "squares:", ys * ys, square(2.5)
     end program
 
+## Arrays
+
+Arrays have any number of dimensions, 1-based and stored column-major like
+Fortran. A scalar subscript drops that dimension; `:` keeps it.
+
+    real :: m(2, 3) = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
+    print m(1, :), m(:, 2), m(1:2, 2:3)    ! row, column, block
+    m(2, :) = 0.0                          ! sections can be assigned
+    print matmul(m, transpose(m))
+
+Operators work elementwise and need matching shapes (scalars broadcast).
+Built in: `size`, `shape`, `reshape`, `matmul`, `transpose`, `dot_product`,
+`sum`, `maxval`, `minval`, `any`, `all`; `sqrt`, `abs`, `sin`, `cos`, `exp`,
+`log`, `real`, `int`, `mod` apply to every element.
+
 ## Subroutines and parameter modes
 
 Results come back through `out` / `inout` parameters:
