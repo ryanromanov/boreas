@@ -206,7 +206,7 @@ class Interp:
             step = self.eval(s.step, env) if s.step else 1
             if step == 0:
                 raise LangError(f"line {s.line}: do step cannot be zero")
-            i = lo
+            i, exited = lo, False
             while (i <= hi) if step > 0 else (i >= hi):
                 self.write(ref, i, s.line)
                 try:
@@ -214,8 +214,11 @@ class Interp:
                 except _Cycle:
                     pass
                 except _Exit:
+                    exited = True
                     break
                 i += step
+            if not exited:                  # like Fortran: the variable ends one step past the range
+                self.write(ref, i, s.line)
         elif k is DoWhile:
             while self.truth(self.eval(s.cond, env)):
                 try:

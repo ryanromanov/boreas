@@ -263,5 +263,19 @@ end subroutine"""
         self.assertEqual(run(body), ["[[11.0, 12.0], [21.0, 22.0]]"])
 
 
+class DoVariableTests(unittest.TestCase):
+    def test_variable_ends_one_step_past_range(self):
+        self.assertEqual(run("integer :: i\ndo i = 1, 3\nend do\nprint i"), ["4"])
+
+    def test_zero_trip_loop_leaves_lower_bound(self):
+        self.assertEqual(run("integer :: i\ndo i = 5, 1\nend do\nprint i"), ["5"])
+
+    def test_exit_keeps_current_value(self):
+        self.assertEqual(run("integer :: i\ndo i = 1, 10\n if i == 4 then\n  exit\n end if\nend do\nprint i"), ["4"])
+
+    def test_negative_step(self):
+        self.assertEqual(run("integer :: i\ndo i = 6, 1, -2\nend do\nprint i"), ["0"])
+
+
 if __name__ == "__main__":
     unittest.main()

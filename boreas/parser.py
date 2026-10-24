@@ -46,6 +46,8 @@ class Cycle: pass
 class ExprStmt: expr: object
 @dataclass
 class Call: name: str; args: list; line: int
+@dataclass
+class Comment: text: str          # only produced by `boreas convert`; the interpreter skips it
 
 @dataclass
 class Function:
@@ -55,10 +57,14 @@ class Function:
     ret: str | None
     body: list
     is_sub: bool = False
+    comments: list = field(default_factory=list)   # printed above the header by `convert`
 @dataclass
-class Program: name: str; body: list
+class Program:
+    name: str
+    body: list
+    comments: list = field(default_factory=list)
 @dataclass
-class Unit: functions: dict; program: Program
+class Unit: functions: dict; program: Program   # program is None for a library-only file
 
 
 # --- Parser ------------------------------------------------------------

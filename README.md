@@ -56,6 +56,23 @@ Parameters default to `in` and cannot be assigned. Functions only take
 `in` parameters. An output variable may not be passed twice in one call, and an
 `out` parameter must be assigned before the subroutine returns.
 
+## Converting Fortran
+
+    boreas convert legacy.f90 -o legacy.bor
+
+Reads free-form Fortran (not fixed-form `.f`) and writes Boreas source plus a
+report on stderr. Translations that change meaning are flagged, never silent:
+
+- `! TODO(convert): ...` comments quote any line that could not be translated
+  (modules, `select case`, `allocate`, derived types, `goto`, `read`, ...).
+- Missing declarations are filled in using Fortran's implicit typing rules.
+- Dummy arguments without `intent` get `in`, `out` or `inout` inferred from the
+  body, with a note above the procedure.
+- A function whose name is its result variable gets an explicit result variable.
+- Names that are Boreas keywords (`in`, `out`, `string`, ...) are renamed.
+
+The converted file is checked by the test suite against real gfortran output.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

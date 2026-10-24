@@ -1,0 +1,259 @@
+import os, re, shutil, subprocess, sys, tempfile, unittest
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from boreas.fortran import convert
+from boreas.interp import Interp
+from boreas.lexer import LangError
+from boreas.parser import parse
+from boreas.printer import to_source
+
+HERE = os.path.dirname(__file__)
+GFORTRAN = shutil.which("gfortran")
+
+
+def fixture(name):
+    return os.path.join(HERE, "fortran", name)
+
+
+def read(path):
+    with open(path) as f:
+        return f.read()
+
+
+def run_bor(text):
+    out = []
+    Interp(parse(text), out.append).run()
+    return out
+
+
+def words(text):
+    """Normalise program output so Fortran list-directed output and Boreas output compare equal."""
+    text = re.sub(r"[\[\],]", " ", text)
+    return [{"T": "true", "F": "false"}.get(w, w) for w in text.split()]
+
+
+def same_output(a, b):
+    ta, tb = words(a), words(b)
+    if len(ta) != len(tb):
+        return False
+    for x, y in zip(ta, tb):
+        try:
+            fx, fy = float(x), float(y)
+        except ValueError:
+            if x != y:
+                return False
+        else:
+            if abs(fx - fy) > 1e-9 * max(1.0, abs(fx), abs(fy)):
+                return False
+    return True
+
+
+def run_gfortran(path):
+    with tempfile.TemporaryDirectory() as tmp:
+        exe = os.path.join(tmp, "a.out")
+        subprocess.run([GFORTRAN, path, "-o", exe], check=True, capture_output=True)
+        return subprocess.run([exe], check=True, capture_output=True, text=True).stdout
+
+
+def conv(body, decls="", name="t"):
+    """Convert a Fortran program body to Boreas source."""
+    src = f"program {name}\n  implicit none\n{decls}\n{body}\nend program {name}\n"
+    text, findings = convert(src)
+    return text, findings
+
+
+def todos(findings):
+    return [f for f in findings if f[1] == "todo"]
+
+
+class FixtureTests(unittest.TestCase):
+    """Whole programs: convert, check the Boreas is well-formed, run it, compare with gfortran."""
+
+    def check(self, name):
+        path = fixture(name)
+        if GFORTRAN:
+            subprocess.run([GFORTRAN, "-fsyntax-only", "-std=f2018", path], check=True, capture_output=True)
+        text, findings = convert(read(path), name)
+        self.assertEqual(todos(findings), [])
+        # the output is valid Boreas and printing it is a fixed point
+        again = to_source(parse(text))
+        self.assertEqual(to_source(parse(again)), again)
+        got = run_bor(text)
+        if GFORTRAN:
+            want = run_gfortran(path)
+            self.assertTrue(same_output("\n".join(got), want), f"\nBoreas:\n{chr(10).join(got)}\n\ngfortran:\n{want}")
+        return got
+
+    def test_basic(self):
+        got = self.check("basic.f90")
+        self.assertEqual(got[0], "squares: [1, 4, 9, 16, 25]")
+        self.assertEqual(got[-1], "done")
+
+    def test_implicit_typing_and_inferred_intents(self):
+        got = self.check("implicit.f90")
+        self.assertEqual(got[0], "25.0")
+        self.assertIn("medium", got)
+        self.assertEqual(got[-1], "120 true true")
+
+    def test_unsupported_constructs_become_todos(self):
+        text, findings = convert(read(fixture("unsupported.f90")), "unsupported.f90")
+        self.assertEqual(len(todos(findings)), 7)
+        self.assertEqual(text.count("TODO(convert)"), 7 + 1)      # + the summary line in the header
+        self.assertEqual(run_bor(text), ["total: 6", "end"])      # the translatable parts still run
+        for line in ("select case", "allocate(buf(3))", "p%x = 1.0"):
+            self.assertIn(line, text)                               # the original line is quoted
+
+
+class TranslationTests(unittest.TestCase):
+    def test_relational_dot_operators_and_the_real_literal_trap(self):
+        text, _ = conv("print *, 1.eq.1, 2.gt.1, 3.ne.3", "")
+        self.assertIn("print 1 == 1, 2 > 1, 3 /= 3", text)
+
+    def test_d_exponents_and_kinds(self):
+        text, _ = conv("print *, 1.5d0, 2.0e3, 3.0_8, 4_8", "")
+        self.assertIn("print 1.5, 2000.0, 3.0, 4", text)
+
+    def test_continuation_comments_and_semicolons(self):
+        text, _ = conv("integer :: a, b\n  a = 1; b = &\n    & 2   ! trailing\n  print *, a, &\n     b", "")
+        self.assertIn("a = 1\n  b = 2", text)
+        self.assertIn("print a, b", text)
+        self.assertNotIn("trailing", text)
+
+    def test_strings_with_quotes_and_bangs(self):
+        text, _ = conv("""print *, 'it''s ! fine'""", "")
+        self.assertIn('print "it\'s ! fine"', text)
+
+    def test_string_with_double_quote_is_a_todo(self):
+        text, findings = conv("""print *, 'say "hi"'""", "")
+        self.assertEqual(len(todos(findings)), 1)
+
+    def test_precedence_follows_boreas_not_fortran(self):
+        text, _ = conv("real :: a, b, c\n  a = 1.0; b = 2.0\n  c = -a ** 2 + (a - (b - a)) * 3.0 - a / (b * a)", "")
+        self.assertIn("c = -(a ** 2) + (a - (b - a)) * 3.0 - a / (b * a)".replace("-(a ** 2)", "-a ** 2"), text)
+
+    def test_negation_covers_the_whole_first_term(self):
+        text, _ = conv("real :: a, b\n  a = 1.0; b = 2.0\n  a = -a * b", "")
+        self.assertIn("a = -(a * b)", text)
+
+    def test_eqv_and_not_get_parentheses(self):
+        text, _ = conv("logical :: p, q\n  p = .true.; q = .false.\n  print *, p .eqv. q, .not. p .neqv. q, p .or. q .eqv. p", "")
+        self.assertIn("print p == q, (not p) /= q, (p or q) == p", text)
+
+    def test_keyword_names_are_renamed(self):
+        text, findings = conv("integer :: in, out, string\n  in = 1; out = 2; string = in + out\n  print *, string", "")
+        self.assertIn("in_ = 1", text)
+        self.assertIn("string_ = in_ + out_", text)
+        self.assertTrue(any("renamed" in f[2] for f in findings))
+        self.assertEqual(run_bor(text), ["3"])
+
+    def test_bare_print_and_write(self):
+        text, _ = conv("print *\n  write(*,*) 'a', 1\n  write(*,'(a)') 'b'", "")
+        self.assertIn('print ""', text)
+        self.assertIn('print "a", 1', text)
+        self.assertIn('print "b"', text)
+
+    def test_write_to_a_file_unit_is_a_todo(self):
+        _, findings = conv("write(10, *) 1", "")
+        self.assertEqual(len(todos(findings)), 1)
+
+    def test_exit_and_cycle_and_infinite_do(self):
+        text, _ = conv("integer :: i\n  i = 0\n  do\n    i = i + 1\n    if (i < 3) cycle\n    exit\n  end do\n  print *, i", "")
+        self.assertEqual(run_bor(text), ["3"])
+
+    def test_fused_end_keywords_and_elseif(self):
+        text, _ = conv("integer :: i\n  i = 2\n  if (i == 1) then\n    print *, 'one'\n  elseif (i == 2) then\n    print *, 'two'\n  endif\n  do i = 1, 2\n  enddo", "")
+        self.assertEqual(run_bor(text), ["two"])
+
+    def test_labelled_do_is_a_todo_not_a_crash(self):
+        text, findings = conv("integer :: i\n  do 10 i = 1, 3\n    print *, i\n10 continue", "")
+        self.assertGreaterEqual(len(todos(findings)), 1)
+        parse(text)                                            # still valid Boreas
+
+    def test_trailing_stop_is_dropped_but_a_middle_one_is_flagged(self):
+        text, findings = conv("print *, 1\n  stop", "")
+        self.assertEqual(todos(findings), [])
+        self.assertNotIn("stop", text.replace("subroutine", ""))
+        text, findings = conv("integer :: i\n  i = 1\n  if (i == 1) stop\n  print *, 2", "")
+        self.assertIn("`stop`", text)
+
+    def test_unknown_function_is_reported(self):
+        _, findings = conv("print *, nint(2.6)", "")
+        self.assertTrue(any("nint" in f[2] for f in findings))
+
+    def test_dble_and_kind_arguments(self):
+        text, _ = conv("print *, dble(3), real(2, kind=8), int(2.7d0)", "")
+        self.assertIn("print real(3), real(2), int(2.7)", text)
+
+    def test_array_sections_and_constructors(self):
+        text, _ = conv("integer :: v(5)\n  v = [1, 2, 3, 4, 5]\n  v(2:3) = 0\n  print *, v, v(:2), sum(v)", "")
+        self.assertEqual(run_bor(text), ["[1, 0, 0, 4, 5] [1, 0] 10"])
+
+    def test_two_dimensional_declarations(self):
+        text, _ = conv("real :: m(2, 3)\n  m = 1.5\n  print *, size(m), shape(m)", "")
+        self.assertEqual(run_bor(text), ["6 [2, 3]"])
+
+    def test_lower_bounds_other_than_one_are_a_todo(self):
+        _, findings = conv("integer :: v(0:4)\n  v(0) = 1", "")
+        self.assertGreaterEqual(len(todos(findings)), 1)
+
+    def test_function_name_is_the_result_variable(self):
+        src = "function twice(x)\n  implicit none\n  real, intent(in) :: x\n  real :: twice\n  twice = x * 2.0\nend function\n" \
+              "program p\n  implicit none\n  real :: twice\n  print *, twice(2.0)\nend program\n"
+        text, findings = convert(src)
+        self.assertIn("twice_result", text)
+        self.assertEqual(run_bor(text), ["4.0"])
+
+    def test_function_that_modifies_an_argument_is_flagged(self):
+        src = "integer function bad(n)\n  integer, intent(inout) :: n\n  n = n + 1\n  bad = n\nend function\n" \
+              "program p\n  integer :: k\n  k = 1\n  print *, bad(k)\nend program\n"
+        text, findings = convert(src)
+        self.assertTrue(any("modifies argument" in f[2] for f in todos(findings)))
+
+    def test_implicit_save_is_flagged(self):
+        src = "subroutine counter(n)\n  integer, intent(out) :: n\n  integer :: calls = 0\n  calls = calls + 1\n  n = calls\nend subroutine\n" \
+              "program p\n  integer :: k\n  call counter(k)\n  print *, k\nend program\n"
+        _, findings = convert(src)
+        self.assertTrue(any("SAVE" in f[2] for f in findings))
+
+    def test_modules_are_skipped_with_a_todo(self):
+        src = "module m\n  implicit none\ncontains\n  subroutine s()\n  end subroutine\nend module m\n" \
+              "program p\n  print *, 1\nend program\n"
+        text, findings = convert(src)
+        self.assertEqual(len(todos(findings)), 1)
+        self.assertEqual(run_bor(text), ["1"])
+
+    def test_unterminated_block_is_an_error(self):
+        with self.assertRaises(LangError):
+            convert("program p\n  if (.true.) then\n  print *, 1\nend program\n")
+
+
+class CommandLineTests(unittest.TestCase):
+    def boreas(self, *args):
+        return subprocess.run([sys.executable, "-m", "boreas", *args], capture_output=True, text=True,
+                              cwd=os.path.join(HERE, ".."))
+
+    def test_convert_to_stdout_and_report_on_stderr(self):
+        r = self.boreas("convert", fixture("unsupported.f90"))
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("program mixed", r.stdout)
+        self.assertIn("7 TODO(s)", r.stderr)
+
+    def test_convert_to_file_then_run_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "basic.bor")
+            self.assertEqual(self.boreas("convert", fixture("basic.f90"), "-o", out).returncode, 0)
+            r = self.boreas(out)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("total: 55", r.stdout)
+
+    def test_fixed_form_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "old.f")
+            with open(path, "w") as f:
+                f.write("      PROGRAM X\n      END\n")
+            r = self.boreas("convert", path)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("fixed-form", r.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
