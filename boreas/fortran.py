@@ -190,6 +190,8 @@ class Scope:
         self.ret_type = None
         self.comments = []
         self.externals = set()
+        self.host = None              # enclosing scope, for internal procedures
+        self.body = None
         self.skipped = set()          # declared in Fortran we could not translate
 
 
@@ -201,8 +203,9 @@ class Raw:
     line: int
 
 
+@dataclass
 class StopMarker(Comment):
-    pass
+    line: int = 0
 
 
 def iter_nodes(obj):
@@ -548,16 +551,20 @@ class FParser:
         self.end_of_statement()
         return kind, name, dummies, result, ret_type
 
-    def parse_procedure(self, toks, it):
+    def parse_procedure(self, toks, it, host=None):
         kind, name, dummies, result, ret_type = self.procedure_header(toks)
         scope = Scope(kind, name, dummies)
         scope.result, scope.ret_type = result, ret_type
+        if host is not None:
+            scope.host = host
+            scope.implicit_none = host.implicit_none       # internal procedures inherit it
         self.parse_unit(kind, scope, it)
 
     def parse_unit(self, kind, scope, it):
         """Parse from just after the header through `end <kind>`, hoisting internal procedures."""
         scope.comments, self.top_comments = self.top_comments, []
         body = self.parse_body(scope, {("end", kind), ("contains",)})
+        scope.body = body
         toks = self.tokens(self.items[self.i])
         if classify(toks) == ("contains",):
             self.i += 1
@@ -575,7 +582,7 @@ class FParser:
                 inner = self.unit_kind(toks)
                 self.i += 1
                 if inner in ("function", "subroutine"):
-                    self.parse_procedure(toks, cur)
+                    self.parse_procedure(toks, cur, scope)
                 else:
                     self.todo(cur.line, f"unsupported statement after contains: {cur.text}")
         self.i += 1                        # the `end` statement
@@ -720,6 +727,9 @@ class FParser:
             return "real"
         if word in ("complex", "type"):
             raise Unsupported(f"'{word}' is not supported")
+        if word == "character":
+            self.note(self.line, "character lengths are not tracked: Boreas strings never pad or truncate, "
+                                 "so assigning to a shorter variable or comparing padded text can differ", once=True)
         if self.at_op("("):
             self.skip_parens()
             if word != "character":
@@ -800,6 +810,8 @@ class FParser:
                     attrs["dimension"] = self.dim_specs()
             elif word in ("parameter", "save", "public", "private", "target", "intrinsic", "value", "optional", "external"):
                 attrs[word] = True
+                if word == "save" and scope.kind != "program":
+                    self.note(it.line, "'save': Fortran keeps these variables between calls, Boreas locals do not")
                 if word == "optional":
                     self.note(it.line, "'optional' dropped: Boreas has no optional arguments")
             elif word in ("allocatable", "pointer", "volatile", "asynchronous", "protected"):
@@ -869,6 +881,10 @@ class FParser:
         raise Unsupported("modules are not supported yet")
 
     def st_save(self, it, scope):
+        if scope.kind != "program":
+            self.note(it.line, "'save': Fortran keeps variables between calls, Boreas locals do not")
+        while self.peek() is not None:
+            self.k += 1
         return []
 
     def st_external(self, it, scope):
@@ -961,7 +977,7 @@ class FParser:
         return [Return(None)]
 
     def st_stop(self, it, scope):
-        return [StopMarker("TODO(convert): `stop` exits the program; it was not translated")]
+        return [StopMarker("TODO(convert): `stop` exits the program; it was not translated", it.line)]
 
     def st_error(self, it, scope):
         return self.st_stop(it, scope)
@@ -1083,6 +1099,10 @@ class FParser:
         if program is not None:
             while program.body and isinstance(program.body[-1], StopMarker):
                 program.body.pop()
+        for owner in list(unit.functions.values()) + ([program] if program else []):
+            for n in iter_nodes(owner.body):
+                if isinstance(n, StopMarker):
+                    self.todo(n.line, "'stop' ends the program early; it was not translated, so execution continues")
         return unit
 
     def local_decls(self, scope, body, proc_names=()):
@@ -1098,6 +1118,11 @@ class FParser:
 
     def implicit_decls(self, scope, body, proc_names, line):
         known = set(scope.decls) | set(scope.dummies) | proc_names
+        host_names = set()
+        if scope.host is not None:
+            h = scope.host
+            host_names = set(h.decls) | set(h.dummies)
+            host_names |= {n.name for n in iter_nodes(h.body) if isinstance(n, Var)}
         used = {}
         for n in iter_nodes(body):
             if isinstance(n, Var):
@@ -1107,6 +1132,12 @@ class FParser:
         out = []
         for name in used:
             if name in known:
+                continue
+            if name in host_names:
+                msg = (f"'{name}' belongs to the enclosing program; in Boreas a procedure cannot see "
+                       f"it, so pass it as an argument")
+                self.todo(line, msg)
+                scope.comments.append("TODO(convert): " + msg)
                 continue
             if scope.implicit_none:
                 self.note(line, f"'{name}' is not declared (the source says 'implicit none')")
@@ -1199,8 +1230,8 @@ class FParser:
                 for p in f.params:
                     if (f.name, p[1]) not in inferred:
                         continue
-                    reads, writes = self.usage(f.body, p[1], procs)
-                    new = "in" if not writes else ("out" if not reads and p[0] != "string" else "inout")
+                    reads, writes, sure = self.usage(f.body, p[1], procs)
+                    new = "in" if not writes else ("out" if sure and not reads else "inout")
                     if p[2] != new:
                         p[2], changed = new, True
             if not changed:
@@ -1222,7 +1253,7 @@ class FParser:
 
     def usage(self, body, name, procs):
         """Count (reads, writes) of `name` in a statement list."""
-        counts = [0, 0]
+        counts = [0, 0, 0]          # reads, writes, writes that always happen (not inside if/do)
 
         def read_expr(e):
             for n in iter_nodes(e):
@@ -1232,13 +1263,14 @@ class FParser:
         def ref_name(e):
             return e.name if isinstance(e, (Var, Apply)) else None
 
-        def scan(stmts):
+        def scan(stmts, top=True):
             for s in stmts:
                 if isinstance(s, list):
-                    scan(s)
+                    scan(s, top)
                 elif isinstance(s, Assign):
                     if ref_name(s.target) == name:
                         counts[1] += 1
+                        counts[2] += top
                         if isinstance(s.target, Apply):
                             for a in s.target.args:
                                 read_expr(a)
@@ -1248,16 +1280,16 @@ class FParser:
                 elif isinstance(s, If):
                     for cond, b in s.branches:
                         read_expr(cond)
-                        scan(b)
-                    scan(s.orelse)
+                        scan(b, False)
+                    scan(s.orelse, False)
                 elif isinstance(s, Do):
                     if s.var == name:
                         counts[1] += 1
                     read_expr([s.lo, s.hi, s.step])
-                    scan(s.body)
+                    scan(s.body, False)
                 elif isinstance(s, DoWhile):
                     read_expr(s.cond)
-                    scan(s.body)
+                    scan(s.body, False)
                 elif isinstance(s, Call):
                     callee = procs.get(s.name)
                     for i, a in enumerate(s.args):
@@ -1270,13 +1302,14 @@ class FParser:
                                 counts[0] += 1
                             if mode in ("out", "inout"):
                                 counts[1] += 1
+                                counts[2] += top and mode == "out"
                         else:
                             read_expr(a)
                 elif isinstance(s, (Print, Return, ExprStmt)):
                     read_expr(getattr(s, "args", None) or getattr(s, "value", None) or getattr(s, "expr", None))
 
         scan(body)
-        return counts[0], counts[1]
+        return counts[0], counts[1], counts[2] > 0
 
     def check_calls(self, unit):
         known = set(unit.functions) | set(BUILTINS) | set(ELEMENTAL)
@@ -1286,11 +1319,20 @@ class FParser:
         for owner, node in scopes:
             declared = {d.name for d in iter_nodes(node.body) if isinstance(d, Decl)}
             declared |= {p[1] for p in getattr(node, "params", [])}
+            seen = set()
             for n in iter_nodes(node.body):
                 if isinstance(n, Apply) and n.name not in declared and n.name not in known:
-                    self.note(n.line, f"'{n.name}' is not a Boreas built-in or a procedure in this file")
+                    what = "function"
                 elif isinstance(n, Call) and n.name not in unit.functions:
-                    self.note(n.line, f"subroutine '{n.name}' is not defined in this file")
+                    what = "subroutine"
+                else:
+                    continue
+                if n.name in seen:
+                    continue
+                seen.add(n.name)
+                msg = f"{what} '{n.name}' is not a Boreas built-in or a procedure in this file; the call will fail"
+                self.todo(n.line, msg)
+                node.comments.append("TODO(convert): " + msg)
 
 
 def parse_fortran(src):

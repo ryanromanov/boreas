@@ -173,3 +173,27 @@ def to_source(unit, header=()):
         blocks.append([_comment(c) for c in p.comments] + [f"program {p.name}"]
                       + stmts(p.body) + [f"end program {p.name}"])
     return "\n\n".join("\n".join(b) for b in blocks) + "\n"
+
+
+def without_comments(unit):
+    """A deep copy of `unit` with every comment removed (for structural round-trip checks)."""
+    import copy
+    u = copy.deepcopy(unit)
+
+    def strip(stmts):
+        stmts[:] = [s for s in stmts if not isinstance(s, Comment)]
+        for s in stmts:
+            if isinstance(s, If):
+                for _, b in s.branches:
+                    strip(b)
+                strip(s.orelse)
+            elif isinstance(s, (Do, DoWhile)):
+                strip(s.body)
+
+    for f in u.functions.values():
+        f.comments = []
+        strip(f.body)
+    if u.program is not None:
+        u.program.comments = []
+        strip(u.program.body)
+    return u

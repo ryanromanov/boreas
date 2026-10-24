@@ -1,10 +1,10 @@
 import os, re, shutil, subprocess, sys, tempfile, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from boreas.fortran import convert
+from boreas.fortran import convert, parse_fortran
 from boreas.interp import Interp
 from boreas.lexer import LangError
 from boreas.parser import parse
-from boreas.printer import to_source
+from boreas.printer import to_source, without_comments
 
 HERE = os.path.dirname(__file__)
 GFORTRAN = shutil.which("gfortran")
@@ -54,9 +54,19 @@ def run_gfortran(path):
         return subprocess.run([exe], check=True, capture_output=True, text=True).stdout
 
 
+def assert_round_trips(src):
+    """Printing the converted tree and parsing it back must give the same tree (compared as
+    text), with comments stripped first so that only structure is compared."""
+    unit, _, _ = parse_fortran(src)
+    printed = to_source(without_comments(unit))
+    reparsed = to_source(parse(printed))
+    assert reparsed == printed, f"printer is not structure-preserving:\n{printed}\n---\n{reparsed}"
+
+
 def conv(body, decls="", name="t"):
     """Convert a Fortran program body to Boreas source."""
     src = f"program {name}\n  implicit none\n{decls}\n{body}\nend program {name}\n"
+    assert_round_trips(src)
     text, findings = convert(src)
     return text, findings
 
@@ -74,9 +84,8 @@ class FixtureTests(unittest.TestCase):
             subprocess.run([GFORTRAN, "-fsyntax-only", "-std=f2018", path], check=True, capture_output=True)
         text, findings = convert(read(path), name)
         self.assertEqual(todos(findings), [])
-        # the output is valid Boreas and printing it is a fixed point
-        again = to_source(parse(text))
-        self.assertEqual(to_source(parse(again)), again)
+        assert_round_trips(read(path))
+        parse(text)                                  # the file as written is valid Boreas
         got = run_bor(text)
         if GFORTRAN:
             want = run_gfortran(path)
@@ -93,6 +102,12 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(got[0], "25.0")
         self.assertIn("medium", got)
         self.assertEqual(got[-1], "120 true true")
+
+    def test_conditionally_set_argument_is_inout(self):
+        got = self.check("search.f90")
+        self.assertEqual(got, ["found at 3", "still 3"])
+        text, _ = convert(read(fixture("search.f90")))
+        self.assertIn("inout integer :: pos", text)
 
     def test_unsupported_constructs_become_todos(self):
         text, findings = convert(read(fixture("unsupported.f90")), "unsupported.f90")
@@ -168,16 +183,73 @@ class TranslationTests(unittest.TestCase):
         self.assertGreaterEqual(len(todos(findings)), 1)
         parse(text)                                            # still valid Boreas
 
-    def test_trailing_stop_is_dropped_but_a_middle_one_is_flagged(self):
+    def test_trailing_stop_is_dropped_but_others_are_counted(self):
         text, findings = conv("print *, 1\n  stop", "")
         self.assertEqual(todos(findings), [])
-        self.assertNotIn("stop", text.replace("subroutine", ""))
+        self.assertNotIn("stop", text)
         text, findings = conv("integer :: i\n  i = 1\n  if (i == 1) stop\n  print *, 2", "")
         self.assertIn("`stop`", text)
+        self.assertEqual(len(todos(findings)), 1)
+        self.assertIn("1 construct(s)", text)                      # the header count includes it
+        src = "subroutine quit()\n  stop 1\nend subroutine\nprogram p\n  call quit()\nend program\n"
+        self.assertEqual(len(todos(convert(src)[1])), 1)           # a stop in a procedure is never trailing
 
-    def test_unknown_function_is_reported(self):
-        _, findings = conv("print *, nint(2.6)", "")
-        self.assertTrue(any("nint" in f[2] for f in findings))
+    def test_host_variable_used_by_an_internal_procedure_is_flagged(self):
+        src = ("program host\n  implicit none\n  integer :: total\n  total = 0\n  call add(5)\n  print *, total\n"
+               "contains\n  subroutine add(k)\n    integer, intent(in) :: k\n    total = total + k\n"
+               "  end subroutine add\nend program host\n")
+        text, findings = convert(src)
+        self.assertTrue(any("enclosing program" in f[2] for f in todos(findings)))
+        self.assertNotIn("real :: total", text)                    # not silently turned into a local
+        self.assertNotIn("integer :: total\n  total = total", text)
+        with self.assertRaises(LangError):
+            run_bor(text)                                          # fails loudly instead of printing 0
+
+    def test_internal_procedure_inherits_implicit_none(self):
+        src = ("program p\n  implicit none\n  call s()\ncontains\n  subroutine s()\n    q = 1.0\n  end subroutine s\n"
+               "end program p\n")
+        _, findings = convert(src)
+        self.assertTrue(any("not declared" in f[2] for f in findings))
+
+    def test_argument_assigned_unconditionally_is_out(self):
+        src = "subroutine s(v)\n  integer v\n  v = 1\nend subroutine\nprogram p\n  integer :: k\n  call s(k)\nend program\n"
+        self.assertIn("out integer :: v", convert(src)[0])
+
+    def test_argument_assigned_in_a_loop_or_read_is_inout(self):
+        src = ("subroutine a(v, n)\n  integer v, n, i\n  do i = 1, n\n    v = i\n  end do\nend subroutine\n"
+               "subroutine b(v)\n  integer v\n  v = v + 1\nend subroutine\n"
+               "program p\n  integer :: k\n  k = 0\n  call a(k, 3)\n  call b(k)\nend program\n")
+        text = convert(src)[0]
+        self.assertIn("subroutine a(inout integer :: v", text)
+        self.assertIn("subroutine b(inout integer :: v", text)
+
+    def test_intent_propagates_through_calls(self):
+        src = ("subroutine outer(x)\n  real x\n  call inner(x)\nend subroutine\n"
+               "subroutine inner(y)\n  real y\n  y = 2.0\nend subroutine\n"
+               "program p\n  real :: z\n  call outer(z)\n  print *, z\nend program\n")
+        text, _ = convert(src)
+        self.assertIn("subroutine outer(out real :: x)", text)
+        self.assertEqual(run_bor(text), ["2.0"])
+
+    def test_save_and_character_length_are_noted(self):
+        src = ("subroutine s()\n  integer, save :: n\n  character(len=3) :: c\n  n = 1\n  c = 'abcdef'\nend subroutine\n"
+               "program p\n  call s()\nend program\n")
+        _, findings = convert(src)
+        self.assertTrue(any("'save'" in f[2] for f in findings))
+        self.assertTrue(any("character lengths" in f[2] for f in findings))
+        src = "subroutine s()\n  integer n\n  save n\n  n = 1\nend subroutine\nprogram p\nend program\n"
+        self.assertTrue(any("'save'" in f[2] for f in convert(src)[1]))
+
+    def test_single_precision_real_is_noted(self):
+        _, findings = conv("real :: x\n  x = 1.0", "")
+        self.assertTrue(any("single precision" in f[2] for f in findings))
+
+    def test_unknown_procedures_are_todos_in_the_output(self):
+        text, findings = conv("print *, nint(2.6)\n  call mystery(1)", "")
+        names = [f[2] for f in todos(findings)]
+        self.assertTrue(any("nint" in m for m in names) and any("mystery" in m for m in names))
+        self.assertIn("TODO(convert): function 'nint'", text)
+        self.assertIn("2 construct(s)", text)
 
     def test_dble_and_kind_arguments(self):
         text, _ = conv("print *, dble(3), real(2, kind=8), int(2.7d0)", "")

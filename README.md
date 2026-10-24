@@ -69,6 +69,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - Dummy arguments without `intent` get `in`, `out` or `inout` inferred from the
   body, with a note above the procedure.
 - A function whose name is its result variable gets an explicit result variable.
+- Calls to procedures that exist nowhere in the file are marked TODO, because they would fail.
 - Names that are Boreas keywords (`in`, `out`, `string`, ...) are renamed.
 
 The converted file is checked by the test suite against real gfortran output.
