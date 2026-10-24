@@ -25,7 +25,8 @@ class Unary: op: str; operand: object
 class Binary: op: str; left: object; right: object
 
 @dataclass
-class Decl: type: str; name: str; dims: object; init: object; line: int   # dims: list of exprs or None
+class Decl:   # dims: list of exprs or None
+    type: str; name: str; dims: object; init: object; line: int; const: bool = False
 @dataclass
 class Assign: target: object; value: object; line: int
 @dataclass
@@ -200,6 +201,9 @@ class Parser:
 
     def statement(self):
         t = self.tok
+        if t.kind == "ident" and t.text == "const":
+            self.next()
+            return self.decl(const=True)
         if t.kind == "ident" and t.text in TYPES:
             return self.decl()
         if self.at("if"):
@@ -246,7 +250,7 @@ class Parser:
         self.newline()
         return ExprStmt(e)
 
-    def decl(self):
+    def decl(self, const=False):
         line = self.tok.line
         typ = self.type_name()
         self.expect("::")
@@ -260,7 +264,9 @@ class Parser:
                     dims.append(self.expr())
                 self.expect(")")
             init = self.expr() if self.accept("=") else None
-            decls.append(Decl(typ, name, dims, init, line))
+            if const and init is None:
+                self.error(f"constant '{name}' needs a value")
+            decls.append(Decl(typ, name, dims, init, line, const))
             if not self.accept(","):
                 break
         self.newline()

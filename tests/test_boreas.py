@@ -277,5 +277,62 @@ class DoVariableTests(unittest.TestCase):
         self.assertEqual(run("integer :: i\ndo i = 6, 1, -2\nend do\nprint i"), ["0"])
 
 
+class ConstTests(unittest.TestCase):
+    def test_constants_work_in_expressions_and_dimensions(self):
+        out = run("const integer :: n = 3\nconst real :: pi = 3.0\ninteger :: a(n)\nprint size(a), pi * 2.0")
+        self.assertEqual(out, ["3 6.0"])
+
+    def test_constant_may_use_an_earlier_constant(self):
+        self.assertEqual(run("const integer :: a = 2\nconst integer :: b = a * 5\nprint b"), ["10"])
+
+    def test_several_constants_in_one_declaration(self):
+        self.assertEqual(run("const integer :: a = 1, b = 2\nprint a + b"), ["3"])
+
+    def test_constant_array(self):
+        out = run("const integer :: p(3) = [2, 3, 5]\nprint p, sum(p), p(2)")
+        self.assertEqual(out, ["[2, 3, 5] 10 3"])
+
+    def test_cannot_assign_a_constant(self):
+        with self.assertRaisesRegex(LangError, "'n' is a constant"):
+            run("const integer :: n = 3\nn = 4")
+
+    def test_cannot_assign_an_element_or_whole_constant_array(self):
+        for stmt in ("p(1) = 0", "p = 0", "p(1:2) = [0, 0]"):
+            with self.subTest(stmt=stmt):
+                with self.assertRaisesRegex(LangError, "constant"):
+                    run("const integer :: p(3) = [2, 3, 5]\n" + stmt)
+
+    def test_cannot_use_a_constant_as_a_do_variable(self):
+        with self.assertRaisesRegex(LangError, "constant"):
+            run("const integer :: i = 1\ndo i = 1, 2\nend do")
+
+    def test_cannot_pass_a_constant_as_out_or_inout(self):
+        sub = "subroutine bump(inout integer :: v)\n v = v + 1\nend subroutine"
+        with self.assertRaisesRegex(LangError, "constant and cannot be passed as inout"):
+            run("const integer :: n = 1\ncall bump(n)", sub)
+
+    def test_a_constant_can_be_passed_as_in(self):
+        f = "function twice(integer :: v) -> integer\n return v * 2\nend function"
+        self.assertEqual(run("const integer :: n = 4\nprint twice(n)", f), ["8"])
+
+    def test_constants_need_a_value(self):
+        with self.assertRaisesRegex(LangError, "needs a value"):
+            run("const integer :: n")
+
+    def test_constant_value_is_type_checked(self):
+        with self.assertRaisesRegex(LangError, "cannot assign real to integer"):
+            run("const integer :: n = 2.5")
+
+    def test_local_constants_in_procedures(self):
+        f = "function area(real :: r) -> real\n const real :: pi = 3.0\n return pi * r * r\nend function"
+        self.assertEqual(run("print area(2.0)", f), ["12.0"])
+
+    def test_printer_keeps_const(self):
+        from boreas.printer import to_source
+        from boreas.parser import parse
+        src = "program p\n  const integer :: a = 1, b = 2\n  const real :: c = 1.5\n  integer :: d = 3\nend program p\n"
+        self.assertEqual(to_source(parse(src)), src)
+
+
 if __name__ == "__main__":
     unittest.main()

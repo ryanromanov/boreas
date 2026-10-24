@@ -15,7 +15,7 @@ from .printer import to_source
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
 # so a Fortran variable with one of these names is renamed.
-RESERVED = {"and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
+RESERVED = {"const", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "call", "return", "exit", "cycle"}
 
@@ -847,10 +847,10 @@ class FParser:
                             if lo is not None and not (isinstance(lo, Num) and lo.value == 1):
                                 raise Unsupported("array lower bound other than 1")
                             dims.append(hi)
-                if attrs.get("parameter"):
-                    self.note(line, "constants declared with 'parameter' became ordinary variables "
-                                    "(Boreas has no parameters)", once=True)
-                elif init is not None and scope.kind != "program" and name not in scope.dummies:
+                if attrs.get("parameter") and init is None:
+                    raise Unsupported(f"constant '{name}' has no value here (implied-shape or set elsewhere)")
+                if not attrs.get("parameter") and init is not None and scope.kind != "program" \
+                        and name not in scope.dummies:
                     self.note(line, f"'{name}' is initialised in a declaration inside a procedure: "
                                     f"Fortran implicitly SAVEs it between calls, Boreas re-initialises it each call")
                 scope.decls[name] = Info(typ, dims, dropped, attrs.get("intent"), init,
@@ -1113,7 +1113,7 @@ class FParser:
             if name in proc_names or name in scope.externals:
                 self.note(info.line, f"declaration of '{name}' dropped: it is a procedure, not a variable")
                 continue
-            decls.append(Decl(info.type, name, info.dims, info.init, info.line))
+            decls.append(Decl(info.type, name, info.dims, info.init, info.line, info.parameter))
         return decls
 
     def implicit_decls(self, scope, body, proc_names, line):
