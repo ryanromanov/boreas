@@ -143,6 +143,19 @@ class FixtureTests(unittest.TestCase):
         text, _ = convert(src)
         self.assertEqual(run_bor(text), ["3"])
 
+    def test_modules(self):
+        got = self.check("modules.f90")
+        self.assertEqual(got[-1].split()[0], "55")
+        text, _ = convert(read(fixture("modules.f90")))
+        self.assertIn("module geometry", text)
+        self.assertIn("  public const real :: pi = 3.14159", text)
+        self.assertIn("  const real :: unit_scale = 2.0", text)              # private by default in Boreas
+        self.assertIn("  public function area(real :: r) -> real", text)
+        self.assertNotIn("public function scale_of", text)
+        self.assertIn("use geometry: area, ratio, tally, pi", text)           # `use geometry` became explicit
+        self.assertIn("use counting: triangle, limit, circle_sum", text)
+        self.assertIn("  use geometry: pi", text)                             # `use geometry, only: pi` in a module
+
     def test_unsupported_constructs_become_todos(self):
         text, findings = convert(read(fixture("unsupported.f90")), "unsupported.f90")
         self.assertEqual(len(todos(findings)), 7)
@@ -338,11 +351,41 @@ class TranslationTests(unittest.TestCase):
         _, findings = convert(src)
         self.assertTrue(any("SAVE" in f[2] for f in findings))
 
-    def test_modules_are_skipped_with_a_todo(self):
-        src = "module m\n  implicit none\ncontains\n  subroutine s()\n  end subroutine\nend module m\n" \
-              "program p\n  print *, 1\nend program\n"
+    def test_module_variable_is_a_todo_and_its_uses_are_skipped(self):
+        src = ("module m\n  implicit none\n  integer :: counter = 0\n  integer, parameter :: k = 3\ncontains\n"
+               "  subroutine bump()\n    counter = counter + 1\n  end subroutine\n"
+               "  function triple(x)\n    integer, intent(in) :: x\n    integer :: triple\n    triple = x * k\n  end function\n"
+               "end module m\n"
+               "program p\n  use m\n  implicit none\n  call bump()\n  print *, triple(2)\nend program\n")
         text, findings = convert(src)
-        self.assertEqual(len(todos(findings)), 1)
+        self.assertTrue(any("module variable 'counter'" in f[2] for f in todos(findings)))
+        self.assertIn("TODO(convert): uses 'counter'", text)
+        self.assertEqual(run_bor(text), ["6"])
+
+    def test_unknown_module_and_private_names_are_todos(self):
+        src = ("module m\n  implicit none\n  private\n  public :: f\ncontains\n"
+               "  function f()\n    integer :: f\n    f = 1\n  end function\n"
+               "  function g()\n    integer :: g\n    g = 2\n  end function\nend module\n"
+               "program p\n  use other\n  use m, only: f, g\n  implicit none\n  print *, f()\nend program\n")
+        text, findings = convert(src)
+        msgs = " | ".join(f[2] for f in todos(findings))
+        self.assertIn("module 'other' is not defined earlier in this file", msgs)
+        self.assertIn("module 'm' has no public 'g'", msgs)
+        self.assertEqual(run_bor(text), ["1"])
+
+    def test_names_a_module_reexports_are_imported_from_their_source(self):
+        src = ("module a\n  implicit none\n  integer, parameter :: base = 10\nend module a\n"
+               "module b\n  use a\n  implicit none\ncontains\n  function bump(x)\n    integer, intent(in) :: x\n"
+               "    integer :: bump\n    bump = x + base\n  end function\nend module b\n"
+               "program p\n  use b\n  implicit none\n  print *, bump(1), base\nend program\n")
+        text, _ = convert(src)
+        self.assertIn("use a: base", text)
+        self.assertEqual(run_bor(text), ["11 10"])
+
+    def test_module_converts_without_a_program(self):
+        text, findings = convert("module m\n  implicit none\ncontains\n  subroutine s()\n  end subroutine\nend module m\n"
+                                 "program p\n  print *, 1\nend program\n")
+        self.assertEqual(todos(findings), [])
         self.assertEqual(run_bor(text), ["1"])
 
     def test_unterminated_block_is_an_error(self):

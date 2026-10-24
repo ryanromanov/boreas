@@ -159,7 +159,7 @@ def _uses(uses, depth=1):
 
 
 def module(m):
-    lines = [f"module {m.name}"] + _uses(m.uses)
+    lines = [_comment(c) for c in m.comments] + [f"module {m.name}"] + _uses(m.uses)
     lines.extend(stmts(m.consts))
     for f in m.functions.values():
         lines.extend("  " + l if l else l for l in procedure(f))
@@ -210,6 +210,8 @@ def without_comments(unit):
             elif isinstance(s, (Do, DoWhile)):
                 strip(s.body)
 
+    for m in u.modules.values():
+        m.comments = []
     for f in list(u.functions.values()) + [f for m in u.modules.values() for f in m.functions.values()]:
         f.comments = []
         strip(f.body)

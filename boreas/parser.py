@@ -77,6 +77,7 @@ class Module:
     consts: list          # [Decl], all const
     functions: dict       # name -> Function
     line: int
+    comments: list = field(default_factory=list)   # printed above the header by `convert`
 @dataclass
 class Unit:
     functions: dict       # top-level procedures (outside any module)

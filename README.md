@@ -99,8 +99,14 @@ Reads free-form Fortran (not fixed-form `.f`) and writes Boreas source plus a
 report on stderr. Translations that change meaning are flagged, never silent:
 
 - `! TODO(convert): ...` comments quote any line that could not be translated
-  (modules, `select case`, `allocate`, derived types, `goto`, `read`, ...).
+  (`select case`, `allocate`, derived types, `goto`, `read`, ...).
 - `parameter` constants become `const`.
+- Modules become Boreas modules. Fortran is public by default, so names get `public`
+  unless the Fortran says `private`. `use m` becomes an explicit `use m: a, b` listing
+  the names the code actually uses (names a module re-exports are imported from where
+  they are defined). Module variables are mutable shared state, which Boreas modules
+  don't have yet, so they become TODOs, as does code that uses them. A `use` of a module
+  that isn't defined earlier in the same file, or an import that renames, is a TODO too.
 - Missing declarations are filled in using Fortran's implicit typing rules.
 - Dummy arguments without `intent` get `in`, `out` or `inout` inferred from the
   body, with a note above the procedure.
