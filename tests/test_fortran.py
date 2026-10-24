@@ -79,7 +79,7 @@ class FixtureTests(unittest.TestCase):
     """Whole programs: convert, check the Boreas is well-formed, run it, compare with gfortran."""
 
     def check(self, name):
-        path = fixture(name)
+        path = name if os.path.isabs(name) else fixture(name)
         if GFORTRAN:
             subprocess.run([GFORTRAN, "-fsyntax-only", "-std=f2018", path], check=True, capture_output=True)
         text, findings = convert(read(path), name)
@@ -102,6 +102,14 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(got[0], "25.0")
         self.assertIn("medium", got)
         self.assertEqual(got[-1], "120 true true")
+
+    def test_every_example_program_converts_and_matches_gfortran(self):
+        examples = os.path.join(HERE, "..", "examples")
+        paths = sorted(os.path.join(examples, f) for f in os.listdir(examples) if f.endswith(".f90"))
+        self.assertTrue(paths)
+        for path in paths:
+            with self.subTest(example=os.path.basename(path)):
+                self.check(os.path.abspath(path))
 
     def test_conditionally_set_argument_is_inout(self):
         got = self.check("search.f90")

@@ -73,6 +73,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - Names that are Boreas keywords (`in`, `out`, `string`, ...) are renamed.
 
 The converted file is checked by the test suite against real gfortran output.
+Try it on `examples/number_toys.f90`.
 
 ## License
 
