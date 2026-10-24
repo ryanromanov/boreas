@@ -24,11 +24,11 @@ Currently a tree-walking interpreter written in Python.
       print "squares:", ys * ys, square(2.5)
     end program
 
-## Subroutines and intent
+## Subroutines and parameter modes
 
-Results come back through `intent(out)` / `intent(inout)` arguments:
+Results come back through `out` / `inout` parameters:
 
-    subroutine swap(integer, intent(inout) :: a, integer, intent(inout) :: b)
+    subroutine swap(inout integer :: a, inout integer :: b)
       integer :: t
       t = a
       a = b
@@ -37,8 +37,8 @@ Results come back through `intent(out)` / `intent(inout)` arguments:
 
     call swap(x, y)
 
-Parameters default to `intent(in)` and cannot be assigned. Functions only take
-`intent(in)`. An output variable may not be passed twice in one call, and an
+Parameters default to `in` and cannot be assigned. Functions only take
+`in` parameters. An output variable may not be passed twice in one call, and an
 `out` parameter must be assigned before the subroutine returns.
 
 ## License

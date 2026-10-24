@@ -1,26 +1,26 @@
-! Subroutines return results through intent(out) / intent(inout) arguments.
-! Parameters default to intent(in) and cannot be assigned inside the callee.
+! Subroutines return results through `out` / `inout` parameters.
+! A parameter with no mode is `in` and cannot be assigned inside the callee.
 
-subroutine swap(integer, intent(inout) :: a, integer, intent(inout) :: b)
+subroutine swap(inout integer :: a, inout integer :: b)
   integer :: t
   t = a
   a = b
   b = t
 end subroutine
 
-subroutine swap_real(real, intent(inout) :: a, real, intent(inout) :: b)
+subroutine swap_real(inout real :: a, inout real :: b)
   real :: t
   t = a
   a = b
   b = t
 end subroutine
 
-subroutine circle(real, intent(in) :: r, real, intent(out) :: area, real, intent(out) :: circumference)
+subroutine circle(in real :: r, out real :: area, out real :: circumference)
   area = 3.14159 * r ** 2
   circumference = 2.0 * 3.14159 * r
 end subroutine
 
-subroutine scale(real, intent(in) :: k, real, intent(inout) :: xs)
+subroutine scale(in real :: k, inout real :: xs)
   xs = xs * k
 end subroutine
 

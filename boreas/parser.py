@@ -152,22 +152,17 @@ class Parser:
         return Function(name, params, ret, body, is_sub)
 
     def params(self, is_sub):
-        """`(real :: x, integer, intent(inout) :: n)`; intent defaults to `in`."""
+        """`(real :: x, inout integer :: n)`; the mode defaults to `in`."""
         self.expect("(")
         params = []
         if not self.at(")"):
             while True:
-                t = self.type_name()
                 intent = "in"
-                if self.accept(","):
-                    self.expect("intent")
-                    self.expect("(")
-                    if not self.at("in", "out", "inout"):
-                        self.error("expected in, out or inout")
+                if self.at("in", "out", "inout"):
                     intent = self.next().text
-                    self.expect(")")
                     if intent != "in" and not is_sub:
                         self.error("only subroutines may have out or inout parameters")
+                t = self.type_name()
                 self.expect("::")
                 params.append((t, self.ident(), intent))
                 if not self.accept(","):

@@ -156,7 +156,7 @@ class Interp:
     def write(self, ref, v, line):
         slot, idx, name = ref
         if slot[INTENT] == "in":
-            raise LangError(f"line {line}: '{name}' is intent(in) and cannot be assigned")
+            raise LangError(f"line {line}: '{name}' is an 'in' parameter and cannot be assigned")
         where = f"line {line}"
         if idx is not None:
             slot[VALUE][idx - 1] = coerce(slot[TYPE], v, where)
@@ -299,7 +299,7 @@ class Interp:
             ref = self.resolve(a, env, s.line)
             slot = ref[0]
             if slot[INTENT] == "in":
-                raise LangError(f"line {s.line}: '{ref[2]}' is intent(in) and cannot be passed as {intent}")
+                raise LangError(f"line {s.line}: '{ref[2]}' is an 'in' parameter and cannot be passed as {intent}")
             if slot[TYPE] != typ:
                 raise LangError(f"line {s.line}: argument '{name}' is {typ} but '{ref[2]}' is {slot[TYPE]}")
             outs.append((n, ref))
