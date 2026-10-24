@@ -133,6 +133,11 @@ class FixtureTests(unittest.TestCase):
         _, findings = convert(src)
         self.assertTrue(any("loop variable" in f[2] for f in todos(findings)))
 
+    def test_variables_named_like_module_words_are_renamed(self):
+        src = "program p\n  integer :: use, public\n  use = 1\n  public = 2\n  print *, use + public\nend program\n"
+        text, _ = convert(src)
+        self.assertEqual(run_bor(text), ["3"])
+
     def test_variable_named_update_is_renamed(self):
         src = "program p\n  integer :: update\n  update = 3\n  print *, update\nend program\n"
         text, _ = convert(src)

@@ -71,7 +71,7 @@ def _params(f):
 
 
 def _decl_head(d):
-    return ("const " if d.const else "") + d.type
+    return ("public " if d.public else "") + ("const " if d.const else "") + d.type
 
 
 def _decl_entity(d):
@@ -100,7 +100,7 @@ def stmts(body, depth=1):
             j = i
             group = []
             while (j < len(flat) and isinstance(flat[j], Decl) and flat[j].type == s.type
-                   and flat[j].const == s.const and len(group) < 6):
+                   and flat[j].const == s.const and flat[j].public == s.public and len(group) < 6):
                 group.append(flat[j])
                 j += 1
             lines.append(f"{pad}{_decl_head(s)} :: " + ", ".join(_decl_entity(d) for d in group))
@@ -154,13 +154,26 @@ def stmt(s, depth):
     raise LangError(f"cannot print statement {k.__name__}")
 
 
+def _uses(uses, depth=1):
+    return ["  " * depth + f"use {u.module}: " + ", ".join(u.names) for u in uses]
+
+
+def module(m):
+    lines = [f"module {m.name}"] + _uses(m.uses)
+    lines.extend(stmts(m.consts))
+    for f in m.functions.values():
+        lines.extend("  " + l if l else l for l in procedure(f))
+    return lines + [f"end module {m.name}"]
+
+
 def procedure(f):
     kind = "subroutine" if f.is_sub else "function"
     lines = [_comment(c) for c in f.comments]
-    head = f"{kind} {f.name}({_params(f)})"
+    head = f"{'public ' if f.public else ''}{kind} {f.name}({_params(f)})"
     if f.ret:
         head += f" -> {f.ret}"
     lines.append(head)
+    lines.extend(_uses(f.uses))
     lines.extend(stmts(f.body))
     lines.append(f"end {kind}")
     return lines
@@ -171,12 +184,14 @@ def to_source(unit, header=()):
     blocks = []
     if header:
         blocks.append([_comment(h) for h in header])
+    for m in unit.modules.values():
+        blocks.append(module(m))
     for f in unit.functions.values():
         blocks.append(procedure(f))
     if unit.program is not None:
         p = unit.program
         blocks.append([_comment(c) for c in p.comments] + [f"program {p.name}"]
-                      + stmts(p.body) + [f"end program {p.name}"])
+                      + _uses(p.uses) + stmts(p.body) + [f"end program {p.name}"])
     return "\n\n".join("\n".join(b) for b in blocks) + "\n"
 
 
@@ -195,7 +210,7 @@ def without_comments(unit):
             elif isinstance(s, (Do, DoWhile)):
                 strip(s.body)
 
-    for f in u.functions.values():
+    for f in list(u.functions.values()) + [f for m in u.modules.values() for f in m.functions.values()]:
         f.comments = []
         strip(f.body)
     if u.program is not None:

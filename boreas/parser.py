@@ -27,6 +27,7 @@ class Binary: op: str; left: object; right: object
 @dataclass
 class Decl:   # dims: list of exprs or None
     type: str; name: str; dims: object; init: object; line: int; const: bool = False
+    public: bool = False       # only meaningful for a module's constants
 @dataclass
 class Assign: target: object; value: object; line: int; update: bool = False
 @dataclass
@@ -59,13 +60,28 @@ class Function:
     body: list
     is_sub: bool = False
     comments: list = field(default_factory=list)   # printed above the header by `convert`
+    uses: list = field(default_factory=list)
+    public: bool = False       # only meaningful inside a module
 @dataclass
 class Program:
     name: str
     body: list
     comments: list = field(default_factory=list)
+    uses: list = field(default_factory=list)
 @dataclass
-class Unit: functions: dict; program: Program   # program is None for a library-only file
+class Use: module: str; names: list; line: int
+@dataclass
+class Module:
+    name: str
+    uses: list
+    consts: list          # [Decl], all const
+    functions: dict       # name -> Function
+    line: int
+@dataclass
+class Unit:
+    functions: dict       # top-level procedures (outside any module)
+    program: Program      # None for a library-only file
+    modules: dict = field(default_factory=dict)
 
 
 def check_writes(body, params):
@@ -142,35 +158,101 @@ class Parser:
 
     # -- top level
     def parse(self):
-        funcs, prog = {}, None
+        funcs, mods, prog = {}, {}, None
         self.skip_newlines()
         while self.tok.kind != "eof":
+            if self.at("public", "private"):
+                self.error("'public' is only for the contents of a module")
             if self.at("function", "subroutine"):
                 f = self.procedure()
                 if f.name in funcs:
                     raise LangError(f"'{f.name}' is defined more than once")
                 funcs[f.name] = f
+            elif self.at("module"):
+                m = self.module()
+                if m.name in mods:
+                    raise LangError(f"line {m.line}: module '{m.name}' is defined more than once")
+                mods[m.name] = m
             elif self.at("program"):
                 if prog:
                     self.error("only one program allowed")
                 prog = self.program()
             else:
-                self.error("expected 'function', 'subroutine' or 'program'")
+                self.error("expected 'module', 'function', 'subroutine' or 'program'")
             self.skip_newlines()
         if not prog:
             raise LangError("no program found")
-        return Unit(funcs, prog)
+        return Unit(funcs, prog, mods)
 
     def program(self):
         self.expect("program")
         name = self.ident()
         self.newline()
+        uses = self.uses()
         body = self.block("program")
         self.expect("program")
         if self.tok.kind == "ident":
             self.next()
         check_writes(body, {})
-        return Program(name, body)
+        return Program(name, body, uses=uses)
+
+    def uses(self):
+        """`use geometry: area, pi` lines at the top of a module, procedure or program."""
+        uses = []
+        self.skip_newlines()
+        while self.at("use"):
+            line = self.next().line
+            module = self.ident()
+            self.expect(":")
+            names = [self.ident()]
+            while self.accept(","):
+                names.append(self.ident())
+            self.newline()
+            uses.append(Use(module, names, line))
+        return uses
+
+    def module(self):
+        line = self.expect("module").line
+        name = self.ident()
+        self.newline()
+        uses = self.uses()
+        consts, funcs = [], {}
+        taken = {}                                     # name -> line, across constants and procedures
+
+        def claim(n, at):
+            if n in taken:
+                raise LangError(f"line {at}: '{n}' is defined more than once in module '{name}'")
+            taken[n] = at
+
+        while not (self.at("end") and self.toks[self.i + 1].text == "module"):
+            if self.tok.kind == "eof":
+                self.error("unexpected end of file, missing 'end module'")
+            if self.at("private"):
+                self.error("names in a module are private unless marked 'public'")
+            public = bool(self.accept("public"))
+            if self.at("const"):
+                self.next()
+                d = self.decl(const=True)
+                for x in (d if isinstance(d, list) else [d]):
+                    x.public = public
+                    claim(x.name, x.line)
+                    consts.append(x)
+            elif self.at("function", "subroutine"):
+                at = self.tok.line
+                f = self.procedure()
+                f.public = public
+                claim(f.name, at)
+                funcs[f.name] = f
+            elif self.tok.kind == "ident" and self.tok.text in TYPES:
+                self.error("a module holds constants and procedures; declare this with 'const'")
+            else:
+                self.error("expected 'const', 'function', 'subroutine' or 'end module'")
+            self.skip_newlines()
+        self.expect("end")
+        self.expect("module")
+        if self.tok.kind == "ident":
+            self.next()
+        return Module(name, uses, consts, funcs, line)
 
     def procedure(self):
         kind = self.next().text           # "function" or "subroutine"
@@ -181,12 +263,13 @@ class Parser:
         if not is_sub and self.accept("->"):
             ret = self.type_name()
         self.newline()
+        uses = self.uses()
         body = self.block(kind)
         self.expect(kind)
         if self.tok.kind == "ident":
             self.next()
         check_writes(body, {n: intent for _, n, intent in params})
-        return Function(name, params, ret, body, is_sub)
+        return Function(name, params, ret, body, is_sub, uses=uses)
 
     def params(self, is_sub):
         """`(real :: x, inout integer :: n)`; the mode defaults to `in`."""

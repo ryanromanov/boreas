@@ -175,12 +175,82 @@ def overlaps(a, b):
     return all(max(_span(x)[0], _span(y)[0]) <= min(_span(x)[1], _span(y)[1]) for x, y in zip(a, b))
 
 
+class Scope:
+    """What a procedure (or the program) can see besides its own variables:
+    procedures and constants, both its own and the ones it imported."""
+    def __init__(self, funcs, consts):
+        self.funcs, self.consts = funcs, consts
+
+
 class Interp:
     def __init__(self, unit, out=print):
         self.unit, self.out = unit, out
+        self.scopes = {}                  # id(procedure) -> Scope
+        self.exports = {}                 # module name -> {name: Function | const slot}
+        self.loading = []
+        self.scope = None
+        self.link()
+
+    def link(self):
+        """Give every procedure its scope: top-level procedures share one namespace,
+        a module's procedures see only that module plus what it imports."""
+        unit = self.unit
+        for f in unit.functions.values():
+            self.scopes[id(f)] = self.import_into(Scope(dict(unit.functions), {}), f.uses)
+        prog = unit.program
+        self.program_scope = self.import_into(Scope(dict(unit.functions), {}), prog.uses) if prog else None
+        for name in unit.modules:
+            self.load_module(name, 0)
+
+    def import_into(self, scope, uses):
+        taken = set(scope.funcs) | set(scope.consts)
+        for u in uses:
+            exports = self.load_module(u.module, u.line)
+            mod = self.unit.modules[u.module]
+            known = set(mod.functions) | {d.name for d in mod.consts}
+            for name in u.names:
+                if name not in known:
+                    raise LangError(f"line {u.line}: module '{u.module}' has no '{name}'")
+                if name not in exports:
+                    raise LangError(f"line {u.line}: '{name}' is private to module '{u.module}' "
+                                    f"(mark it 'public' there to import it)")
+                if name in taken:
+                    raise LangError(f"line {u.line}: '{name}' is already defined here; "
+                                    f"it cannot also be imported from '{u.module}'")
+                taken.add(name)
+                item = exports[name]
+                (scope.funcs if isinstance(item, Function) else scope.consts)[name] = item
+        return scope
+
+    def load_module(self, name, line):
+        if name in self.exports:
+            return self.exports[name]
+        mod = self.unit.modules.get(name)
+        if mod is None:
+            raise LangError(f"line {line}: no module named '{name}'")
+        if name in self.loading:
+            raise LangError(f"line {mod.line}: modules use each other in a cycle: "
+                            + " -> ".join(self.loading[self.loading.index(name):] + [name]))
+        self.loading.append(name)
+        scope = Scope(dict(mod.functions), {})
+        self.import_into(scope, mod.uses)
+        for f in mod.functions.values():
+            self.scopes[id(f)] = scope
+        saved, self.scope = self.scope, scope          # initializers may call the module's functions
+        env = dict(scope.consts)
+        for d in mod.consts:
+            self.declare(d, env)
+            scope.consts[d.name] = env[d.name]
+        self.scope = saved
+        self.loading.pop()
+        self.exports[name] = {
+            **{f.name: f for f in mod.functions.values() if f.public},
+            **{d.name: env[d.name] for d in mod.consts if d.public}}
+        return self.exports[name]
 
     def run(self):
-        self.exec_block(self.unit.program.body, {})
+        self.scope = self.program_scope
+        self.exec_block(self.unit.program.body, dict(self.scope.consts))
 
     def exec_block(self, stmts, env):
         for s in stmts:
@@ -430,7 +500,7 @@ class Interp:
                 raise LangError(f"line {e.line}: '{e.name}' is not an array")
             return self.read(self.resolve(e, env, e.line))
         args = [self.eval(a, env) for a in e.args]
-        f = self.unit.functions.get(e.name)
+        f = self.scope.funcs.get(e.name)
         if f is not None:
             if f.is_sub:
                 raise LangError(f"line {e.line}: '{e.name}' is a subroutine; use 'call {e.name}(...)'")
@@ -458,7 +528,7 @@ class Interp:
     # -- procedures
     def bind(self, f, values, line):
         """Build the callee's environment. `None` marks an unassigned out scalar."""
-        env = {}
+        env = dict(self.scopes[id(f)].consts)
         for (typ, name, intent), v in zip(f.params, values):
             is_arr = isinstance(v, Array)
             if v is not None and not is_arr:
@@ -467,10 +537,13 @@ class Interp:
         return env
 
     def run_body(self, f, env):
+        saved, self.scope = self.scope, self.scopes[id(f)]
         try:
             self.exec_block(f.body, env)
         except _Return as r:
             return r.value
+        finally:
+            self.scope = saved
         return None
 
     def call_function(self, f, args, line):
@@ -493,7 +566,7 @@ class Interp:
         return None
 
     def call_subroutine(self, s, env):
-        f = self.unit.functions.get(s.name)
+        f = self.scope.funcs.get(s.name)
         if f is None:
             raise LangError(f"line {s.line}: unknown subroutine '{s.name}'")
         if not f.is_sub:
