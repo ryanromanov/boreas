@@ -54,12 +54,15 @@ Results come back through `out` / `inout` parameters:
     subroutine swap(inout integer :: a, inout integer :: b)
       integer :: t
       t = a
-      a = b
-      b = t
+      update a = b
+      update b = t
     end subroutine
 
     call swap(x, y)
 
+Every write to an `out` / `inout` parameter is marked with `update`, so a reader
+can see which assignments change something outside the subroutine. Using
+`update` on anything else, or leaving it off for such a parameter, is an error.
 Parameters default to `in` and cannot be assigned. Functions only take
 `in` parameters. An output variable may not be passed twice in one call, and an
 `out` parameter must be assigned before the subroutine returns.

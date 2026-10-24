@@ -1,27 +1,28 @@
 ! Subroutines return results through `out` / `inout` parameters.
 ! A parameter with no mode is `in` and cannot be assigned inside the callee.
+! Writes that reach the caller are marked `update`, so they stand out.
 
 subroutine swap(inout integer :: a, inout integer :: b)
   integer :: t
   t = a
-  a = b
-  b = t
+  update a = b
+  update b = t
 end subroutine
 
 subroutine swap_real(inout real :: a, inout real :: b)
   real :: t
   t = a
-  a = b
-  b = t
+  update a = b
+  update b = t
 end subroutine
 
 subroutine circle(in real :: r, out real :: area, out real :: circumference)
-  area = 3.14159 * r ** 2
-  circumference = 2.0 * 3.14159 * r
+  update area = 3.14159 * r ** 2
+  update circumference = 2.0 * 3.14159 * r
 end subroutine
 
 subroutine scale(in real :: k, inout real :: xs)
-  xs = xs * k
+  update xs = xs * k
 end subroutine
 
 program demo

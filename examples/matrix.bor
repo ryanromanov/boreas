@@ -13,7 +13,7 @@ end function
 subroutine normalize_rows(inout real :: m)
   integer :: i
   do i = 1, size(m, 1)
-    m(i, :) = m(i, :) / sum(m(i, :))      ! every row now sums to 1
+    update m(i, :) = m(i, :) / sum(m(i, :))      ! every row now sums to 1
   end do
 end subroutine
 

@@ -193,7 +193,11 @@ class Interp:
         elif k is Decl:
             self.declare(s, env)
         elif k is Assign:
-            self.write(self.resolve(s.target, env, s.line), self.eval(s.value, env), s.line)
+            ref = self.resolve(s.target, env, s.line)
+            if (ref[0][INTENT] in ("out", "inout")) != s.update:
+                raise LangError(f"line {s.line}: 'update' must be used exactly when assigning to an "
+                                f"out or inout parameter ('{ref[2]}')")
+            self.write(ref, self.eval(s.value, env), s.line)
         elif k is If:
             for cond, body in s.branches:
                 if self.truth(self.eval(cond, env)):

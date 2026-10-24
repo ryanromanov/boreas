@@ -117,6 +117,27 @@ class FixtureTests(unittest.TestCase):
         text, _ = convert(read(fixture("search.f90")))
         self.assertIn("inout integer :: pos", text)
 
+    def test_writes_to_out_arguments_are_marked_update(self):
+        src = ("subroutine fill(n, t)\n  integer, intent(in) :: n\n  integer, intent(out) :: t\n"
+               "  integer :: i\n  t = 0\n  do i = 1, n\n    t = t + i\n  end do\nend subroutine\n"
+               "program p\n  integer :: k\n  call fill(4, k)\n  print *, k\nend program\n")
+        text, _ = convert(src)
+        self.assertIn("  update t = 0", text)
+        self.assertIn("    update t = t + i", text)
+        self.assertNotIn("update i", text)
+        self.assertEqual(run_bor(text), ["10"])
+
+    def test_loop_over_a_dummy_argument_is_flagged(self):
+        src = ("subroutine f(i)\n  integer, intent(inout) :: i\n  do i = 1, 2\n  end do\nend subroutine\n"
+               "program p\n  integer :: k\n  call f(k)\nend program\n")
+        _, findings = convert(src)
+        self.assertTrue(any("loop variable" in f[2] for f in todos(findings)))
+
+    def test_variable_named_update_is_renamed(self):
+        src = "program p\n  integer :: update\n  update = 3\n  print *, update\nend program\n"
+        text, _ = convert(src)
+        self.assertEqual(run_bor(text), ["3"])
+
     def test_unsupported_constructs_become_todos(self):
         text, findings = convert(read(fixture("unsupported.f90")), "unsupported.f90")
         self.assertEqual(len(todos(findings)), 7)
