@@ -193,6 +193,11 @@ class Scope:
         self.host = None              # enclosing scope, for internal procedures
         self.body = None
         self.skipped = set()          # declared in Fortran we could not translate
+        self.line = 0
+        self.module = None            # for procedures inside a module: that module's scope
+        self.uses = []                # [(module name, names or None for "all", line)]
+        self.access = {}              # module scope: name -> "public" | "private" (explicit ones)
+        self.default_public = True
 
 
 @dataclass
@@ -234,6 +239,8 @@ class FParser:
         self.toks, self.k = [], 0
         self.top_comments = []
         self.once = set()
+        self.modules = {}           # module name -> Scope, in source order
+        self.fn_lines = {}          # id(Function) -> line of its header
 
     # -- reporting
     def note(self, line, msg, once=False):
@@ -504,10 +511,14 @@ class FParser:
                 elif kind in ("function", "subroutine"):
                     self.i += 1
                     self.parse_procedure(toks, it)
-                elif kind in ("module", "submodule"):
+                elif kind == "module":
+                    self.i += 1
+                    name = self.rename(toks[1].text) if len(toks) > 1 else "module"
+                    self.parse_unit("module", Scope("module", name), it)
+                elif kind == "submodule":
                     self.i += 1
                     self.skip_block("module")
-                    raise Unsupported("modules are not supported yet; skipped")
+                    raise Unsupported("submodules are not supported; skipped")
                 else:
                     raise Unsupported("statement outside any program unit")
             except Unsupported as e:
@@ -558,6 +569,9 @@ class FParser:
         if host is not None:
             scope.host = host
             scope.implicit_none = host.implicit_none       # internal procedures inherit it
+            scope.module = host if host.kind == "module" else host.module
+            if scope.module is not None:
+                scope.skipped = set(scope.module.skipped)   # module variables we could not translate
         self.parse_unit(kind, scope, it)
 
     def parse_unit(self, kind, scope, it):
@@ -568,8 +582,9 @@ class FParser:
         toks = self.tokens(self.items[self.i])
         if classify(toks) == ("contains",):
             self.i += 1
-            self.note(it.line, "internal procedures were moved out of their host; "
-                               "variables of the host are not visible to them")
+            if kind != "module":
+                self.note(it.line, "internal procedures were moved out of their host; "
+                                   "variables of the host are not visible to them")
             while True:
                 if self.items[self.i].comment is not None:
                     self.i += 1
@@ -586,7 +601,13 @@ class FParser:
                 else:
                     self.todo(cur.line, f"unsupported statement after contains: {cur.text}")
         self.i += 1                        # the `end` statement
-        self.raw.append(Raw(kind, scope, body, it.line))
+        if kind == "module":
+            scope.line = it.line
+            if scope.name in self.modules:
+                self.todo(it.line, f"module '{scope.name}' is defined more than once")
+            self.modules[scope.name] = scope
+        else:
+            self.raw.append(Raw(kind, scope, body, it.line))
 
     def is_stop(self, toks, stops):
         lab = classify(toks)
@@ -627,7 +648,8 @@ class FParser:
             return None
         for n in iter_nodes(nodes):
             for name in (getattr(n, "name", None), getattr(n, "var", None)):
-                if isinstance(name, str) and name in scope.skipped and not isinstance(n, (Decl, Function)):
+                if isinstance(name, str) and name in scope.skipped and not isinstance(n, (Decl, Function)) \
+                        and name not in scope.decls and name not in scope.dummies:
                     return name
         return None
 
@@ -810,7 +832,7 @@ class FParser:
                     attrs["dimension"] = self.dim_specs()
             elif word in ("parameter", "save", "public", "private", "target", "intrinsic", "value", "optional", "external"):
                 attrs[word] = True
-                if word == "save" and scope.kind != "program":
+                if word == "save" and scope.kind not in ("program", "module"):
                     self.note(it.line, "'save': Fortran keeps these variables between calls, Boreas locals do not")
                 if word == "optional":
                     self.note(it.line, "'optional' dropped: Boreas has no optional arguments")
@@ -849,7 +871,7 @@ class FParser:
                             dims.append(hi)
                 if attrs.get("parameter") and init is None:
                     raise Unsupported(f"constant '{name}' has no value here (implied-shape or set elsewhere)")
-                if not attrs.get("parameter") and init is not None and scope.kind != "program" \
+                if not attrs.get("parameter") and init is not None and scope.kind not in ("program", "module") \
                         and name not in scope.dummies:
                     self.note(line, f"'{name}' is initialised in a declaration inside a procedure: "
                                     f"Fortran implicitly SAVEs it between calls, Boreas re-initialises it each call")
@@ -857,6 +879,12 @@ class FParser:
                                          bool(attrs.get("parameter")), line)
                 if attrs.get("external"):
                     scope.externals.add(name)
+                if scope.kind == "module":
+                    for word in ("public", "private"):
+                        if attrs.get(word):
+                            scope.access[name] = word
+                    if not attrs.get("parameter") and not attrs.get("external"):
+                        scope.skipped.add(name)          # mutable module state is not translated
             except Unsupported as e:
                 out.append(self.todo_comment(it, f"declaration of an entity skipped ({e})"))
                 if self.toks[self.k - 1:self.k] and self.toks[self.k - 1].kind == "name":
@@ -878,10 +906,91 @@ class FParser:
         if self.at_name("iso_fortran_env", "iso_c_binding", "ieee_arithmetic"):
             self.note(it.line, f"'{it.text}' ignored (intrinsic module)")
             return []
-        raise Unsupported("modules are not supported yet")
+        if self.accept_op(","):                       # `use, intrinsic :: ...`
+            raise Unsupported("'use' with attributes is not supported")
+        name = self.rename(self.expect_name())
+        mod = self.modules.get(name)
+        if mod is None:
+            raise Unsupported(f"module '{name}' is not defined earlier in this file")
+        names = None
+        if self.accept_op(","):
+            if not self.at_name("only"):
+                raise Unsupported("renaming imports is not supported")
+            self.k += 1
+            self.expect_op(":")
+            names = []
+            while self.peek() is not None:
+                local = self.rename(self.expect_name())
+                if self.at_op("=>"):
+                    raise Unsupported("renaming imports is not supported")
+                names.append(local)
+                if not self.accept_op(","):
+                    break
+        self.end_of_statement()
+        exports = self.visible(mod)
+        if names is None:
+            scope.skipped |= {n for n in mod.skipped if self.is_public(mod, n)}
+        else:
+            for n in list(names):
+                if n in exports:
+                    continue
+                names.remove(n)
+                if n in mod.skipped and self.is_public(mod, n):
+                    scope.skipped.add(n)
+                    self.todo(it.line, f"'{n}' is a variable of module '{name}'; Boreas modules hold "
+                                       f"constants and procedures only, so uses of it were not translated")
+                else:
+                    self.todo(it.line, f"module '{name}' has no public '{n}' that Boreas can import")
+        scope.uses.append((name, names, it.line))
+        return []
+
+    def st_public(self, it, scope):
+        self.access_statement(scope, "public")
+        return []
+
+    def st_private(self, it, scope):
+        self.access_statement(scope, "private")
+        return []
+
+    def access_statement(self, scope, word):
+        if scope.kind != "module":
+            raise Unsupported(f"'{word}' outside a module")
+        if self.peek() is None:
+            scope.default_public = word == "public"
+            return
+        self.accept_op("::")
+        while self.peek() is not None:
+            if self.at_name("operator", "assignment"):
+                raise Unsupported(f"'{word}' of an operator or assignment")
+            scope.access[self.rename(self.expect_name())] = word
+            if not self.accept_op(","):
+                break
+        self.end_of_statement()
+
+    def is_public(self, mod, name):
+        return mod.access.get(name, "public" if mod.default_public else "private") == "public"
+
+    def own_exports(self, mod):
+        """Public names defined in a module that Boreas can export, in source order."""
+        names = [r.scope.name for r in self.raw if r.scope.module is mod and r.scope.host is mod]
+        names += [n for n, info in mod.decls.items() if info.parameter]
+        return [n for n in names if self.is_public(mod, n)]
+
+    def visible(self, mod, seen=()):
+        """name -> module that defines it, for everything `use mod` brings in (own public
+        names plus public names it imported itself; Fortran re-exports those)."""
+        out = {n: mod.name for n in self.own_exports(mod)}
+        for src, names, _ in mod.uses:
+            other = self.modules.get(src)
+            if other is None or other.name in seen or other is mod:
+                continue
+            for n, origin in self.visible(other, seen + (mod.name,)).items():
+                if (names is None or n in names) and self.is_public(mod, n) and n not in out:
+                    out[n] = origin
+        return out
 
     def st_save(self, it, scope):
-        if scope.kind != "program":
+        if scope.kind not in ("program", "module"):
             self.note(it.line, "'save': Fortran keeps variables between calls, Boreas locals do not")
         while self.peek() is not None:
             self.k += 1
@@ -1086,24 +1195,94 @@ class FParser:
     def finalize(self):
         proc_names = {r.scope.name for r in self.raw if r.kind != "program"}
         functions, program = {}, None
+        modules = {name: self.build_module(ms) for name, ms in self.modules.items()}
+        built = []                                       # (Function | Program, its scope)
         for r in self.raw:
             if r.kind == "program":
                 program = self.build_program(r, proc_names)
-            else:
-                if r.scope.name in functions:
-                    self.todo(r.line, f"'{r.scope.name}' is defined more than once")
-                functions[r.scope.name] = self.build_procedure(r, proc_names)
-        unit = Unit(functions, program)
+                built.append((program, r.scope))
+                continue
+            mod = r.scope.module
+            target = modules[mod.name].functions if mod is not None else functions
+            if r.scope.name in target:
+                self.todo(r.line, f"'{r.scope.name}' is defined more than once")
+            fn = self.build_procedure(r, proc_names)
+            fn.public = mod is not None and r.scope.host is mod and self.is_public(mod, fn.name)
+            self.fn_lines[id(fn)] = r.line
+            target[fn.name] = fn
+            built.append((fn, r.scope))
+        unit = Unit(functions, program, modules)
+        self.link_uses(unit, built)
         self.infer_intents(unit)
         self.check_calls(unit)
         if program is not None:
             while program.body and isinstance(program.body[-1], StopMarker):
                 program.body.pop()
-        for owner in list(unit.functions.values()) + ([program] if program else []):
+        for owner in self.all_functions(unit) + ([program] if program else []):
             for n in iter_nodes(owner.body):
                 if isinstance(n, StopMarker):
                     self.todo(n.line, "'stop' ends the program early; it was not translated, so execution continues")
         return unit
+
+    def all_functions(self, unit):
+        return list(unit.functions.values()) + [f for m in unit.modules.values() for f in m.functions.values()]
+
+    def build_module(self, ms):
+        consts = []
+        mod = Module(ms.name, [], consts, {}, ms.line, list(ms.comments))
+        for name, info in ms.decls.items():
+            if name in ms.externals:
+                continue
+            if info.parameter:
+                consts.append(Decl(info.type, name, info.dims, info.init, info.line, True,
+                                   self.is_public(ms, name)))
+            else:
+                msg = (f"module variable '{name}' is not translated: Boreas modules hold constants "
+                       f"and procedures only, and code that uses '{name}' became a TODO")
+                self.todo(info.line, msg)
+                mod.comments.append("TODO(convert): " + msg)
+        return mod
+
+    def references(self, nodes):
+        return {n.name for n in iter_nodes(nodes) if isinstance(n, (Var, Apply, Call))}
+
+    def make_uses(self, entries, refs):
+        """Fortran `use` entries -> explicit Boreas imports. `use m` (everything) becomes the
+        names this code actually refers to; names a module re-exports come from where they are defined."""
+        merged = {}
+        for modname, names, line in entries:
+            vis = self.visible(self.modules[modname])
+            wanted = [n for n in vis if n in refs] if names is None else [n for n in names if n in vis]
+            for n in wanted:
+                use = merged.setdefault(vis[n], Use(vis[n], [], line))
+                if n not in use.names:
+                    use.names.append(n)
+        return list(merged.values())
+
+    def link_uses(self, unit, built):
+        by_module = {}
+        for owner, scope in built:
+            if isinstance(owner, Program):
+                owner.uses = self.make_uses(scope.uses, self.references(owner.body))
+            else:
+                owner.uses = self.make_uses(scope.uses, self.references(owner.body))
+                if scope.module is not None:
+                    by_module.setdefault(scope.module.name, []).append(owner)
+        for name, ms in self.modules.items():
+            mod = unit.modules[name]
+            refs = self.references([d.init for d in mod.consts])
+            for f in by_module.get(name, []):
+                refs |= self.references(f.body)
+            mod.uses = self.make_uses(ms.uses, refs)
+
+    def visible_procs(self, unit, f):
+        """The procedures `f` can call: its siblings plus whatever it (or its module) imports."""
+        mod = next((m for m in unit.modules.values() if m.functions.get(f.name) is f), None)
+        procs = dict(mod.functions if mod else unit.functions)
+        for use in f.uses + (mod.uses if mod else []):
+            src = unit.modules[use.module].functions
+            procs.update({n: src[n] for n in use.names if n in src})
+        return procs
 
     def local_decls(self, scope, body, proc_names=()):
         decls = []
@@ -1117,9 +1296,11 @@ class FParser:
         return decls
 
     def implicit_decls(self, scope, body, proc_names, line):
-        known = set(scope.decls) | set(scope.dummies) | proc_names
+        known = set(scope.decls) | set(scope.dummies) | proc_names | self.imported_names(scope)
+        if scope.module is not None:
+            known |= set(scope.module.decls)
         host_names = set()
-        if scope.host is not None:
+        if scope.host is not None and scope.host.kind != "module":
             h = scope.host
             host_names = set(h.decls) | set(h.dummies)
             host_names |= {n.name for n in iter_nodes(h.body) if isinstance(n, Var)}
@@ -1146,6 +1327,14 @@ class FParser:
             self.note(line, f"'{name}' had no declaration; declared as {typ} using Fortran's implicit rules")
             out.append(Decl(typ, name, None, None, line))
         return out
+
+    def imported_names(self, scope):
+        names, s = set(), scope
+        while s is not None:
+            for modname, listed, _ in s.uses:
+                names |= set(self.visible(self.modules[modname])) if listed is None else set(listed)
+            s = s.host
+        return names
 
     def build_program(self, r, proc_names):
         s = r.scope
@@ -1221,27 +1410,27 @@ class FParser:
     # -- parameter modes
     def infer_intents(self, unit):
         """Dummy arguments without `intent` get one from how the body uses them."""
-        procs = unit.functions
-        lines = {r.scope.name: r.line for r in self.raw}
-        inferred = {(f.name, p[1]) for f in procs.values() for p in f.params if p[2] is None}
+        funcs = self.all_functions(unit)
+        visible = {id(f): self.visible_procs(unit, f) for f in funcs}
+        inferred = {(id(f), p[1]) for f in funcs for p in f.params if p[2] is None}
         for _ in range(10):                        # callers depend on callees: iterate to a fixed point
             changed = False
-            for f in procs.values():
+            for f in funcs:
                 for p in f.params:
-                    if (f.name, p[1]) not in inferred:
+                    if (id(f), p[1]) not in inferred:
                         continue
-                    reads, writes, sure = self.usage(f.body, p[1], procs)
+                    reads, writes, sure = self.usage(f.body, p[1], visible[id(f)])
                     new = "in" if not writes else ("out" if sure and not reads else "inout")
                     if p[2] != new:
                         p[2], changed = new, True
             if not changed:
                 break
-        for f in procs.values():
-            line = lines.get(f.name, 0)
+        for f in funcs:
+            line = self.fn_lines.get(id(f), 0)
             for p in f.params:
                 if p[2] is None:
                     p[2] = "in"
-                if (f.name, p[1]) in inferred and p[2] != "in":
+                if (id(f), p[1]) in inferred and p[2] != "in":
                     f.comments.append(f"note: argument '{p[1]}' has no intent in the Fortran; "
                                       f"'{p[2]}' was inferred from how the body uses it")
                     self.note(line, f"{f.name}: argument '{p[1]}' had no intent; inferred '{p[2]}'")
@@ -1250,7 +1439,7 @@ class FParser:
                                       f"functions only take 'in' arguments, so make it a subroutine")
                     self.todo(line, f"function '{f.name}' modifies argument '{p[1]}'")
                     p[2] = "in"
-        for f in procs.values():                   # writes that reach the caller are marked `update`
+        for f in funcs:                            # writes that reach the caller are marked `update`
             modes = {p[1]: p[2] for p in f.params}
             for n in iter_nodes(f.body):
                 if isinstance(n, Assign) and modes.get(n.target.name) in ("out", "inout"):
@@ -1321,18 +1510,26 @@ class FParser:
         return counts[0], counts[1], counts[2] > 0
 
     def check_calls(self, unit):
-        known = set(unit.functions) | set(BUILTINS) | set(ELEMENTAL)
-        scopes = [(f.name, f) for f in unit.functions.values()]
+        scopes = [(f, self.visible_procs(unit, f), f.uses) for f in self.all_functions(unit)]
         if unit.program:
-            scopes.append((unit.program.name, unit.program))
-        for owner, node in scopes:
-            declared = {d.name for d in iter_nodes(node.body) if isinstance(d, Decl)}
+            p = unit.program
+            procs = dict(unit.functions)
+            for use in p.uses:
+                src = unit.modules[use.module].functions
+                procs.update({n: src[n] for n in use.names if n in src})
+            scopes.append((p, procs, p.uses))
+        for node, procs, uses in scopes:
+            mod = next((m for m in unit.modules.values() if m.functions.get(node.name) is node), None)
+            imported = {n for u in uses + (mod.uses if mod else []) for n in u.names}
+            declared = {d.name for d in iter_nodes(node.body) if isinstance(d, Decl)} | imported
+            declared |= {d.name for d in mod.consts} if mod else set()
             declared |= {p[1] for p in getattr(node, "params", [])}
+            known = set(procs) | set(BUILTINS) | set(ELEMENTAL)
             seen = set()
             for n in iter_nodes(node.body):
                 if isinstance(n, Apply) and n.name not in declared and n.name not in known:
                     what = "function"
-                elif isinstance(n, Call) and n.name not in unit.functions:
+                elif isinstance(n, Call) and n.name not in procs:
                     what = "subroutine"
                 else:
                     continue
