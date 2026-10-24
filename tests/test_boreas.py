@@ -44,12 +44,12 @@ class Tests(unittest.TestCase):
 SWAP = """subroutine swap(inout integer :: a, inout integer :: b)
   integer :: t
   t = a
-  a = b
-  b = t
+  update a = b
+  update b = t
 end subroutine"""
 
 AREA = """subroutine circle(in real :: r, out real :: area)
-  area = 3.0 * r * r
+  update area = 3.0 * r * r
 end subroutine"""
 
 
@@ -65,13 +65,13 @@ class SubroutineTests(unittest.TestCase):
 
     def test_array_element_and_whole_array(self):
         sub = """subroutine bump(inout integer :: v)
-  v = v + 1
+  update v = v + 1
 end subroutine"""
         self.assertEqual(run("integer :: a(3) = [1, 2, 3]\ncall bump(a(2))\nprint a", sub), ["[1, 3, 3]"])
 
     def test_whole_array_inout(self):
         sub = """subroutine double(inout integer :: xs)
-  xs = xs * 2
+  update xs = xs * 2
 end subroutine"""
         self.assertEqual(run("integer :: a(3) = [1, 2, 3]\ncall double(a)\nprint a", sub), ["[2, 4, 6]"])
 
@@ -95,7 +95,7 @@ end subroutine"""
             run("integer :: x\ncall lazy(x)", sub)
 
     def test_out_cannot_be_read_first(self):
-        sub = "subroutine peek(out integer :: n)\n n = n + 1\nend subroutine"
+        sub = "subroutine peek(out integer :: n)\n update n = n + 1\nend subroutine"
         with self.assertRaisesRegex(LangError, "before it is assigned"):
             run("integer :: x\ncall peek(x)", sub)
 
@@ -108,7 +108,7 @@ end subroutine"""
             run("integer :: x = 1\ncall swap(x, x)", SWAP)
 
     def test_aliasing_with_in_argument_rejected(self):
-        sub = "subroutine add(in integer :: a, inout integer :: b)\n b = b + a\nend subroutine"
+        sub = "subroutine add(in integer :: a, inout integer :: b)\n update b = b + a\nend subroutine"
         with self.assertRaisesRegex(LangError, "alias"):
             run("integer :: x = 1\ncall add(x, x)", sub)
 
@@ -143,7 +143,7 @@ end subroutine"""
             run("call s()", sub)
 
     def test_early_return(self):
-        sub = "subroutine s(out integer :: n)\n n = 1\n return\n n = 2\nend subroutine"
+        sub = "subroutine s(out integer :: n)\n update n = 1\n return\n update n = 2\nend subroutine"
         self.assertEqual(run("integer :: x\ncall s(x)\nprint x", sub), ["1"])
 
     def test_explicit_in_on_function(self):
@@ -235,10 +235,10 @@ class MultiDimTests(unittest.TestCase):
 
     def test_pass_matrix_and_section_to_subroutine(self):
         sub = """subroutine zero_row(inout integer :: r)
-  r = 0
+  update r = 0
 end subroutine
 subroutine total(integer :: a, out integer :: t)
-  t = sum(a)
+  update t = sum(a)
 end subroutine"""
         out = run(M + "integer :: t\ncall zero_row(m(2, :))\ncall total(m, t)\nprint m, t", sub)
         self.assertEqual(out, ["[[1, 3, 5], [0, 0, 0]] 9"])
@@ -254,7 +254,7 @@ end subroutine"""
             run(M + "call two(m(1, :), m(:, 1))", sub)
 
     def test_disjoint_sections_do_not_alias(self):
-        sub = "subroutine two(inout integer :: a, inout integer :: b)\n a = 7\n b = 8\nend subroutine"
+        sub = "subroutine two(inout integer :: a, inout integer :: b)\n update a = 7\n update b = 8\nend subroutine"
         out = run(M + "call two(m(1, :), m(2, :))\nprint m", sub)
         self.assertEqual(out, ["[[7, 7, 7], [8, 8, 8]]"])
 
@@ -307,7 +307,7 @@ class ConstTests(unittest.TestCase):
             run("const integer :: i = 1\ndo i = 1, 2\nend do")
 
     def test_cannot_pass_a_constant_as_out_or_inout(self):
-        sub = "subroutine bump(inout integer :: v)\n v = v + 1\nend subroutine"
+        sub = "subroutine bump(inout integer :: v)\n update v = v + 1\nend subroutine"
         with self.assertRaisesRegex(LangError, "constant and cannot be passed as inout"):
             run("const integer :: n = 1\ncall bump(n)", sub)
 
@@ -332,6 +332,46 @@ class ConstTests(unittest.TestCase):
         from boreas.parser import parse
         src = "program p\n  const integer :: a = 1, b = 2\n  const real :: c = 1.5\n  integer :: d = 3\nend program p\n"
         self.assertEqual(to_source(parse(src)), src)
+
+
+class UpdateTests(unittest.TestCase):
+    def test_write_to_out_needs_update(self):
+        sub = "subroutine f(out integer :: n)\n n = 1\nend subroutine"
+        with self.assertRaisesRegex(LangError, "write 'update n = ...'"):
+            run("integer :: x\ncall f(x)", sub)
+
+    def test_write_to_inout_array_element_needs_update(self):
+        sub = "subroutine f(inout integer :: a)\n a(1) = 1\nend subroutine"
+        with self.assertRaisesRegex(LangError, "write 'update a = ...'"):
+            run("integer :: x(2) = [0, 0]\ncall f(x)", sub)
+
+    def test_update_array_element(self):
+        sub = "subroutine f(inout integer :: a)\n update a(2) = 9\nend subroutine"
+        self.assertEqual(run("integer :: x(2) = [0, 0]\ncall f(x)\nprint x", sub), ["[0, 9]"])
+
+    def test_update_on_local_rejected(self):
+        with self.assertRaisesRegex(LangError, "local variable"):
+            run("integer :: x = 0\nupdate x = 1")
+
+    def test_update_on_in_parameter_rejected(self):
+        sub = "subroutine f(integer :: n)\n update n = 1\nend subroutine"
+        with self.assertRaisesRegex(LangError, "'n' is an 'in' parameter"):
+            run("call f(1)", sub)
+
+    def test_update_inside_nested_blocks(self):
+        sub = ("subroutine f(inout integer :: t)\n integer :: i\n do i = 1, 3\n"
+               "  if i > 1 then\n   update t = t + i\n  end if\n end do\nend subroutine")
+        self.assertEqual(run("integer :: s = 0\ncall f(s)\nprint s", sub), ["5"])
+
+    def test_missing_update_is_found_without_running_it(self):
+        sub = "subroutine f(out integer :: n)\n if false then\n  n = 1\n end if\nend subroutine"
+        with self.assertRaisesRegex(LangError, "write 'update n = ...'"):
+            run("print 1", sub)
+
+    def test_loop_variable_cannot_be_a_parameter(self):
+        sub = "subroutine f(inout integer :: i)\n do i = 1, 2\n end do\nend subroutine"
+        with self.assertRaisesRegex(LangError, "loop variable"):
+            run("print 1", sub)
 
 
 if __name__ == "__main__":

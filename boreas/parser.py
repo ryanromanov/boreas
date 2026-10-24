@@ -28,7 +28,7 @@ class Binary: op: str; left: object; right: object
 class Decl:   # dims: list of exprs or None
     type: str; name: str; dims: object; init: object; line: int; const: bool = False
 @dataclass
-class Assign: target: object; value: object; line: int
+class Assign: target: object; value: object; line: int; update: bool = False
 @dataclass
 class If: branches: list; orelse: list   # branches: [(cond, body)]
 @dataclass
@@ -66,6 +66,34 @@ class Program:
     comments: list = field(default_factory=list)
 @dataclass
 class Unit: functions: dict; program: Program   # program is None for a library-only file
+
+
+def check_writes(body, params):
+    """`update` marks exactly the writes that reach the caller: assignments to
+    out/inout parameters. `params` maps parameter name -> intent."""
+    for s in body:
+        if isinstance(s, list):
+            check_writes(s, params)
+        elif isinstance(s, Assign):
+            name = s.target.name
+            escapes = params.get(name) in ("out", "inout")
+            if escapes and not s.update:
+                raise LangError(f"line {s.line}: '{name}' is an {params[name]} parameter, so the caller sees "
+                                f"this write; write 'update {name} = ...'")
+            if s.update and not escapes:
+                what = "an 'in' parameter" if params.get(name) == "in" else "a local variable"
+                raise LangError(f"line {s.line}: 'update' is for out and inout parameters, but "
+                                f"'{name}' is {what}")
+        elif isinstance(s, If):
+            for _, b in s.branches:
+                check_writes(b, params)
+            check_writes(s.orelse, params)
+        elif isinstance(s, Do):
+            if s.var in params:
+                raise LangError(f"line {s.line}: loop variable '{s.var}' cannot be a parameter")
+            check_writes(s.body, params)
+        elif isinstance(s, DoWhile):
+            check_writes(s.body, params)
 
 
 # --- Parser ------------------------------------------------------------
@@ -141,6 +169,7 @@ class Parser:
         self.expect("program")
         if self.tok.kind == "ident":
             self.next()
+        check_writes(body, {})
         return Program(name, body)
 
     def procedure(self):
@@ -156,6 +185,7 @@ class Parser:
         self.expect(kind)
         if self.tok.kind == "ident":
             self.next()
+        check_writes(body, {n: intent for _, n, intent in params})
         return Function(name, params, ret, body, is_sub)
 
     def params(self, is_sub):
@@ -240,13 +270,15 @@ class Parser:
         if self.at("cycle"):
             self.next(); self.newline()
             return Cycle()
+        update = bool(self.accept("update"))
         e = self.expr()
-        if self.accept("="):
+        if update or self.at("="):
             if not isinstance(e, (Var, Apply)):
                 self.error("cannot assign to this expression")
+            self.expect("=")
             v = self.expr()
             self.newline()
-            return Assign(e, v, t.line)
+            return Assign(e, v, t.line, update)
         self.newline()
         return ExprStmt(e)
 

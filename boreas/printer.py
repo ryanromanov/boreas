@@ -117,7 +117,7 @@ def stmt(s, depth):
     if isinstance(s, Comment):
         return [pad + _comment(s.text)]
     if k is Assign:
-        return [f"{pad}{expr(s.target)} = {expr(s.value)}"]
+        return [f"{pad}{'update ' if s.update else ''}{expr(s.target)} = {expr(s.value)}"]
     if k is Print:
         if not s.args:
             raise LangError("print needs at least one value")

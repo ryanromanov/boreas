@@ -15,7 +15,7 @@ from .printer import to_source
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
 # so a Fortran variable with one of these names is renamed.
-RESERVED = {"const", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
+RESERVED = {"const", "update", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "call", "return", "exit", "cycle"}
 
@@ -1250,6 +1250,15 @@ class FParser:
                                       f"functions only take 'in' arguments, so make it a subroutine")
                     self.todo(line, f"function '{f.name}' modifies argument '{p[1]}'")
                     p[2] = "in"
+        for f in procs.values():                   # writes that reach the caller are marked `update`
+            modes = {p[1]: p[2] for p in f.params}
+            for n in iter_nodes(f.body):
+                if isinstance(n, Assign) and modes.get(n.target.name) in ("out", "inout"):
+                    n.update = True
+                elif isinstance(n, Do) and n.var in modes:
+                    msg = f"loop variable '{n.var}' is a dummy argument; Boreas loop variables must be locals"
+                    f.comments.append("TODO(convert): " + msg)
+                    self.todo(n.line, msg)
 
     def usage(self, body, name, procs):
         """Count (reads, writes) of `name` in a statement list."""
