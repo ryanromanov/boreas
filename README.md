@@ -24,6 +24,14 @@ Currently a tree-walking interpreter written in Python.
       print "squares:", ys * ys, square(2.5)
     end program
 
+## Constants
+
+    const real :: pi = 3.14159
+    const integer :: primes(3) = [2, 3, 5]
+
+A `const` needs a value and can never be assigned, used as a `do` variable, or
+passed as an `out`/`inout` argument. Fortran's `parameter` converts to `const`.
+
 ## Arrays
 
 Arrays have any number of dimensions, 1-based and stored column-major like
@@ -65,6 +73,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
 
 - `! TODO(convert): ...` comments quote any line that could not be translated
   (modules, `select case`, `allocate`, derived types, `goto`, `read`, ...).
+- `parameter` constants become `const`.
 - Missing declarations are filled in using Fortran's implicit typing rules.
 - Dummy arguments without `intent` get `in`, `out` or `inout` inferred from the
   body, with a note above the procedure.

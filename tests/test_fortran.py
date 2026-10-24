@@ -131,6 +131,24 @@ class TranslationTests(unittest.TestCase):
         text, _ = conv("print *, 1.eq.1, 2.gt.1, 3.ne.3", "")
         self.assertIn("print 1 == 1, 2 > 1, 3 /= 3", text)
 
+    def test_parameter_becomes_const(self):
+        text, findings = conv("integer, parameter :: n = 4, sq(2) = (/ 1, 4 /)\n  real, parameter :: half = 0.5\n"
+                              "  integer :: k\n  k = n\n  print *, k, sq, half", "")
+        self.assertIn("const integer :: n = 4, sq(2) = [1, 4]", text)
+        self.assertIn("const real :: half = 0.5", text)
+        self.assertFalse(any("ordinary variables" in f[2] for f in findings))
+        self.assertEqual(run_bor(text), ["4 [1, 4] 0.5"])
+
+    def test_assigning_a_parameter_fails_loudly_in_boreas(self):
+        text, _ = conv("integer, parameter :: n = 4\n  print *, n", "")
+        with self.assertRaisesRegex(LangError, "constant"):
+            run_bor(text.replace("print n", "n = 5"))
+
+    def test_a_fortran_variable_called_const_is_renamed(self):
+        text, _ = conv("integer :: const\n  const = 2\n  print *, const", "")
+        self.assertIn("const_ = 2", text)
+        self.assertEqual(run_bor(text), ["2"])
+
     def test_d_exponents_and_kinds(self):
         text, _ = conv("print *, 1.5d0, 2.0e3, 3.0_8, 4_8", "")
         self.assertIn("print 1.5, 2000.0, 3.0, 4", text)

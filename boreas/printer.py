@@ -70,6 +70,10 @@ def _params(f):
     return ", ".join(out)
 
 
+def _decl_head(d):
+    return ("const " if d.const else "") + d.type
+
+
 def _decl_entity(d):
     s = d.name
     if d.dims is not None:
@@ -95,10 +99,11 @@ def stmts(body, depth=1):
         if isinstance(s, Decl):
             j = i
             group = []
-            while j < len(flat) and isinstance(flat[j], Decl) and flat[j].type == s.type and len(group) < 6:
+            while (j < len(flat) and isinstance(flat[j], Decl) and flat[j].type == s.type
+                   and flat[j].const == s.const and len(group) < 6):
                 group.append(flat[j])
                 j += 1
-            lines.append(f"{pad}{s.type} :: " + ", ".join(_decl_entity(d) for d in group))
+            lines.append(f"{pad}{_decl_head(s)} :: " + ", ".join(_decl_entity(d) for d in group))
             i = j
             continue
         lines.extend(stmt(s, depth))
@@ -145,7 +150,7 @@ def stmt(s, depth):
     if k is DoWhile:
         return [f"{pad}do while {expr(s.cond)}"] + stmts(s.body, depth + 1) + [pad + "end do"]
     if k is Decl:
-        return [f"{pad}{s.type} :: {_decl_entity(s)}"]
+        return [f"{pad}{_decl_head(s)} :: {_decl_entity(s)}"]
     raise LangError(f"cannot print statement {k.__name__}")
 
 

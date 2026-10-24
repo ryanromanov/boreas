@@ -157,7 +157,7 @@ ELEMENTAL = {
 
 # A variable slot is [type, value, is_array, intent]. `value` is None until
 # assigned (scalars only; an array always exists); `intent` is None for
-# ordinary locals, else "in" / "out" / "inout".
+# ordinary locals, "const" for constants, else "in" / "out" / "inout".
 TYPE, VALUE, IS_ARRAY, INTENT = range(4)
 
 # A reference to something assignable is (slot, subs, name). `subs` is None for
@@ -248,7 +248,7 @@ class Interp:
             val = None
             if s.init is not None:
                 val = coerce(s.type, self.eval(s.init, env), where)
-            env[s.name] = [s.type, val, False, None]
+            env[s.name] = [s.type, val, False, "const" if s.const else None]
             return
         shape = [self.eval(d, env) for d in s.dims]
         if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in shape):
@@ -265,7 +265,7 @@ class Interp:
                 data = [coerce(s.type, x, where) for x in init.data]
             else:
                 data = [coerce(s.type, init, where)] * n
-        env[s.name] = [s.type, Array(shape, data), True, None]
+        env[s.name] = [s.type, Array(shape, data), True, "const" if s.const else None]
 
     def show(self, v):
         if isinstance(v, bool): return "true" if v else "false"
@@ -339,6 +339,8 @@ class Interp:
         slot, subs, name = ref
         if slot[INTENT] == "in":
             raise LangError(f"line {line}: '{name}' is an 'in' parameter and cannot be assigned")
+        if slot[INTENT] == "const":
+            raise LangError(f"line {line}: '{name}' is a constant and cannot be assigned")
         where = f"line {line}"
         if not slot[IS_ARRAY]:
             slot[VALUE] = coerce(slot[TYPE], v, where)
@@ -502,8 +504,9 @@ class Interp:
                 continue
             ref = self.resolve(a, env, s.line)
             slot = ref[0]
-            if slot[INTENT] == "in":
-                raise LangError(f"line {s.line}: '{ref[2]}' is an 'in' parameter and cannot be passed as {intent}")
+            if slot[INTENT] in ("in", "const"):
+                what = "an 'in' parameter" if slot[INTENT] == "in" else "a constant"
+                raise LangError(f"line {s.line}: '{ref[2]}' is {what} and cannot be passed as {intent}")
             if slot[TYPE] != typ:
                 raise LangError(f"line {s.line}: argument '{name}' is {typ} but '{ref[2]}' is {slot[TYPE]}")
             outs.append((n, ref))
