@@ -15,7 +15,7 @@ from .printer import to_source
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
 # so a Fortran variable with one of these names is renamed.
-RESERVED = {"const", "update", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
+RESERVED = {"const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "call", "return", "exit", "cycle"}
 

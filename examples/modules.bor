@@ -1,0 +1,46 @@
+! A module groups constants and procedures. Everything in it is private
+! unless marked `public`, and a program imports exactly the names it uses.
+
+module geometry
+  public const real :: pi = 3.14159
+  const real :: unit_square = 1.0          ! private: only this module can see it
+
+  public function area(real :: r) -> real
+    return pi * r ** 2
+  end function
+
+  public function ratio(real :: r) -> real
+    return area(r) / scale_factor(unit_square)
+  end function
+
+  function scale_factor(real :: x) -> real   ! private helper
+    return x * 1.0
+  end function
+end module
+
+module counting
+  use geometry: pi
+
+  public subroutine tally(integer :: n, out integer :: evens, out real :: tau)
+    integer :: i
+    update evens = 0
+    do i = 1, n
+      if mod(i, 2) == 0 then
+        update evens = evens + 1
+      end if
+    end do
+    update tau = 2.0 * pi
+  end subroutine
+end module
+
+program demo
+  use geometry: area, pi
+  use counting: tally
+  integer :: e
+  real :: t
+
+  print "area of r=2:", area(2.0)
+  print "pi:", pi
+  call tally(10, e, t)
+  print "evens:", e, " tau:", t
+end program

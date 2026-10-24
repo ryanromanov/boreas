@@ -67,6 +67,30 @@ Parameters default to `in` and cannot be assigned. Functions only take
 `in` parameters. An output variable may not be passed twice in one call, and an
 `out` parameter must be assigned before the subroutine returns.
 
+## Modules
+
+A module groups constants and procedures. Everything in it is private unless
+marked `public`, and a program (or another module, or a single procedure) imports
+exactly the names it uses:
+
+    module geometry
+      public const real :: pi = 3.14159
+
+      public function area(real :: r) -> real
+        return pi * r ** 2
+      end function
+    end module
+
+    program demo
+      use geometry: area, pi
+      print area(2.0)
+    end program
+
+Nothing is visible without a `use`. Importing a private or missing name is an
+error, an imported constant is read-only, and modules cannot import each other in
+a cycle. Modules hold only constants and procedures for now (no mutable module
+variables). See `examples/modules.bor`.
+
 ## Converting Fortran
 
     boreas convert legacy.f90 -o legacy.bor

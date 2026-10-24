@@ -374,5 +374,108 @@ class UpdateTests(unittest.TestCase):
             run("print 1", sub)
 
 
+GEO = """module geometry
+  public const real :: pi = 3.0
+  const real :: secret = 7.0
+  public function area(real :: r) -> real
+    return pi * r ** 2
+  end function
+  public function bigger(real :: r) -> real
+    return area(r) + helper(r)
+  end function
+  function helper(real :: r) -> real
+    return r + secret
+  end function
+end module"""
+
+
+class ModuleTests(unittest.TestCase):
+    def test_import_function_and_constant(self):
+        self.assertEqual(run("use geometry: area, pi\nprint area(2.0), pi", GEO), ["12.0 3.0"])
+
+    def test_module_function_uses_private_names_internally(self):
+        self.assertEqual(run("use geometry: bigger\nprint bigger(1.0)", GEO), ["11.0"])
+
+    def test_private_name_cannot_be_imported(self):
+        with self.assertRaisesRegex(LangError, "'helper' is private to module 'geometry'"):
+            run("use geometry: helper\nprint 1", GEO)
+
+    def test_private_constant_cannot_be_imported(self):
+        with self.assertRaisesRegex(LangError, "'secret' is private"):
+            run("use geometry: secret\nprint 1", GEO)
+
+    def test_unknown_name_and_unknown_module(self):
+        with self.assertRaisesRegex(LangError, "module 'geometry' has no 'nope'"):
+            run("use geometry: nope\nprint 1", GEO)
+        with self.assertRaisesRegex(LangError, "no module named 'ghost'"):
+            run("use ghost: x\nprint 1")
+
+    def test_nothing_is_visible_without_an_import(self):
+        with self.assertRaisesRegex(LangError, "unknown function or array 'area'"):
+            run("print area(1.0)", GEO)
+
+    def test_imported_constant_is_read_only(self):
+        with self.assertRaisesRegex(LangError, "constant and cannot be assigned"):
+            run("use geometry: pi\npi = 4.0", GEO)
+
+    def test_name_clash_with_import(self):
+        with self.assertRaisesRegex(LangError, "'pi' already declared"):
+            run("use geometry: pi\nreal :: pi = 1.0", GEO)
+
+    def test_modules_can_import_from_modules(self):
+        more = GEO + """
+module more
+  use geometry: area
+  public function twice(real :: r) -> real
+    return 2.0 * area(r)
+  end function
+end module"""
+        self.assertEqual(run("use more: twice\nprint twice(1.0)", more), ["6.0"])
+
+    def test_import_cycle_rejected(self):
+        src = ("module a\n use b: g\n public function f() -> integer\n  return 1\n end function\nend module\n"
+               "module b\n use a: f\n public function g() -> integer\n  return 2\n end function\nend module")
+        with self.assertRaisesRegex(LangError, "cycle"):
+            run("print 1", src)
+
+    def test_constants_can_build_on_imports(self):
+        src = GEO + "\nmodule more\n use geometry: pi\n public const real :: tau = 2.0 * pi\nend module"
+        self.assertEqual(run("use more: tau\nprint tau", src), ["6.0"])
+
+    def test_module_holds_only_constants_and_procedures(self):
+        with self.assertRaisesRegex(LangError, "declare this with 'const'"):
+            run("print 1", "module m\n integer :: counter = 0\nend module")
+
+    def test_private_keyword_rejected(self):
+        with self.assertRaisesRegex(LangError, "private unless marked 'public'"):
+            run("print 1", "module m\n private function f() -> integer\n  return 1\n end function\nend module")
+
+    def test_public_outside_module_rejected(self):
+        with self.assertRaisesRegex(LangError, "only for the contents of a module"):
+            run("print 1", "public function f() -> integer\n return 1\nend function")
+
+    def test_duplicate_names_in_module(self):
+        src = "module m\n const integer :: f = 1\n function f() -> integer\n  return 1\n end function\nend module"
+        with self.assertRaisesRegex(LangError, "'f' is defined more than once in module 'm'"):
+            run("print 1", src)
+
+    def test_update_works_in_module_subroutines(self):
+        src = "module m\n public subroutine put(out integer :: n)\n  update n = 5\n end subroutine\nend module"
+        self.assertEqual(run("use m: put\ninteger :: x\ncall put(x)\nprint x", src), ["5"])
+
+    def test_procedure_can_import_for_itself(self):
+        src = GEO + "\nfunction f(real :: r) -> real\n use geometry: area\n return area(r)\nend function"
+        self.assertEqual(run("print f(1.0)", src), ["3.0"])
+        with self.assertRaisesRegex(LangError, "unknown function or array 'area'"):
+            run("use geometry: area\nprint f(1.0)", src.replace("use geometry: area\n return", " return"))
+
+    def test_printer_round_trips_modules(self):
+        from boreas.parser import parse
+        from boreas.printer import to_source
+        text = to_source(parse(GEO + "\nprogram p\n use geometry: area\n print area(1.0)\nend program"))
+        self.assertIn("  public function area(real :: r) -> real", text)
+        self.assertEqual(to_source(parse(text)), text)
+
+
 if __name__ == "__main__":
     unittest.main()
