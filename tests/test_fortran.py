@@ -140,7 +140,7 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(len(todos(findings)), 7)
         self.assertEqual(text.count("TODO(convert)"), 7 + 1)      # + the summary line in the header
         self.assertEqual(run_bor(text), ["total: 6", "end"])      # the translatable parts still run
-        for line in ("select case", "allocate(buf(3))", "p%x = 1.0"):
+        for line in ("associate (t => total)", "allocate(buf(3))", "p%x = 1.0"):
             self.assertIn(line, text)                               # the original line is quoted
 
 

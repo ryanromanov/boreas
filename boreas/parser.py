@@ -23,6 +23,10 @@ class Apply: name: str; args: list; line: int   # index, slice, or call
 class Unary: op: str; operand: object
 @dataclass
 class Binary: op: str; left: object; right: object
+@dataclass
+class Arm: values: object; value: object; line: int   # one `case ... then expr` of a select expression
+@dataclass
+class SelectExpr: subject: object; arms: list; line: int   # exhaustive: one arm has values None (`default`)
 
 @dataclass
 class Decl:   # dims: list of exprs or None
@@ -38,6 +42,19 @@ class Do:
     label: str = None          # `outer: do ...` / `end do outer`
 @dataclass
 class DoWhile: cond: object; body: list; label: str = None; line: int = 0
+@dataclass
+class Case:
+    values: object      # a list of constants and Slice ranges, or None for `case default`
+    body: list
+    line: int
+@dataclass
+class Select:
+    subject: object
+    cases: list
+    line: int
+    flow: bool = False  # `select case fallthrough`: a finished body continues into the next case
+@dataclass
+class Break: pass       # leaves the nearest enclosing select statement
 @dataclass
 class Print: args: list
 @dataclass
@@ -107,6 +124,9 @@ def check_writes(body, params):
             for _, b in s.branches:
                 check_writes(b, params)
             check_writes(s.orelse, params)
+        elif isinstance(s, Select):
+            for c in s.cases:
+                check_writes(c.body, params)
         elif isinstance(s, Do):
             if s.var in params:
                 raise LangError(f"line {s.line}: loop variable '{s.var}' cannot be a parameter")
@@ -121,6 +141,8 @@ def sub_bodies(s):
         return [b for _, b in s.branches] + [s.orelse]
     if isinstance(s, (Do, DoWhile)):
         return [s.body]
+    if isinstance(s, Select):
+        return [c.body for c in s.cases]
     return []
 
 
@@ -148,10 +170,92 @@ def check_loops(body, enclosing=()):
                 check_loops(b, inner)
 
 
+# --- select case: checks shared by the parser and the interpreter ---------
+NOT_LITERAL = object()
+
+
+def literal_value(e):
+    """The value of a literal case value (a number, string, logical or signed number), else NOT_LITERAL."""
+    if isinstance(e, (Num, Str, Bool)):
+        return e.value
+    if isinstance(e, Unary) and e.op in "+-" and isinstance(e.operand, Num):
+        return -e.operand.value if e.op == "-" else e.operand.value
+    return NOT_LITERAL
+
+
+def literal_type(v):
+    return "logical" if isinstance(v, bool) else "integer" if isinstance(v, int) else \
+           "real" if isinstance(v, float) else "string"
+
+
+def show_value(v):
+    return ("true" if v else "false") if isinstance(v, bool) else f'"{v}"' if isinstance(v, str) else str(v)
+
+
+def show_range(lo, hi, point):
+    if point:
+        return show_value(lo)
+    return (show_value(lo) if lo is not None else "") + ":" + (show_value(hi) if hi is not None else "")
+
+
+def check_overlap(entries, line):
+    """`entries` are (lo, hi, is_point) with lo/hi None for an open end; none may share a value."""
+    for n, (lo1, hi1, p1) in enumerate(entries):
+        for lo2, hi2, p2 in entries[n + 1:]:
+            if (lo1 is None or hi2 is None or lo1 <= hi2) and (lo2 is None or hi1 is None or lo2 <= hi1):
+                raise LangError(f"line {line}: case values {show_range(lo1, hi1, p1)} and "
+                                f"{show_range(lo2, hi2, p2)} overlap")
+
+
+def check_cases(groups):
+    """Parse-time checks on the case values of one select. `groups` is [(values, line)], values
+    None for `default`. Only literals can be judged here; the interpreter repeats the overlap
+    check once `const` names have values."""
+    kinds, entries = set(), []
+    if sum(v is None for v, _ in groups) > 1:
+        raise LangError(f"line {[l for v, l in groups if v is None][1]}: 'case default' appears more than once")
+    for values, line in groups:
+        for item in values or []:
+            ends = [item.lo, item.hi] if isinstance(item, Slice) else [item]
+            lits = [literal_value(x) for x in ends if x is not None]
+            for v in lits:
+                if v is not NOT_LITERAL:
+                    kinds.add(literal_type(v))
+            if "real" in kinds:
+                raise LangError(f"line {line}: case values cannot be real")
+            if len(kinds) > 1:
+                raise LangError(f"line {line}: case values mix {' and '.join(sorted(kinds))}")
+            if isinstance(item, Slice) and "logical" in kinds:
+                raise LangError(f"line {line}: a logical case value cannot be a range")
+            if NOT_LITERAL in lits:
+                continue
+            lo = literal_value(item.lo) if isinstance(item, Slice) and item.lo is not None else None
+            hi = literal_value(item.hi) if isinstance(item, Slice) and item.hi is not None else None
+            if not isinstance(item, Slice):
+                lo = hi = lits[0]
+            if lo is not None and hi is not None and lo > hi:
+                raise LangError(f"line {line}: the range {show_range(lo, hi, False)} is empty")
+            entries.append((lo, hi, not isinstance(item, Slice), line))
+    for n in range(len(entries)):                          # report at the later of the two lines
+        for m in range(n + 1, len(entries)):
+            check_overlap([entries[n][:3], entries[m][:3]], entries[m][3])
+
+
+def arm_types(arms):
+    """The types of the arms that are plain literals (None for the others)."""
+    out = set()
+    for a in arms:
+        v = literal_value(a.value)
+        if v is not NOT_LITERAL:
+            out.add(literal_type(v))
+    return out
+
+
 # --- Parser ------------------------------------------------------------
 class Parser:
     def __init__(self, src):
         self.toks, self.i = lex(src), 0
+        self.inside = []                  # enclosing "select" / "loop" constructs, innermost last
 
     @property
     def tok(self):
@@ -361,6 +465,19 @@ class Parser:
             return self.if_stmt()
         if self.at("do"):
             return self.do_stmt()
+        if self.at("select"):
+            return self.select_stmt()
+        if self.at("fallthrough"):
+            self.error("'fallthrough' is only allowed right after 'select case'")
+        if self.at("break"):
+            if not self.inside:
+                self.error("'break' outside a select")
+            if self.inside[-1] == "loop":
+                self.error("'break' leaves a select, but the nearest enclosing construct is a loop; use 'exit'")
+            self.next(); self.newline()
+            return Break()
+        if self.at("case"):
+            self.error("'case' outside a select")
         if self.at("print"):
             self.next()
             args = [self.expr()]
@@ -459,7 +576,9 @@ class Parser:
         if self.accept("while"):
             cond = self.expr()
             self.newline()
+            self.inside.append("loop")
             body = self.block("do")
+            self.inside.pop()
             self.expect("do")
             self.end_label(label)
             return DoWhile(cond, body, label, line)
@@ -470,7 +589,9 @@ class Parser:
         hi = self.expr()
         step = self.expr() if self.accept(",") else None
         self.newline()
+        self.inside.append("loop")
         body = self.block("do")
+        self.inside.pop()
         self.expect("do")
         self.end_label(label)
         return Do(var, lo, hi, step, body, line, label)
@@ -484,6 +605,99 @@ class Parser:
         elif self.tok.kind == "ident":
             self.error("this loop has no label, so it closes with plain 'end do'")
         self.newline()
+
+    def at_end_select(self):
+        return self.at("end") and self.toks[self.i + 1].text == "select"
+
+    def case_values(self):
+        """What follows `case`: `default` (None) or a comma-separated list of constants and ranges."""
+        if self.accept("default"):
+            return None
+        values = [self.case_item()]
+        while self.accept(","):
+            values.append(self.case_item())
+        return values
+
+    def case_item(self):
+        if self.accept(":"):
+            return Slice(None, self.case_const())
+        lo = self.case_const()
+        if not self.accept(":"):
+            return lo
+        hi = None if self.at(",", "->") or self.tok.kind == "nl" else self.case_const()
+        return Slice(lo, hi)
+
+    def case_const(self):
+        """A literal, a signed number, or a name (checked to be a `const` when the select runs)."""
+        line = self.tok.line
+        e = self.add()
+        if not isinstance(e, Var) and literal_value(e) is NOT_LITERAL:
+            raise LangError(f"line {line}: a case value must be a literal or the name of a const")
+        return e
+
+    def select_stmt(self):
+        line = self.expect("select").line
+        self.expect("case")
+        flow = bool(self.accept("fallthrough"))
+        subject = self.expr()
+        self.newline()
+        cases = []
+        self.inside.append("select")
+        while True:
+            if self.at_end_select():
+                self.next(); self.next()
+                self.newline()
+                break
+            if self.tok.kind == "eof":
+                self.error("unexpected end of file, missing 'end select'")
+            if not self.at("case"):
+                self.error("expected 'case' or 'end select' (statements belong inside a case)")
+            at = self.next().line
+            values = self.case_values()
+            self.newline()
+            body = []
+            while not (self.at("case") or self.at_end_select()):
+                if self.tok.kind == "eof":
+                    self.error("unexpected end of file, missing 'end select'")
+                body.append(self.statement())
+                self.skip_newlines()
+            cases.append(Case(values, body, at))
+        self.inside.pop()
+        if not cases:
+            raise LangError(f"line {line}: a select needs at least one case")
+        check_cases([(c.values, c.line) for c in cases])
+        return Select(subject, cases, line, flow)
+
+    def select_expr(self):
+        line = self.expect("select").line
+        self.expect("case")
+        if self.at("fallthrough"):
+            self.error("a select expression cannot fall through")
+        subject = self.expr()
+        arms = []
+        while True:
+            if self.tok.kind != "nl":
+                self.error("expected end of line")
+            self.skip_newlines()
+            if self.at("end"):
+                self.next()
+                self.expect("select")
+                break
+            at = self.tok.line
+            self.expect("case")
+            values = self.case_values()
+            if self.at("then"):
+                self.error("a select expression arm is written 'case <values> -> <expression>'; use '->' instead of 'then'")
+            self.expect("->")
+            arms.append(Arm(values, self.expr(), at))
+        if not any(a.values is None for a in arms):
+            raise LangError(f"line {line}: a select expression must end with a 'case default -> ...' arm")
+        check_cases([(a.values, a.line) for a in arms])
+        kinds = arm_types(arms)
+        if len(kinds) > 1 and kinds != {"integer", "real"}:
+            raise LangError(f"line {line}: the arms of a select expression have different types "
+                            f"({' and '.join(sorted(kinds))})")
+        return SelectExpr(subject, arms, line)
 
     # -- expressions (lowest to highest precedence)
     def expr(self):
@@ -563,6 +777,10 @@ class Parser:
                     items.append(self.expr())
             self.expect("]")
             return ArrayLit(items)
+        if self.at("select"):
+            return self.select_expr()
+        if self.at("break"):
+            self.error("'break' cannot be used in an expression")
         if t.kind == "ident":
             name = self.next().text
             if self.accept("("):

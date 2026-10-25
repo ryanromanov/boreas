@@ -59,7 +59,16 @@ def _expr(e):
         else:
             left, right = expr(e.left, p), expr(e.right, p + 1)
         return f"{left} {e.op} {right}"
+    if k is SelectExpr:                   # several lines; `stmts` indents the continuation lines
+        lines = [f"select case {expr(e.subject)}"]
+        for a in e.arms:
+            lines.append(f"  case {_case_values(a.values)} -> {expr(a.value)}".replace("\n", "\n  "))
+        return "\n".join(lines + ["end select"])
     raise LangError(f"cannot print expression {k.__name__}")
+
+
+def _case_values(values):
+    return "default" if values is None else ", ".join(expr(v) for v in values)
 
 
 def _params(f):
@@ -116,7 +125,17 @@ def stmts(body, depth=1):
             continue
         lines.extend(stmt(s, depth))
         i += 1
-    return lines
+    return _indent_continuations(lines, pad)
+
+
+def _indent_continuations(lines, pad):
+    """A line holding a multi-line expression (a select) continues at the statement's indentation."""
+    out = []
+    for l in lines:
+        first, *rest = l.split("\n")
+        out.append(first)
+        out.extend(pad + r for r in rest)
+    return out
 
 
 def stmt(s, depth):
@@ -138,6 +157,8 @@ def stmt(s, depth):
         return [pad + "exit" + (" " + s.label if s.label else "")]
     if k is Cycle:
         return [pad + "cycle" + (" " + s.label if s.label else "")]
+    if k is Break:
+        return [pad + "break"]
     if k is ExprStmt:
         return [pad + expr(s.expr)]
     if k is If:
@@ -150,6 +171,12 @@ def stmt(s, depth):
             lines.extend(stmts(s.orelse, depth + 1))
         lines.append(pad + "end if")
         return lines
+    if k is Select:
+        lines = [f"{pad}select case {'fallthrough ' if s.flow else ''}{expr(s.subject)}"]
+        for c in s.cases:
+            lines.append(f"{pad}case {_case_values(c.values)}")
+            lines.extend(stmts(c.body, depth + 1))
+        return lines + [pad + "end select"]
     if k is Do:
         head = f"{pad}{_label(s)}do {s.var} = {expr(s.lo)}, {expr(s.hi)}"
         if s.step is not None:
@@ -217,6 +244,9 @@ def without_comments(unit):
                 strip(s.orelse)
             elif isinstance(s, (Do, DoWhile)):
                 strip(s.body)
+            elif isinstance(s, Select):
+                for c in s.cases:
+                    strip(c.body)
 
     for m in u.modules.values():
         m.comments = []
