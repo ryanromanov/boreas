@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from .lexer import lex, LangError
 
 TYPES = {"integer", "real", "logical", "string"}
@@ -32,6 +32,7 @@ class SelectExpr: subject: object; arms: list; line: int   # exhaustive: one arm
 class Decl:   # dims: list of exprs or None
     type: str; name: str; dims: object; init: object; line: int; const: bool = False
     public: bool = False       # only meaningful for a module's constants
+    allocatable: bool = False  # dims are then one `:` (a Slice) per dimension: the rank
 @dataclass
 class Assign: target: object; value: object; line: int; update: bool = False
 @dataclass
@@ -67,6 +68,10 @@ class Cycle: label: str = None; line: int = 0
 class ExprStmt: expr: object
 @dataclass
 class Call: name: str; args: list; line: int
+@dataclass
+class Allocate: name: str; dims: list; line: int   # allocate a(n, m): one extent per dimension
+@dataclass
+class Deallocate: name: str; line: int
 @dataclass
 class Comment: text: str          # only produced by `boreas convert`; the interpreter skips it
 
@@ -251,6 +256,40 @@ def arm_types(arms):
     return out
 
 
+def _nodes(obj):
+    """Every dataclass node inside `obj` (statements, expressions, lists, tuples), in source order."""
+    if isinstance(obj, (list, tuple)):
+        for x in obj:
+            yield from _nodes(x)
+    elif is_dataclass(obj):
+        yield obj
+        for f in fields(obj):
+            yield from _nodes(getattr(obj, f.name))
+
+
+def check_allocs(body, params):
+    """`allocate` and `deallocate` need a local allocatable array of matching rank.
+    `params` is the set of parameter names (these can never be allocated)."""
+    decls = {d.name: d for d in _nodes(body) if isinstance(d, Decl)}
+    for s in _nodes(body):
+        if not isinstance(s, (Allocate, Deallocate)):
+            continue
+        word = "allocate" if isinstance(s, Allocate) else "deallocate"
+        d = decls.get(s.name)
+        if s.name in params:
+            why = "a parameter; only a local allocatable array can be allocated or deallocated"
+        elif d is None:
+            why = "not declared as a local allocatable array"
+        elif not d.allocatable:
+            why = ("a constant" if d.const else "not allocatable (declare it with 'allocatable')")
+        elif isinstance(s, Allocate) and len(s.dims) != len(d.dims):
+            raise LangError(f"line {s.line}: '{s.name}' has {len(d.dims)} dimension(s) but "
+                            f"{len(s.dims)} extent(s) were given to allocate")
+        else:
+            continue
+        raise LangError(f"line {s.line}: cannot {word} '{s.name}': it is {why}")
+
+
 # --- Parser ------------------------------------------------------------
 class Parser:
     def __init__(self, src):
@@ -335,6 +374,7 @@ class Parser:
             self.next()
         check_writes(body, {})
         check_loops(body)
+        check_allocs(body, set())
         return Program(name, body, uses=uses)
 
     def uses(self):
@@ -384,6 +424,8 @@ class Parser:
                 f.public = public
                 claim(f.name, at)
                 funcs[f.name] = f
+            elif self.at("allocatable"):
+                self.error("a module cannot hold allocatable arrays; declare them inside a procedure")
             elif self.tok.kind == "ident" and self.tok.text in TYPES:
                 self.error("a module holds constants and procedures; declare this with 'const'")
             else:
@@ -411,6 +453,7 @@ class Parser:
             self.next()
         check_writes(body, {n: intent for _, n, intent in params})
         check_loops(body)
+        check_allocs(body, {n for _, n, _ in params})
         return Function(name, params, ret, body, is_sub, uses=uses)
 
     def params(self, is_sub):
@@ -458,9 +501,18 @@ class Parser:
         t = self.tok
         if t.kind == "ident" and t.text == "const":
             self.next()
+            if self.at("allocatable"):
+                self.error("an allocatable array cannot be 'const'")
             return self.decl(const=True)
+        if t.kind == "ident" and t.text == "allocatable" and self.toks[self.i + 1].text == "const":
+            self.error("an allocatable array cannot be 'const'")
+        if t.kind == "ident" and t.text == "allocatable" and self.toks[self.i + 1].text in TYPES:
+            self.next()
+            return self.decl(allocatable=True)
         if t.kind == "ident" and t.text in TYPES:
             return self.decl()
+        if t.kind == "ident" and t.text in ("allocate", "deallocate") and self.toks[self.i + 1].kind == "ident":
+            return self.allocation()
         if self.at("if"):
             return self.if_stmt()
         if self.at("do"):
@@ -521,7 +573,24 @@ class Parser:
         self.newline()
         return ExprStmt(e)
 
-    def decl(self, const=False):
+    def allocation(self):
+        """`allocate a(n, m)` or `deallocate a`: one array per statement."""
+        t = self.next()
+        name = self.ident()
+        if t.text == "deallocate":
+            self.newline()
+            return Deallocate(name, t.line)
+        if not self.at("("):
+            self.error("expected the extents, as in 'allocate a(n)'")
+        self.next()
+        dims = [self.expr()]
+        while self.accept(","):
+            dims.append(self.expr())
+        self.expect(")")
+        self.newline()
+        return Allocate(name, dims, t.line)
+
+    def decl(self, const=False, allocatable=False):
         line = self.tok.line
         typ = self.type_name()
         self.expect("::")
@@ -529,19 +598,39 @@ class Parser:
         while True:
             name = self.ident()
             dims = None
-            if self.accept("("):
+            if allocatable:
+                dims = self.deferred_dims(name)
+            elif self.accept("("):
                 dims = [self.expr()]
                 while self.accept(","):
                     dims.append(self.expr())
                 self.expect(")")
             init = self.expr() if self.accept("=") else None
+            if allocatable and init is not None:
+                self.error(f"allocatable array '{name}' cannot have an initializer")
             if const and init is None:
                 self.error(f"constant '{name}' needs a value")
-            decls.append(Decl(typ, name, dims, init, line, const))
+            decls.append(Decl(typ, name, dims, init, line, const, allocatable=allocatable))
             if not self.accept(","):
                 break
         self.newline()
         return decls if len(decls) > 1 else decls[0]
+
+    def deferred_dims(self, name):
+        """The `(:, :)` after an allocatable name: one Slice per dimension, which fixes the rank."""
+        if not self.accept("("):
+            self.error(f"allocatable '{name}' needs one ':' per dimension, as in '{name}(:)'")
+        dims = []
+        while True:
+            if not self.at(":"):
+                self.error(f"allocatable '{name}' is declared with ':' for each dimension; "
+                           f"its sizes come from 'allocate'")
+            self.next()
+            dims.append(Slice(None, None))
+            if not self.accept(","):
+                break
+        self.expect(")")
+        return dims
 
     def if_stmt(self):
         self.expect("if")

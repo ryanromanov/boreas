@@ -3,7 +3,7 @@
 program mixed
   implicit none
   integer :: k, total
-  integer, allocatable :: buf(:)
+  integer, pointer :: buf(:)
   type point
     real :: x, y
   end type point

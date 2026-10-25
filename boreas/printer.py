@@ -80,7 +80,8 @@ def _params(f):
 
 
 def _decl_head(d):
-    return ("public " if d.public else "") + ("const " if d.const else "") + d.type
+    return ("public " if d.public else "") + ("const " if d.const else "") \
+        + ("allocatable " if d.allocatable else "") + d.type
 
 
 def _decl_entity(d):
@@ -117,7 +118,8 @@ def stmts(body, depth=1):
             j = i
             group = []
             while (j < len(flat) and isinstance(flat[j], Decl) and flat[j].type == s.type
-                   and flat[j].const == s.const and flat[j].public == s.public and len(group) < 6):
+                   and flat[j].const == s.const and flat[j].public == s.public
+                   and flat[j].allocatable == s.allocatable and len(group) < 6):
                 group.append(flat[j])
                 j += 1
             lines.append(f"{pad}{_decl_head(s)} :: " + ", ".join(_decl_entity(d) for d in group))
@@ -184,6 +186,10 @@ def stmt(s, depth):
         return [head] + stmts(s.body, depth + 1) + [pad + _end_do(s)]
     if k is DoWhile:
         return [f"{pad}{_label(s)}do while {expr(s.cond)}"] + stmts(s.body, depth + 1) + [pad + _end_do(s)]
+    if k is Allocate:
+        return [f"{pad}allocate {s.name}(" + ", ".join(expr(x) for x in s.dims) + ")"]
+    if k is Deallocate:
+        return [f"{pad}deallocate {s.name}"]
     if k is Decl:
         return [f"{pad}{_decl_head(s)} :: {_decl_entity(s)}"]
     raise LangError(f"cannot print statement {k.__name__}")
