@@ -106,27 +106,14 @@ def _end_do(s):
 
 
 def stmts(body, depth=1):
-    """Print a statement list; consecutive plain declarations of one type share a line."""
+    """Print a statement list, one statement per line."""
     pad = "  " * depth
     flat = []
     for s in body:
         flat.extend(s if isinstance(s, list) else [s])
-    lines, i = [], 0
-    while i < len(flat):
-        s = flat[i]
-        if isinstance(s, Decl):
-            j = i
-            group = []
-            while (j < len(flat) and isinstance(flat[j], Decl) and flat[j].type == s.type
-                   and flat[j].const == s.const and flat[j].public == s.public
-                   and flat[j].allocatable == s.allocatable and len(group) < 6):
-                group.append(flat[j])
-                j += 1
-            lines.append(f"{pad}{_decl_head(s)} :: " + ", ".join(_decl_entity(d) for d in group))
-            i = j
-            continue
+    lines = []
+    for s in flat:
         lines.extend(stmt(s, depth))
-        i += 1
     return _indent_continuations(lines, pad)
 
 

@@ -556,7 +556,7 @@ class ConverterTests(unittest.TestCase):
 
     def test_non_parameter_case_value_falls_back_to_todo(self):
         text, findings = conv("  select case (n)\n  case (m)\n    print *, 'x'\n  end select\n  print *, 'after'",
-                              "  integer :: n = 1, m = 1")
+                              "  integer :: n = 1\ninteger :: m = 1")
         self.assertEqual(len(todos(findings)), 1)
         self.assertIn("TODO(convert)", text)
         self.assertNotIn("select case", text.split("TODO(convert)")[-1].split("\n", 1)[1])
@@ -579,13 +579,13 @@ class ConverterTests(unittest.TestCase):
     def test_nested_fallback_leaves_outer_select(self):
         body = ("  select case (n)\n  case (1)\n    select case (n)\n    case (m)\n      print *, 'bad'\n    end select\n"
                 "    print *, 'kept'\n  end select")
-        text, findings = conv(body, "  integer :: n = 1, m = 1")
+        text, findings = conv(body, "  integer :: n = 1\ninteger :: m = 1")
         self.assertEqual(len(todos(findings)), 1)
         self.assertEqual(run_bor(text), ["kept"])
 
     def test_reserved_words_renamed(self):
         text, _ = conv("  case = 1\n  default = case + 1\n  select = default\n  fallthrough = select\n  break = fallthrough\n  print *, break",
-                       "  integer :: case, default, select, fallthrough, break")
+                       "  integer :: case\ninteger :: default\ninteger :: select\ninteger :: fallthrough\ninteger :: break")
         self.assertIn("case_ = 1", text)
         self.assertIn("break_ = fallthrough_", text)
         self.assertEqual(run_bor(text), ["2"])

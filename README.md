@@ -24,6 +24,18 @@ Currently a tree-walking interpreter written in Python.
       print "squares:", ys * ys, square(2.5)
     end program
 
+## Declarations
+
+Each variable is declared on its own line, with an optional initial value:
+
+    integer :: i
+    integer :: count = 0
+    real :: v(3) = [1.0, 2.0, 3.0]
+
+`integer :: i, j` is an error ("declare one variable per line"). That way every
+variable can carry its own comment, and a change touches only the line it is
+about. `boreas convert` splits Fortran's `real :: x, y, z` into separate lines.
+
 ## Constants
 
     const real :: pi = 3.14159
