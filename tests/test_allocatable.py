@@ -1,7 +1,7 @@
 import os, subprocess, sys, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from test_boreas import run
-from test_fortran import (GFORTRAN, assert_round_trips, conv, fixture, read, run_bor, run_gfortran,
+from test_fortran import (GFORTRAN, check_syntax, assert_round_trips, conv, fixture, read, run_bor, run_gfortran,
                           same_output, todos)
 from boreas.fortran import convert
 from boreas.lexer import LangError
@@ -455,7 +455,7 @@ class FixtureTests(unittest.TestCase):
     def test_fixture_matches_gfortran(self):
         path = fixture("allocatable.f90")
         if GFORTRAN:
-            subprocess.run([GFORTRAN, "-fsyntax-only", "-std=f2018", path], check=True, capture_output=True)
+            check_syntax(path)
         text, findings = convert(read(path), "allocatable.f90")
         self.assertEqual(todos(findings), [])
         assert_round_trips(read(path))
