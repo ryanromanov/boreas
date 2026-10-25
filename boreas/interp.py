@@ -26,6 +26,7 @@ def type_of(v):
     if isinstance(v, float): return "real"
     if isinstance(v, str): return "string"
     if isinstance(v, Array): return "array"
+    if isinstance(v, Record): return v.rdef.name
     return "?"
 
 
@@ -33,7 +34,7 @@ def coerce(typ, value, what):
     """Assignment rules: integer -> real is implicit; everything else must match."""
     got = type_of(value)
     if got == typ:
-        return value
+        return value.copy() if isinstance(value, Record) else value
     if typ == "real" and got == "integer":
         return float(value)
     raise LangError(f"{what}: cannot assign {got} to {typ}")
@@ -41,6 +42,53 @@ def coerce(typ, value, what):
 
 def fmt_shape(shape):
     return "(" + ", ".join(str(n) for n in shape) + ")"
+
+
+# --- Records -----------------------------------------------------------
+class Record:
+    """A value of a record type. `fields` maps a field name to a variable slot
+    [type, value, is_array, intent] (a field's intent is always None; whether it may be
+    written is decided by the variable the record lives in)."""
+
+    def __init__(self, rdef, fields):
+        self.rdef, self.fields = rdef, fields
+
+    def copy(self):
+        return Record(self.rdef, {n: [t, v.copy() if isinstance(v, (Record, Array)) else v, ia, None]
+                                  for n, (t, v, ia, _) in self.fields.items()})
+
+    def first_unassigned(self, prefix=""):
+        """The dotted path of the first scalar field that holds no value yet, else None."""
+        for n, (_, v, _, _) in self.fields.items():
+            for sub in (v.data if isinstance(v, Array) else [v]):
+                if isinstance(sub, Record):
+                    found = sub.first_unassigned(f"{prefix}{n}.")
+                    if found:
+                        return found
+                elif sub is None:
+                    return prefix + n
+        return None
+
+
+class Ref(tuple):
+    """(slot, subs, name) plus where it lives: the variable `root` it is inside of, the
+    subscripts `rsubs` of that variable if it is an array, and the field names `fpath`."""
+    def __new__(cls, slot, subs, name, root=None, rsubs=None, fpath=()):
+        r = super().__new__(cls, (slot, subs, name))
+        r.root = slot if root is None else root
+        r.rsubs = subs if root is None else rsubs
+        r.fpath = fpath
+        return r
+
+
+def aliased(a, b):
+    """Could two references touch the same storage?"""
+    if a.root is not b.root or not overlaps(a.rsubs, b.rsubs):
+        return False
+    n = min(len(a.fpath), len(b.fpath))
+    if a.fpath[:n] != b.fpath[:n]:
+        return False                                # different fields of the same record
+    return len(a.fpath) != len(b.fpath) or overlaps(a[1], b[1])
 
 
 # --- Arrays ------------------------------------------------------------
@@ -57,7 +105,7 @@ class Array:
         return len(self.shape)
 
     def copy(self):
-        return Array(self.shape, list(self.data))
+        return Array(self.shape, [x.copy() if isinstance(x, Record) else x for x in self.data])
 
     def strides(self):
         out, s = [], 1
@@ -194,8 +242,9 @@ def overlaps(a, b):
 class Scope:
     """What a procedure (or the program) can see besides its own variables:
     procedures and constants, both its own and the ones it imported."""
-    def __init__(self, funcs, consts):
+    def __init__(self, funcs, consts, records=None):
         self.funcs, self.consts = funcs, consts
+        self.records = {} if records is None else records
 
 
 class Interp:
@@ -204,6 +253,7 @@ class Interp:
         self.scopes = {}                  # id(procedure) -> Scope
         self.exports = {}                 # module name -> {name: Function | const slot}
         self.loading = []
+        self.owner = {}                   # id(RecordDef) -> the Scope its field types are looked up in
         self.scope = None
         self.link()
 
@@ -211,19 +261,54 @@ class Interp:
         """Give every procedure its scope: top-level procedures share one namespace,
         a module's procedures see only that module plus what it imports."""
         unit = self.unit
+        base = Scope(dict(unit.functions), {}, dict(unit.records))    # what top-level records can see
+        for r in unit.records.values():
+            self.owner[id(r)] = base
+            if r.name in unit.functions or r.name in BUILTINS or r.name in ELEMENTAL:
+                raise LangError(f"line {r.line}: the record '{r.name}' has the same name as a procedure")
+        self.check_records(unit.records, base)
         for f in unit.functions.values():
-            self.scopes[id(f)] = self.import_into(Scope(dict(unit.functions), {}), f.uses)
+            self.scopes[id(f)] = self.import_into(Scope(dict(unit.functions), {}, dict(unit.records)), f.uses)
         prog = unit.program
-        self.program_scope = self.import_into(Scope(dict(unit.functions), {}), prog.uses) if prog else None
+        self.program_scope = (self.import_into(Scope(dict(unit.functions), {}, dict(unit.records)), prog.uses)
+                              if prog else None)
         for name in unit.modules:
             self.load_module(name, 0)
 
+    def check_records(self, records, scope):
+        """Record definitions need known field types, literal array sizes, unique field
+        names, and cannot contain themselves."""
+        for r in records.values():
+            if r.name in DEFAULTS or r.name in ("array", "?"):
+                raise LangError(f"line {r.line}: '{r.name}' cannot be the name of a record")
+            seen = set()
+            for f in r.fields:
+                if f.name in seen:
+                    raise LangError(f"line {f.line}: record '{r.name}' has two fields called '{f.name}'")
+                seen.add(f.name)
+                if f.type not in DEFAULTS and f.type not in scope.records:
+                    raise LangError(f"line {f.line}: field '{f.name}' of record '{r.name}' has unknown type '{f.type}'")
+                for d in f.dims or []:
+                    if not (isinstance(d, Num) and isinstance(d.value, int) and d.value >= 0):
+                        raise LangError(f"line {f.line}: an array field of a record needs a literal size")
+
+        def contains(name, path):
+            if name in path:
+                raise LangError(f"line {records[name].line}: record '{name}' contains itself: "
+                                + " -> ".join(path[path.index(name):] + (name,)))
+            for f in scope.records[name].fields:
+                if f.type in scope.records:
+                    contains(f.type, path + (name,))
+
+        for name in records:
+            contains(name, ())
+
     def import_into(self, scope, uses):
-        taken = set(scope.funcs) | set(scope.consts)
+        taken = set(scope.funcs) | set(scope.consts) | set(scope.records)
         for u in uses:
             exports = self.load_module(u.module, u.line)
             mod = self.unit.modules[u.module]
-            known = set(mod.functions) | {d.name for d in mod.consts}
+            known = set(mod.functions) | {d.name for d in mod.consts} | set(mod.records)
             for name in u.names:
                 if name not in known:
                     raise LangError(f"line {u.line}: module '{u.module}' has no '{name}'")
@@ -235,7 +320,12 @@ class Interp:
                                     f"it cannot also be imported from '{u.module}'")
                 taken.add(name)
                 item = exports[name]
-                (scope.funcs if isinstance(item, Function) else scope.consts)[name] = item
+                if isinstance(item, Function):
+                    scope.funcs[name] = item
+                elif isinstance(item, RecordDef):
+                    scope.records[name] = item
+                else:
+                    scope.consts[name] = item
         return scope
 
     def load_module(self, name, line):
@@ -248,8 +338,11 @@ class Interp:
             raise LangError(f"line {mod.line}: modules use each other in a cycle: "
                             + " -> ".join(self.loading[self.loading.index(name):] + [name]))
         self.loading.append(name)
-        scope = Scope(dict(mod.functions), {})
+        scope = Scope(dict(mod.functions), {}, dict(mod.records))
+        for r in mod.records.values():
+            self.owner[id(r)] = scope
         self.import_into(scope, mod.uses)
+        self.check_records(mod.records, scope)
         for f in mod.functions.values():
             self.scopes[id(f)] = scope
         saved, self.scope = self.scope, scope          # initializers may call the module's functions
@@ -261,6 +354,7 @@ class Interp:
         self.loading.pop()
         self.exports[name] = {
             **{f.name: f for f in mod.functions.values() if f.public},
+            **{r.name: r for r in mod.records.values() if r.public},
             **{d.name: env[d.name] for d in mod.consts if d.public}}
         return self.exports[name]
 
@@ -280,7 +374,7 @@ class Interp:
             self.declare(s, env)
         elif k is Assign:
             ref = self.resolve(s.target, env, s.line)
-            if (ref[0][INTENT] in ("out", "inout")) != s.update:
+            if (ref.root[INTENT] in ("out", "inout")) != s.update:
                 raise LangError(f"line {s.line}: 'update' must be used exactly when assigning to an "
                                 f"out or inout parameter ('{ref[2]}')")
             self.write(ref, self.eval(s.value, env), s.line)
@@ -359,6 +453,13 @@ class Interp:
         where = f"line {s.line}"
         if s.name in env:
             raise LangError(f"{where}: '{s.name}' already declared")
+        sub = None
+        if s.type not in DEFAULTS:
+            sub = self.scope.records.get(s.type)
+            if sub is None:
+                raise LangError(f"{where}: unknown type '{s.type}'")
+            if s.allocatable:
+                raise LangError(f"{where}: allocatable arrays of records are not supported")
         if s.allocatable:
             env[s.name] = [s.type, None, True, None, len(s.dims)]
             return
@@ -366,14 +467,15 @@ class Interp:
             val = None
             if s.init is not None:
                 val = coerce(s.type, self.eval(s.init, env), where)
+            elif sub is not None:
+                val = self.new_record(sub)
             env[s.name] = [s.type, val, False, "const" if s.const else None]
             return
         shape = [self.eval(d, env) for d in s.dims]
         if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in shape):
             raise LangError(f"{where}: array dimensions must be non-negative integers")
         n = math.prod(shape)
-        default = DEFAULTS[s.type]
-        data = [default] * n
+        data = [self.new_record(sub) for _ in range(n)] if sub else [DEFAULTS[s.type]] * n
         if s.init is not None:
             init = self.eval(s.init, env)
             if isinstance(init, Array):
@@ -382,8 +484,60 @@ class Interp:
                                     f"'{s.name}' has shape {fmt_shape(shape)}")
                 data = [coerce(s.type, x, where) for x in init.data]
             else:
-                data = [coerce(s.type, init, where)] * n
+                data = [coerce(s.type, init, where) for _ in range(n)]      # one copy per element
         env[s.name] = [s.type, Array(shape, data), True, "const" if s.const else None]
+
+    def new_record(self, rdef):
+        """A record whose scalar fields have no value yet (array fields start zeroed, like arrays)."""
+        owner = self.owner[id(rdef)]
+        fields = {}
+        for f in rdef.fields:
+            sub = owner.records.get(f.type)
+            if f.dims is None:
+                fields[f.name] = [f.type, self.new_record(sub) if sub else None, False, None]
+            else:
+                shape = [d.value for d in f.dims]
+                n = math.prod(shape)
+                data = [self.new_record(sub) for _ in range(n)] if sub else [DEFAULTS[f.type]] * n
+                fields[f.name] = [f.type, Array(shape, data), True, None]
+        return Record(rdef, fields)
+
+    def construct(self, rdef, e, env):
+        """`point(1.0, 2.0)` gives every field in order; `point(x = 1.0)` gives only the named
+        ones (the others have no value yet); positional arguments may come first."""
+        line = f"line {e.line}"
+        pos = [a for a in e.args if not isinstance(a, NamedArg)]
+        named = [a for a in e.args if isinstance(a, NamedArg)]
+        if len(pos) > len(rdef.fields):
+            raise LangError(f"{line}: {rdef.name} has {len(rdef.fields)} field(s), got {len(pos)} value(s)")
+        if not named and len(pos) != len(rdef.fields):
+            raise LangError(f"{line}: {rdef.name}() needs all {len(rdef.fields)} field(s) "
+                            f"({', '.join(f.name for f in rdef.fields)}), or name the ones you give")
+        rec = self.new_record(rdef)
+        given = set()
+        for f, a in zip(rdef.fields, pos):
+            self.set_field(rec, f.name, self.eval(a, env), line)
+            given.add(f.name)
+        for a in named:
+            if a.name not in rec.fields:
+                raise LangError(f"{line}: {rdef.name} has no field '{a.name}'")
+            if a.name in given:
+                raise LangError(f"{line}: field '{a.name}' is given twice")
+            given.add(a.name)
+            self.set_field(rec, a.name, self.eval(a.value, env), line)
+        return rec
+
+    def set_field(self, rec, name, value, where):
+        slot = rec.fields[name]
+        label = f"{where}: field '{name}' of {rec.rdef.name}"
+        if not slot[IS_ARRAY]:
+            slot[VALUE] = coerce(slot[TYPE], value, label)
+            return
+        arr = slot[VALUE]
+        if not isinstance(value, Array) or value.shape != arr.shape:
+            got = f"shape {fmt_shape(value.shape)}" if isinstance(value, Array) else type_of(value)
+            raise LangError(f"{label} is an array of shape {fmt_shape(arr.shape)}, got {got}")
+        slot[VALUE] = Array(arr.shape, [coerce(slot[TYPE], x, label) for x in value.data])
 
     def allocatable(self, name, env, line):
         """The slot of a local allocatable array, for allocate / deallocate / allocated."""
@@ -411,6 +565,11 @@ class Interp:
 
     def show(self, v):
         if isinstance(v, bool): return "true" if v else "false"
+        if isinstance(v, Record):
+            missing = v.first_unassigned()
+            if missing:
+                raise LangError(f"cannot print a {v.rdef.name}: its field '{missing}' has no value yet")
+            return v.rdef.name + "(" + ", ".join(f"{n}={self.show(s[VALUE])}" for n, s in v.fields.items()) + ")"
         if isinstance(v, Array):
             def rec(prefix):                       # first dimension is outermost
                 d = len(prefix)
@@ -457,17 +616,55 @@ class Interp:
             raise LangError(f"line {line}: array index must be integer")
 
     def resolve(self, t, env, line):
-        """Turn a variable, array element, or array section into a reference."""
+        """Turn a variable, array element, array section or record field into a reference."""
+        if isinstance(t, FieldAccess):
+            return self.resolve_field(t, env, line)
         if not isinstance(t, (Var, Apply)):
             raise LangError(f"line {line}: this must be a variable or array element")
         slot = self.lookup(t.name, env, line)
         if slot[IS_ARRAY] and slot[VALUE] is None:
             raise self.not_allocated(t.name, line)
         if isinstance(t, Var):
-            return slot, None, t.name
+            return Ref(slot, None, t.name)
         if not slot[IS_ARRAY]:
             raise LangError(f"line {line}: '{t.name}' is not an array")
-        return slot, self.subscripts(slot[VALUE], t.args, env, line, t.name), t.name
+        return Ref(slot, self.subscripts(slot[VALUE], t.args, env, line, t.name), t.name)
+
+    def is_reference(self, e, env):
+        """Does this expression name storage (a variable, array element or field)?"""
+        if isinstance(e, FieldAccess):
+            return self.is_reference(e.base, env)
+        return isinstance(e, Var) or (isinstance(e, Apply) and e.name in env)
+
+    def record_of(self, base, env, line, temp_ok=False):
+        """The Record that `base` names, with the variable it lives in: (record, ref to it)."""
+        if self.is_reference(base, env):
+            ref = self.resolve(base, env, line)
+            value = self.read(ref)
+            if isinstance(value, Array):
+                raise LangError(f"line {line}: '{ref[2]}' is an array; pick one element before using a field")
+            if not isinstance(value, Record):
+                raise LangError(f"line {line}: '{ref[2]}' is not a record")
+            return value, ref
+        if not temp_ok:
+            raise LangError(f"line {line}: cannot assign to a field of a computed value")
+        value = self.eval(base, env)
+        if not isinstance(value, Record):
+            raise LangError(f"line {line}: this value is not a record")
+        return value, Ref([value.rdef.name, value, False, "const"], None, value.rdef.name)
+
+    def resolve_field(self, t, env, line, temp_ok=False):
+        rec, ref = self.record_of(t.base, env, line, temp_ok)
+        slot = rec.fields.get(t.field)
+        if slot is None:
+            raise LangError(f"line {line}: {rec.rdef.name} '{ref[2]}' has no field '{t.field}'")
+        name = f"{ref[2]}.{t.field}"
+        fpath = ref.fpath + (t.field,)
+        if t.args is None:
+            return Ref(slot, None, name, ref.root, ref.rsubs, fpath)
+        if not slot[IS_ARRAY]:
+            raise LangError(f"line {line}: field '{name}' is not an array")
+        return Ref(slot, self.subscripts(slot[VALUE], t.args, env, line, name), name, ref.root, ref.rsubs, fpath)
 
     def read(self, ref):
         slot, subs, _ = ref
@@ -481,10 +678,11 @@ class Interp:
 
     def write(self, ref, v, line):
         slot, subs, name = ref
-        if slot[INTENT] == "in":
-            raise LangError(f"line {line}: '{name}' is an 'in' parameter and cannot be assigned")
-        if slot[INTENT] == "const":
-            raise LangError(f"line {line}: '{name}' is a constant and cannot be assigned")
+        part = "part of " if ref.fpath else ""
+        if ref.root[INTENT] == "in":
+            raise LangError(f"line {line}: '{name}' is {part}an 'in' parameter and cannot be assigned")
+        if ref.root[INTENT] == "const":
+            raise LangError(f"line {line}: '{name}' is {part}a constant and cannot be assigned")
         where = f"line {line}"
         if not slot[IS_ARRAY]:
             slot[VALUE] = coerce(slot[TYPE], v, where)
@@ -521,8 +719,14 @@ class Interp:
             if any(isinstance(x, Array) for x in items):
                 raise LangError("array literals hold scalars; use reshape() to build a matrix")
             return Array((len(items),), items)
+        if k is FieldAccess:
+            return self.field_value(e, env)
+        if k is NamedArg:
+            raise LangError("named arguments are only for building records")
         if k is Unary:
             v = self.eval(e.operand, env)
+            if isinstance(v, Record):
+                raise LangError(f"records cannot be used with '{e.op}'; use their fields")
             f = (lambda x: not self.truth(x)) if e.op == "not" else (lambda x: -x) if e.op == "-" else (lambda x: x)
             return Array(v.shape, [f(x) for x in v.data]) if isinstance(v, Array) else f(v)
         if k is Binary:
@@ -530,6 +734,13 @@ class Interp:
         if k is Apply: return self.apply(e, env)
         if k is SelectExpr: return self.select_expr(e, env)
         raise LangError(f"cannot evaluate {k.__name__}")
+
+    def field_value(self, e, env):
+        ref = self.resolve_field(e, env, e.line, temp_ok=True)
+        v = self.read(ref)
+        if v is None:
+            raise LangError(f"line {e.line}: field '{ref[2]}' is used before it is assigned")
+        return v
 
     # -- select case
     def case_value(self, e, env, line):
@@ -602,6 +813,8 @@ class Interp:
             ad = a.data if isinstance(a, Array) else [a] * n
             bd = b.data if isinstance(b, Array) else [b] * n
             return Array(shape, [self.binary(op, x, y) for x, y in zip(ad, bd)])
+        if isinstance(a, Record) or isinstance(b, Record):
+            raise LangError(f"records cannot be used with '{op}'; use their fields")
         if op in ("and", "or"):
             self.truth(a); self.truth(b)
             return (a and b) if op == "and" else (a or b)
@@ -633,6 +846,11 @@ class Interp:
             if not env[e.name][IS_ARRAY]:
                 raise LangError(f"line {e.line}: '{e.name}' is not an array")
             return self.read(self.resolve(e, env, e.line))
+        rdef = self.scope.records.get(e.name)
+        if rdef is not None:
+            return self.construct(rdef, e, env)
+        if any(isinstance(a, NamedArg) for a in e.args):
+            raise LangError(f"line {e.line}: named arguments are only for building records")
         args = [self.eval(a, env) for a in e.args]
         f = self.scope.funcs.get(e.name)
         if f is not None:
@@ -665,6 +883,9 @@ class Interp:
         env = dict(self.scopes[id(f)].consts)
         for (typ, name, intent), v in zip(f.params, values):
             is_arr = isinstance(v, Array)
+            if isinstance(v, Record) and v.rdef.name == typ and v.rdef is not self.scopes[id(f)].records.get(typ):
+                raise LangError(f"line {line}: argument '{name}' is a {typ}, but not the {typ} that "
+                                f"{f.name} was written for (two records share that name)")
             if v is not None and not is_arr:
                 v = coerce(typ, v, f"line {line}: argument '{name}'")
             env[name] = [typ, v, is_arr, intent]
@@ -692,11 +913,13 @@ class Interp:
 
     def reference_of(self, a, env, line):
         """Best-effort (slot, subs) for an argument that names a variable."""
+        if isinstance(a, FieldAccess) and self.is_reference(a, env):
+            return self.resolve(a, env, line)
         if isinstance(a, Var) and a.name in env:
-            return env[a.name], None
+            return Ref(env[a.name], None, a.name)
         if isinstance(a, Apply) and a.name in env and env[a.name][IS_ARRAY]:
             slot = env[a.name]
-            return slot, self.subscripts(slot[VALUE], a.args, env, line, a.name)
+            return Ref(slot, self.subscripts(slot[VALUE], a.args, env, line, a.name), a.name)
         return None
 
     def call_subroutine(self, s, env):
@@ -715,14 +938,18 @@ class Interp:
                 continue
             ref = self.resolve(a, env, s.line)
             slot = ref[0]
-            if slot[INTENT] in ("in", "const"):
-                what = "an 'in' parameter" if slot[INTENT] == "in" else "a constant"
-                raise LangError(f"line {s.line}: '{ref[2]}' is {what} and cannot be passed as {intent}")
+            if ref.root[INTENT] in ("in", "const"):
+                what = "an 'in' parameter" if ref.root[INTENT] == "in" else "a constant"
+                part = "part of " if ref.fpath else ""
+                raise LangError(f"line {s.line}: '{ref[2]}' is {part}{what} and cannot be passed as {intent}")
             if slot[TYPE] != typ:
                 raise LangError(f"line {s.line}: argument '{name}' is {typ} but '{ref[2]}' is {slot[TYPE]}")
             outs.append((n, ref))
             current = self.read(ref)
-            if isinstance(current, Array):
+            if intent == "out" and typ not in DEFAULTS:           # an out record starts with no values
+                sub = self.scopes[id(f)].records.get(typ)
+                values.append(self.new_record(sub) if sub else current.copy())
+            elif isinstance(current, (Array, Record)):
                 values.append(current.copy())                     # copy in
             elif intent == "out":
                 values.append(None)                               # out: starts unassigned
@@ -732,10 +959,11 @@ class Interp:
                 values.append(current)
 
         # Aliasing: an out/inout variable may not overlap any other argument.
-        for n, (slot, subs, name) in outs:
+        for n, ref in outs:
+            name = ref[2]
             for m, a in enumerate(s.args):
                 other = self.reference_of(a, env, s.line)
-                if m != n and other and other[0] is slot and overlaps(subs, other[1]):
+                if m != n and other is not None and aliased(ref, other):
                     raise LangError(f"line {s.line}: '{name}' is passed as {f.params[n][2]} and also "
                                     f"as another argument to {s.name}; arguments must not alias")
 
@@ -749,4 +977,9 @@ class Interp:
             result = callee[name][VALUE]
             if result is None:
                 raise LangError(f"line {s.line}: out parameter '{name}' was never assigned in {s.name}")
+            if f.params[n][2] == "out" and isinstance(result, Record):
+                missing = result.first_unassigned()
+                if missing:
+                    raise LangError(f"line {s.line}: out parameter '{name}' was not fully assigned in "
+                                    f"{s.name}: '{name}.{missing}' has no value")
             self.write(ref, result, s.line)

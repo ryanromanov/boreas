@@ -34,6 +34,17 @@ class Decl:   # dims: list of exprs or None
     public: bool = False       # only meaningful for a module's constants
     allocatable: bool = False  # dims are then one `:` (a Slice) per dimension: the rank
 @dataclass
+class FieldAccess:    # base.field or base.field(subscripts) for an array field
+    base: object; field: str; args: object; line: int
+@dataclass
+class NamedArg: name: str; value: object     # `x = 1.0` inside a record constructor
+@dataclass
+class RecordDef:
+    name: str
+    fields: list          # [Decl], no initializers
+    public: bool
+    line: int
+@dataclass
 class Assign: target: object; value: object; line: int; update: bool = False
 @dataclass
 class If: branches: list; orelse: list   # branches: [(cond, body)]
@@ -102,11 +113,33 @@ class Module:
     functions: dict       # name -> Function
     line: int
     comments: list = field(default_factory=list)   # printed above the header by `convert`
+    records: dict = field(default_factory=dict)    # name -> RecordDef
 @dataclass
 class Unit:
     functions: dict       # top-level procedures (outside any module)
     program: Program      # None for a library-only file
     modules: dict = field(default_factory=dict)
+    records: dict = field(default_factory=dict)    # top-level record types
+
+
+def root_name(target):
+    """The variable an assignment target writes into: `p` for `p`, `p(2)`, `p.x` and `p.v(2).y`."""
+    while isinstance(target, FieldAccess):
+        target = target.base
+    return target.name
+
+
+KEYWORDS = {"if", "then", "else", "do", "while", "end", "program", "function", "subroutine", "module",
+            "record", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print",
+            "select", "case", "default", "fallthrough", "break", "update", "allocate", "deallocate",
+            "allocatable", "in", "out", "inout", "true", "false", "and", "or", "not"}
+
+
+def target_text(t):
+    """How an assignment target reads in a message: `p.x`, `a`, `a`."""
+    if isinstance(t, FieldAccess):
+        return f"{target_text(t.base)}.{t.field}" + ("(...)" if t.args is not None else "")
+    return t.name
 
 
 def check_writes(body, params):
@@ -116,11 +149,12 @@ def check_writes(body, params):
         if isinstance(s, list):
             check_writes(s, params)
         elif isinstance(s, Assign):
-            name = s.target.name
+            name = root_name(s.target)
             escapes = params.get(name) in ("out", "inout")
             if escapes and not s.update:
+                shown = target_text(s.target) if isinstance(s.target, FieldAccess) else name
                 raise LangError(f"line {s.line}: '{name}' is an {params[name]} parameter, so the caller sees "
-                                f"this write; write 'update {name} = ...'")
+                                f"this write; write 'update {shown} = ...'")
             if s.update and not escapes:
                 what = "an 'in' parameter" if params.get(name) == "in" else "a local variable"
                 raise LangError(f"line {s.line}: 'update' is for out and inout parameters, but "
@@ -337,7 +371,7 @@ class Parser:
 
     # -- top level
     def parse(self):
-        funcs, mods, prog = {}, {}, None
+        funcs, mods, prog, recs = {}, {}, None, {}
         self.skip_newlines()
         while self.tok.kind != "eof":
             if self.at("public", "private"):
@@ -347,6 +381,11 @@ class Parser:
                 if f.name in funcs:
                     raise LangError(f"'{f.name}' is defined more than once")
                 funcs[f.name] = f
+            elif self.at("record"):
+                r = self.record_def(False)
+                if r.name in recs:
+                    raise LangError(f"line {r.line}: record '{r.name}' is defined more than once")
+                recs[r.name] = r
             elif self.at("module"):
                 m = self.module()
                 if m.name in mods:
@@ -357,11 +396,36 @@ class Parser:
                     self.error("only one program allowed")
                 prog = self.program()
             else:
-                self.error("expected 'module', 'function', 'subroutine' or 'program'")
+                self.error("expected 'module', 'record', 'function', 'subroutine' or 'program'")
             self.skip_newlines()
         if not prog:
             raise LangError("no program found")
-        return Unit(funcs, prog, mods)
+        return Unit(funcs, prog, mods, recs)
+
+    def record_def(self, public):
+        """`record point` / one `type :: name` line per field / `end record`."""
+        line = self.expect("record").line
+        name = self.ident()
+        if name in KEYWORDS or name in TYPES:
+            self.error(f"'{name}' cannot be the name of a record")
+        self.newline()
+        fields = []
+        while not (self.at("end") and self.toks[self.i + 1].text == "record"):
+            if self.tok.kind == "eof":
+                self.error("unexpected end of file, missing 'end record'")
+            if self.at("const", "allocatable", "public", "private"):
+                self.error("record fields are plain declarations: 'type :: name'")
+            f = self.decl()
+            if f.init is not None:
+                raise LangError(f"line {f.line}: record fields have no default values ('{f.name}')")
+            fields.append(f)
+            self.skip_newlines()
+        self.expect("end")
+        self.expect("record")
+        if self.tok.kind == "ident":
+            self.next()
+        self.newline()
+        return RecordDef(name, fields, public, line)
 
     def program(self):
         self.expect("program")
@@ -397,7 +461,7 @@ class Parser:
         name = self.ident()
         self.newline()
         uses = self.uses()
-        consts, funcs = [], {}
+        consts, funcs, recs = [], {}, {}
         taken = {}                                     # name -> line, across constants and procedures
 
         def claim(n, at):
@@ -418,6 +482,10 @@ class Parser:
                     x.public = public
                     claim(x.name, x.line)
                     consts.append(x)
+            elif self.at("record"):
+                r = self.record_def(public)
+                claim(r.name, r.line)
+                recs[r.name] = r
             elif self.at("function", "subroutine"):
                 at = self.tok.line
                 f = self.procedure()
@@ -426,16 +494,16 @@ class Parser:
                 funcs[f.name] = f
             elif self.at("allocatable"):
                 self.error("a module cannot hold allocatable arrays; declare them inside a procedure")
-            elif self.tok.kind == "ident" and self.tok.text in TYPES:
-                self.error("a module holds constants and procedures; declare this with 'const'")
+            elif self.tok.kind == "ident" and (self.tok.text in TYPES or self.toks[self.i + 1].text == "::"):
+                self.error("a module holds constants, records and procedures; declare this with 'const'")
             else:
-                self.error("expected 'const', 'function', 'subroutine' or 'end module'")
+                self.error("expected 'const', 'record', 'function', 'subroutine' or 'end module'")
             self.skip_newlines()
         self.expect("end")
         self.expect("module")
         if self.tok.kind == "ident":
             self.next()
-        return Module(name, uses, consts, funcs, line)
+        return Module(name, uses, consts, funcs, line, records=recs)
 
     def procedure(self):
         kind = self.next().text           # "function" or "subroutine"
@@ -444,7 +512,7 @@ class Parser:
         params = self.params(is_sub)
         ret = None
         if not is_sub and self.accept("->"):
-            ret = self.type_name()
+            ret = self.type_name(anywhere=True)
         self.newline()
         uses = self.uses()
         body = self.block(kind)
@@ -475,10 +543,14 @@ class Parser:
         self.expect(")")
         return params
 
-    def type_name(self):
-        if self.tok.kind != "ident" or self.tok.text not in TYPES:
-            self.error("expected a type (integer, real, logical, string)")
-        return self.next().text
+    def type_name(self, anywhere=False):
+        """A built-in type, or (when a `::` follows, or `anywhere`) the name of a record."""
+        t = self.tok
+        if t.kind == "ident" and t.text in TYPES:
+            return self.next().text
+        if t.kind == "ident" and t.text not in KEYWORDS and (anywhere or self.toks[self.i + 1].text == "::"):
+            return self.next().text
+        self.error("expected a type (integer, real, logical, string, or a record)")
 
     # -- statements
     def block(self, *closers):
@@ -506,11 +578,14 @@ class Parser:
             return self.decl(const=True)
         if t.kind == "ident" and t.text == "allocatable" and self.toks[self.i + 1].text == "const":
             self.error("an allocatable array cannot be 'const'")
-        if t.kind == "ident" and t.text == "allocatable" and self.toks[self.i + 1].text in TYPES:
+        if t.kind == "ident" and t.text == "allocatable" and (self.toks[self.i + 1].text in TYPES
+                                                              or self.toks[self.i + 2].text == "::"):
             self.next()
             return self.decl(allocatable=True)
-        if t.kind == "ident" and t.text in TYPES:
+        if t.kind == "ident" and (t.text in TYPES or (t.text not in KEYWORDS and self.toks[self.i + 1].text == "::")):
             return self.decl()
+        if self.at("record"):
+            self.error("records are defined at the top level or inside a module, not in a procedure")
         if t.kind == "ident" and t.text in ("allocate", "deallocate") and self.toks[self.i + 1].kind == "ident":
             return self.allocation()
         if self.at("if"):
@@ -547,6 +622,8 @@ class Parser:
                     while self.accept(","):
                         args.append(self.arg())
                 self.expect(")")
+            if any(isinstance(a, NamedArg) for a in args):
+                self.error("named arguments are only for building records")
             self.newline()
             return Call(name, args, t.line)
         if self.at("return"):
@@ -564,7 +641,7 @@ class Parser:
         update = bool(self.accept("update"))
         e = self.expr()
         if update or self.at("="):
-            if not isinstance(e, (Var, Apply)):
+            if not isinstance(e, (Var, Apply, FieldAccess)):
                 self.error("cannot assign to this expression")
             self.expect("=")
             v = self.expr()
@@ -869,19 +946,35 @@ class Parser:
             self.error("'break' cannot be used in an expression")
         if t.kind == "ident":
             name = self.next().text
+            e = Var(name)
             if self.accept("("):
-                args = []
-                if not self.at(")"):
-                    while True:
-                        args.append(self.arg())
-                        if not self.accept(","):
-                            break
-                self.expect(")")
-                return Apply(name, args, t.line)
-            return Var(name)
+                e = Apply(name, self.call_args(), t.line)
+            while self.at("."):                    # record fields: p.x, pts(2).pos.y, p.v(3)
+                self.next()
+                field = self.ident()
+                e = FieldAccess(e, field, self.call_args() if self.accept("(") else None, t.line)
+            return e
         self.error("expected an expression")
 
+    def call_args(self):
+        """The arguments after an opening parenthesis, through the closing one."""
+        args = []
+        if not self.at(")"):
+            while True:
+                args.append(self.arg())
+                if not self.accept(","):
+                    break
+        self.expect(")")
+        named = [isinstance(a, NamedArg) for a in args]
+        if named != sorted(named):
+            self.error("positional arguments must come before named arguments")
+        return args
+
     def arg(self):
+        if self.tok.kind == "ident" and self.toks[self.i + 1].text == "=" and self.toks[self.i + 1].kind == "op":
+            name = self.next().text
+            self.next()
+            return NamedArg(name, self.expr())
         lo = None if self.at(":") else self.expr()
         if self.accept(":"):
             hi = None if self.at(",", ")") else self.expr()

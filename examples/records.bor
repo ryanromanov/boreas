@@ -1,0 +1,38 @@
+! A record groups named fields. It is a value: assigning copies it.
+! Fields are read and written with a dot; `const` makes a whole record read-only.
+
+record point
+  real :: x
+  real :: y
+end record
+
+record segment
+  point :: from
+  point :: to
+end record
+
+function length(segment :: s) -> real
+  return sqrt((s.to.x - s.from.x) ** 2 + (s.to.y - s.from.y) ** 2)
+end function
+
+subroutine shift(inout point :: p, real :: dx, real :: dy)
+  update p.x = p.x + dx          ! writes that reach the caller are marked `update`
+  update p.y = p.y + dy
+end subroutine
+
+program demo
+  const point :: origin = point(0.0, 0.0)
+  point :: a = point(3.0, 4.0)
+  point :: b = a                 ! b is a copy
+  segment :: s
+
+  call shift(b, 1.0, 1.0)
+  print "a =", a, " b =", b
+
+  s.from = origin
+  s.to = a
+  print "length:", length(s)
+
+  s.to = point(x = 6.0, y = 8.0)  ! fields can be named; any subset is allowed
+  print "length:", length(s)
+end program

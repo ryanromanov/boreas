@@ -47,6 +47,11 @@ def _expr(e):
         return (expr(e.lo) if e.lo is not None else "") + ":" + (expr(e.hi) if e.hi is not None else "")
     if k is Apply:
         return f"{e.name}(" + ", ".join(expr(a) for a in e.args) + ")"
+    if k is NamedArg:
+        return f"{e.name} = {expr(e.value)}"
+    if k is FieldAccess:
+        args = "" if e.args is None else "(" + ", ".join(expr(a) for a in e.args) + ")"
+        return f"{expr(e.base, ATOM)}.{e.field}{args}"
     if k is Unary:
         sep = " " if e.op == "not" else ""
         return f"{e.op}{sep}{expr(e.operand, prec(e))}"
@@ -186,8 +191,16 @@ def _uses(uses, depth=1):
     return ["  " * depth + f"use {u.module}: " + ", ".join(u.names) for u in uses]
 
 
+def record(r):
+    lines = [f"{'public ' if r.public else ''}record {r.name}"]
+    lines.extend(stmts(r.fields))
+    return lines + ["end record"]
+
+
 def module(m):
     lines = [_comment(c) for c in m.comments] + [f"module {m.name}"] + _uses(m.uses)
+    for r in m.records.values():
+        lines.extend("  " + l for l in record(r))
     lines.extend(stmts(m.consts))
     for f in m.functions.values():
         lines.extend("  " + l if l else l for l in procedure(f))
@@ -212,6 +225,8 @@ def to_source(unit, header=()):
     blocks = []
     if header:
         blocks.append([_comment(h) for h in header])
+    for r in unit.records.values():
+        blocks.append(record(r))
     for m in unit.modules.values():
         blocks.append(module(m))
     for f in unit.functions.values():

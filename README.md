@@ -165,6 +165,37 @@ resizes. An allocated array can be passed to any procedure taking an array param
 cannot themselves be `allocatable`, so a callee cannot allocate its caller's array. A leftover
 allocation is freed at the end of its scope.
 
+## Records
+
+A record groups named fields. Records are defined at the top level or inside a module, one
+field per line, with no default values:
+
+    record point
+      real :: x
+      real :: y
+    end record
+
+    point :: p = point(1.0, 2.0)           ! all fields, in order
+    point :: q = point(y = 2.0, x = 1.0)   ! or by name, in any order
+    point :: r = point(y = 5.0)            ! any subset: the others have no value yet
+    p.x = 3.0
+    print p.x + q.y, p
+
+- A record is a value: assigning one, passing it, or returning it copies it, so two variables never
+  share fields. Records can hold other records and fixed-size array fields (`integer :: tags(3)`,
+  with a literal size), and you can make arrays of records (`point :: pts(10)`).
+- Fields that hold no value yet are like unassigned variables: reading one is an error, and so is
+  printing a record that has one. Array fields start zeroed, like arrays.
+- `const point :: origin = point(0.0, 0.0)` makes a read-only record. Writing a field of a `const`
+  record or an `in` parameter is an error.
+- A write to a field of an `out` or `inout` parameter needs `update`, like any write the caller sees:
+  `update p.x = p.x + dx`. An `out` record parameter must have every field assigned before the
+  subroutine returns. Two fields of one record may be passed as separate `out`/`inout` arguments;
+  the same field twice (or a record and one of its fields) is an aliasing error.
+- Records cannot be compared or used in arithmetic (compare the fields), cannot be `select` subjects,
+  and cannot be `allocatable` yet. In a module, a record is private unless marked `public`, and is
+  imported by name: `use geometry: point`. See `examples/records.bor`.
+
 ## Subroutines and parameter modes
 
 Results come back through `out` / `inout` parameters:
