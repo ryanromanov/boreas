@@ -35,29 +35,28 @@ def base_type(t):
 
 
 def type_of(v):
-    if v is NULL: return "null"
     if isinstance(v, bool): return "logical"
     if isinstance(v, int): return "integer"
     if isinstance(v, float): return "real"
     if isinstance(v, str): return "string"
     if isinstance(v, Array): return "array"
     if isinstance(v, Record): return v.rdef.name
+    if v is NULL: return "null"
     return "?"
 
 
 def coerce(typ, value, what):
     """Assignment rules: integer -> real is implicit; everything else must match. Only an
     optional type (`integer?`) can hold null."""
-    if value is NULL:
-        if typ.endswith("?"):
-            return NULL
-        raise LangError(f"{what}: cannot assign null to {typ} (declare it '{typ}?' to allow null)")
-    typ = base_type(typ)
     got = type_of(value)
     if got == typ:
         return value.copy() if isinstance(value, Record) else value
     if typ == "real" and got == "integer":
         return float(value)
+    if typ[-1] == "?":                           # an optional type also takes null
+        return NULL if value is NULL else coerce(typ[:-1], value, what)
+    if value is NULL:
+        raise LangError(f"{what}: cannot assign null to {typ} (declare it '{typ}?' to allow null)")
     raise LangError(f"{what}: cannot assign {got} to {typ}")
 
 
@@ -808,7 +807,6 @@ class Interp:
     def eval(self, e, env):
         k = type(e)
         if k in (Num, Str, Bool): return e.value
-        if k is Null: return NULL
         if k is Var:
             slot = self.lookup(e.name, env)
             v = slot[VALUE]
@@ -834,11 +832,12 @@ class Interp:
                 raise LangError(f"records cannot be used with '{e.op}'; use their fields")
             f = (lambda x: not self.truth(x)) if e.op == "not" else (lambda x: -x) if e.op == "-" else (lambda x: x)
             return Array(v.shape, [f(x) for x in v.data]) if isinstance(v, Array) else f(v)
-        if k is Binary and e.op == "??":              # the right side is only evaluated when needed
-            left = self.eval(e.left, env)
-            return self.eval(e.right, env) if left is NULL else left
         if k is Binary:
+            if e.op == "??":                          # the right side is only evaluated when needed
+                left = self.eval(e.left, env)
+                return self.eval(e.right, env) if left is NULL else left
             return self.binary(e.op, self.eval(e.left, env), self.eval(e.right, env))
+        if k is Null: return NULL
         if k is Apply: return self.apply(e, env)
         if k is SelectExpr: return self.select_expr(e, env)
         raise LangError(f"cannot evaluate {k.__name__}")
