@@ -6,6 +6,8 @@ program mixed
   integer, pointer :: buf(:)
   type point
     real :: x, y
+  contains
+    procedure :: show
   end type point
   type(point) :: p
 

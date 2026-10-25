@@ -13,7 +13,10 @@ PACKAGE_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def words(text):
     """Normalise program output so Fortran list-directed output and Boreas output compare equal."""
-    text = re.sub(r"[\[\],]", " ", text)
+    # a printed record, point(x=1.0, y=2.0), is compared as the flat list Fortran prints, 1.0 2.0
+    text = re.sub(r"\b[A-Za-z_]\w*\((?=[A-Za-z_]\w*=)", " ", text)
+    text = re.sub(r"\b[A-Za-z_]\w*=", " ", text)
+    text = re.sub(r"[\[\](),]", " ", text)
     return [{"T": "true", "F": "false"}.get(w, w) for w in text.split()]
 
 

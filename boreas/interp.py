@@ -570,16 +570,18 @@ class Interp:
             slot[VALUE] = coerce(slot[TYPE], value, where)
 
     def construct(self, rdef, e, env):
-        """`point(1.0, 2.0)` gives every field in order; `point(x = 1.0)` gives only the named
-        ones (the others have no value yet); positional arguments may come first."""
+        """`point(1.0, 2.0)` gives every field in order (trailing fields with a default may be left
+        out); `point(x = 1.0)` gives only the named ones; positional arguments may come first.
+        Fields not given keep their defaults."""
         line = f"line {e.line}"
         pos = [a for a in e.args if not isinstance(a, NamedArg)]
         named = [a for a in e.args if isinstance(a, NamedArg)]
         if len(pos) > len(rdef.fields):
             raise LangError(f"{line}: {rdef.name} has {len(rdef.fields)} field(s), got {len(pos)} value(s)")
-        if not named and len(pos) != len(rdef.fields):
+        if not named and any(f.init is None for f in rdef.fields[len(pos):]):
             raise LangError(f"{line}: {rdef.name}() needs all {len(rdef.fields)} field(s) "
-                            f"({', '.join(f.name for f in rdef.fields)}), or name the ones you give")
+                            f"({', '.join(f.name for f in rdef.fields)}), or name the ones you give "
+                            f"(only trailing fields with a default may be left out)")
         rec = self.new_record(rdef)
         given = set()
         for f, a in zip(rdef.fields, pos):
