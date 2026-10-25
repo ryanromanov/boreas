@@ -279,6 +279,10 @@ report on stderr. Translations that change meaning are flagged, never silent:
   Types with inheritance (`extends`), type-bound procedures, allocatable or pointer components,
   or array sizes that aren't constants become a TODO for the whole type, and code that uses it
   becomes TODOs too.
+- A local that Fortran keeps between calls (declared `save`, named in a `save` statement, or
+  initialised in its declaration) becomes a TODO when the procedure changes it and can read the old
+  value, because Boreas locals start fresh on every call. Ones that are never changed, or always
+  assigned before they are read, convert without a note.
 - `select case` becomes Boreas `select case`. A case value that is not a literal or a
   `parameter` leaves that one construct as a TODO.
 - Loop names become labels (`outer: do` ... `end do outer`), and `exit name` / `cycle name`
