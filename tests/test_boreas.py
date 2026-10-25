@@ -155,9 +155,18 @@ end subroutine"""
         with self.assertRaises(LangError):
             run("print 1", sub)
 
-    def test_unassigned_variable_rejected(self):
+    def test_declared_variables_start_at_their_default_value(self):
+        self.assertEqual(run("integer :: i\nreal :: r\nlogical :: b\nstring :: s\nprint i, r, b\nprint \"[\" + s + \"]\""),
+                         ["0 0.0 false", "[]"])
+
+    def test_default_values_can_be_used_in_arithmetic(self):
+        self.assertEqual(run("integer :: total\ninteger :: k\ndo k = 1, 3\n  total = total + k\nend do\nprint total"),
+                         ["6"])
+
+    def test_out_parameter_still_starts_with_no_value(self):
+        sub = "subroutine peek(out integer :: n)\n integer :: m\n m = n\n update n = m\nend subroutine"
         with self.assertRaisesRegex(LangError, "before it is assigned"):
-            run("integer :: x\nprint x")
+            run("integer :: x\ncall peek(x)", sub)
 
 
 M = "integer :: m(2, 3) = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n"   # columns: [1,2] [3,4] [5,6]

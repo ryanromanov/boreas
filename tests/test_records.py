@@ -29,19 +29,21 @@ class BasicTests(unittest.TestCase):
     def test_named_construction_in_any_order(self):
         self.assertEqual(run("point :: p = point(y = 2.0, x = 1.0)\nprint p"), ["point(x=1.0, y=2.0)"])
 
-    def test_named_construction_may_leave_fields_unassigned(self):
-        self.assertEqual(run("point :: p = point(y = 5.0)\nprint p.y"), ["5.0"])
-        fails("point :: p = point(y = 5.0)\nprint p.x", "field 'p.x' is used before it is assigned")
+    def test_named_construction_leaves_the_others_at_their_defaults(self):
+        self.assertEqual(run("point :: p = point(y = 5.0)\nprint p"), ["point(x=0.0, y=5.0)"])
 
     def test_positional_then_named(self):
         defs = "record box\n  integer :: a\n  integer :: b\n  integer :: c\nend record\n"
         self.assertEqual(run("box :: q = box(1, c = 3)\nq.b = 2\nprint q", defs=defs), ["box(a=1, b=2, c=3)"])
 
-    def test_fields_start_unassigned(self):
-        fails("point :: p\nprint p.x", "field 'p.x' is used before it is assigned")
+    def test_fields_start_at_their_default_values(self):
+        defs = "record mix\n  integer :: i\n  real :: r\n  logical :: b\n  string :: s\n  point :: p\nend record\n"
+        self.assertEqual(run("mix :: m\nprint m.i, m.r, m.b, m.p", defs=POINT + defs),
+                         ["0 0.0 false point(x=0.0, y=0.0)"])
 
-    def test_printing_needs_every_field(self):
-        fails("point :: p\np.x = 1.0\nprint p", "cannot print a point: its field 'y' has no value yet")
+    def test_declared_record_can_be_printed_and_used_at_once(self):
+        self.assertEqual(run("point :: p\nprint p"), ["point(x=0.0, y=0.0)"])
+        self.assertEqual(run("point :: pts(2)\nprint pts(2).y"), ["0.0"])
 
     def test_assignment_copies(self):
         body = "point :: p = point(1.0, 2.0)\npoint :: q\nq = p\nq.x = 9.0\nprint p.x, q.x"

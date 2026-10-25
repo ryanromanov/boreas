@@ -464,11 +464,10 @@ class Interp:
             env[s.name] = [s.type, None, True, None, len(s.dims)]
             return
         if s.dims is None:
-            val = None
             if s.init is not None:
                 val = coerce(s.type, self.eval(s.init, env), where)
-            elif sub is not None:
-                val = self.new_record(sub)
+            else:
+                val = self.new_record(sub) if sub is not None else DEFAULTS[s.type]
             env[s.name] = [s.type, val, False, "const" if s.const else None]
             return
         shape = [self.eval(d, env) for d in s.dims]
@@ -487,18 +486,21 @@ class Interp:
                 data = [coerce(s.type, init, where) for _ in range(n)]      # one copy per element
         env[s.name] = [s.type, Array(shape, data), True, "const" if s.const else None]
 
-    def new_record(self, rdef):
-        """A record whose scalar fields have no value yet (array fields start zeroed, like arrays)."""
+    def new_record(self, rdef, blank=False):
+        """A record whose fields hold their type's default value (0, 0.0, false, ""). A `blank`
+        record has no values at all: that is what an `out` parameter starts as."""
         owner = self.owner[id(rdef)]
         fields = {}
         for f in rdef.fields:
             sub = owner.records.get(f.type)
             if f.dims is None:
-                fields[f.name] = [f.type, self.new_record(sub) if sub else None, False, None]
+                value = self.new_record(sub, blank) if sub else (None if blank else DEFAULTS[f.type])
+                fields[f.name] = [f.type, value, False, None]
             else:
                 shape = [d.value for d in f.dims]
                 n = math.prod(shape)
-                data = [self.new_record(sub) for _ in range(n)] if sub else [DEFAULTS[f.type]] * n
+                data = ([self.new_record(sub, blank) for _ in range(n)] if sub
+                        else [None if blank else DEFAULTS[f.type]] * n)
                 fields[f.name] = [f.type, Array(shape, data), True, None]
         return Record(rdef, fields)
 
@@ -948,7 +950,7 @@ class Interp:
             current = self.read(ref)
             if intent == "out" and typ not in DEFAULTS:           # an out record starts with no values
                 sub = self.scopes[id(f)].records.get(typ)
-                values.append(self.new_record(sub) if sub else current.copy())
+                values.append(self.new_record(sub, blank=True) if sub else current.copy())
             elif isinstance(current, (Array, Record)):
                 values.append(current.copy())                     # copy in
             elif intent == "out":

@@ -221,8 +221,8 @@ class RuntimeErrorTests(unittest.TestCase):
         self.fails("allocate a(2.5)", "non-negative integers")
         self.fails("allocate a(true)", "non-negative integers")
 
-    def test_extent_must_be_assigned(self):
-        self.fails("integer :: n\nallocate a(n)", "used before it is assigned")
+    def test_extent_of_an_undeclared_value_is_the_default_zero(self):
+        self.fails("integer :: n\nallocate a(n)\nprint a(1)", "out of bounds")
 
     def test_bounds_after_allocation(self):
         self.fails("allocate a(2)\nprint a(3)", "out of bounds")
