@@ -324,6 +324,15 @@ Parses and checks a file without running it. Errors print as `file:line:col: mes
 (column 1 when the error has no column) and the exit status is 1; a clean file prints
 nothing and exits 0. `--json` prints `{"file": ..., "errors": [{"line", "col", "message"}]}`.
 
+## Language server
+
+    boreas lsp
+
+Speaks the Language Server Protocol on stdin/stdout. For now it reports the errors
+`boreas check` finds as diagnostics (squiggles) when a document is opened or changed,
+one error at a time because the parser stops at the first. Point any editor with LSP
+support at that command for `.bor` files.
+
 ## Converting Fortran
 
     boreas convert legacy.f90 -o legacy.bor
