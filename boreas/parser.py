@@ -594,27 +594,24 @@ class Parser:
         line = self.tok.line
         typ = self.type_name()
         self.expect("::")
-        decls = []
-        while True:
-            name = self.ident()
-            dims = None
-            if allocatable:
-                dims = self.deferred_dims(name)
-            elif self.accept("("):
-                dims = [self.expr()]
-                while self.accept(","):
-                    dims.append(self.expr())
-                self.expect(")")
-            init = self.expr() if self.accept("=") else None
-            if allocatable and init is not None:
-                self.error(f"allocatable array '{name}' cannot have an initializer")
-            if const and init is None:
-                self.error(f"constant '{name}' needs a value")
-            decls.append(Decl(typ, name, dims, init, line, const, allocatable=allocatable))
-            if not self.accept(","):
-                break
+        name = self.ident()
+        dims = None
+        if allocatable:
+            dims = self.deferred_dims(name)
+        elif self.accept("("):
+            dims = [self.expr()]
+            while self.accept(","):
+                dims.append(self.expr())
+            self.expect(")")
+        init = self.expr() if self.accept("=") else None
+        if allocatable and init is not None:
+            self.error(f"allocatable array '{name}' cannot have an initializer")
+        if const and init is None:
+            self.error(f"constant '{name}' needs a value")
+        if self.at(","):
+            self.error("declare one variable per line")
         self.newline()
-        return decls if len(decls) > 1 else decls[0]
+        return Decl(typ, name, dims, init, line, const, allocatable=allocatable)
 
     def deferred_dims(self, name):
         """The `(:, :)` after an allocatable name: one Slice per dimension, which fixes the rank."""

@@ -113,7 +113,7 @@ class FixtureTests(unittest.TestCase):
         self.assertTrue(any("loop variable" in f[2] for f in todos(findings)))
 
     def test_variables_named_like_module_words_are_renamed(self):
-        src = "program p\n  integer :: use, public\n  use = 1\n  public = 2\n  print *, use + public\nend program\n"
+        src = "program p\n  integer :: use\ninteger :: public\n  use = 1\n  public = 2\n  print *, use + public\nend program\n"
         text, _ = convert(src)
         self.assertEqual(run_bor(text), ["3"])
 
@@ -152,7 +152,7 @@ class TranslationTests(unittest.TestCase):
     def test_parameter_becomes_const(self):
         text, findings = conv("integer, parameter :: n = 4, sq(2) = (/ 1, 4 /)\n  real, parameter :: half = 0.5\n"
                               "  integer :: k\n  k = n\n  print *, k, sq, half", "")
-        self.assertIn("const integer :: n = 4, sq(2) = [1, 4]", text)
+        self.assertIn("  const integer :: n = 4\n  const integer :: sq(2) = [1, 4]", text)
         self.assertIn("const real :: half = 0.5", text)
         self.assertFalse(any("ordinary variables" in f[2] for f in findings))
         self.assertEqual(run_bor(text), ["4 [1, 4] 0.5"])
@@ -172,7 +172,7 @@ class TranslationTests(unittest.TestCase):
         self.assertIn("print 1.5, 2000.0, 3.0, 4", text)
 
     def test_continuation_comments_and_semicolons(self):
-        text, _ = conv("integer :: a, b\n  a = 1; b = &\n    & 2   ! trailing\n  print *, a, &\n     b", "")
+        text, _ = conv("integer :: a\ninteger :: b\n  a = 1; b = &\n    & 2   ! trailing\n  print *, a, &\n     b", "")
         self.assertIn("a = 1\n  b = 2", text)
         self.assertIn("print a, b", text)
         self.assertNotIn("trailing", text)
@@ -186,15 +186,15 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(len(todos(findings)), 1)
 
     def test_precedence_follows_boreas_not_fortran(self):
-        text, _ = conv("real :: a, b, c\n  a = 1.0; b = 2.0\n  c = -a ** 2 + (a - (b - a)) * 3.0 - a / (b * a)", "")
+        text, _ = conv("real :: a\nreal :: b\nreal :: c\n  a = 1.0; b = 2.0\n  c = -a ** 2 + (a - (b - a)) * 3.0 - a / (b * a)", "")
         self.assertIn("c = -(a ** 2) + (a - (b - a)) * 3.0 - a / (b * a)".replace("-(a ** 2)", "-a ** 2"), text)
 
     def test_negation_covers_the_whole_first_term(self):
-        text, _ = conv("real :: a, b\n  a = 1.0; b = 2.0\n  a = -a * b", "")
+        text, _ = conv("real :: a\nreal :: b\n  a = 1.0; b = 2.0\n  a = -a * b", "")
         self.assertIn("a = -(a * b)", text)
 
     def test_eqv_and_not_get_parentheses(self):
-        text, _ = conv("logical :: p, q\n  p = .true.; q = .false.\n  print *, p .eqv. q, .not. p .neqv. q, p .or. q .eqv. p", "")
+        text, _ = conv("logical :: p\nlogical :: q\n  p = .true.; q = .false.\n  print *, p .eqv. q, .not. p .neqv. q, p .or. q .eqv. p", "")
         self.assertIn("print p == q, (not p) /= q, (p or q) == p", text)
 
     def test_keyword_names_are_renamed(self):
@@ -366,6 +366,12 @@ class TranslationTests(unittest.TestCase):
                                  "program p\n  print *, 1\nend program\n")
         self.assertEqual(todos(findings), [])
         self.assertEqual(run_bor(text), ["1"])
+
+    def test_declarations_with_several_names_are_split(self):
+        text, _ = conv("print *, a + b + c", "  integer :: a = 1, b = 2\n  integer :: c = 3")
+        for line in ("  integer :: a = 1\n", "  integer :: b = 2\n", "  integer :: c = 3\n"):
+            self.assertIn(line, text)
+        self.assertEqual(run_bor(text), ["6"])
 
     def test_unterminated_block_is_an_error(self):
         with self.assertRaises(LangError):

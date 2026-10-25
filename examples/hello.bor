@@ -12,7 +12,8 @@ function fib(integer :: n) -> integer
 end function
 
 program demo
-  integer :: i, count = 0
+  integer :: i
+  integer :: count = 0
   real :: total = 0.0
   real :: xs(5)
   integer :: ys(5) = [1, 2, 3, 4, 5]

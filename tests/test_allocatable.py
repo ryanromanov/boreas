@@ -11,8 +11,8 @@ from boreas.printer import to_source
 
 class ParseTests(unittest.TestCase):
     def test_declaration_ranks(self):
-        unit = parse("program t\nallocatable integer :: a(:)\nallocatable real :: m(:, :), v(:)\nend program t")
-        a, m, v = unit.program.body[0], *unit.program.body[1]
+        unit = parse("program t\nallocatable integer :: a(:)\nallocatable real :: m(:, :)\nallocatable real :: v(:)\nend program t")
+        a, m, v = unit.program.body[:3]
         self.assertTrue(a.allocatable and len(a.dims) == 1)
         self.assertTrue(m.allocatable and len(m.dims) == 2)
         self.assertEqual(len(v.dims), 1)
@@ -102,7 +102,8 @@ print r, b, '[' + s(1) + ']'""".replace("'", '"'))
 
     def test_two_dimensional_and_shape(self):
         out = run("""allocatable integer :: m(:, :)
-integer :: i, j
+integer :: i
+integer :: j
 allocate m(2, 3)
 do j = 1, 3
   do i = 1, 2
@@ -263,7 +264,8 @@ class PrinterTests(unittest.TestCase):
 end subroutine
 
 program t
-  allocatable integer :: a(:), b(:, :)
+  allocatable integer :: a(:)
+  allocatable integer :: b(:, :)
   allocatable real :: r(:)
   integer :: n
   n = 3
@@ -280,7 +282,7 @@ end program t
     def test_round_trip_is_stable(self):
         once = to_source(parse(self.SRC))
         self.assertEqual(to_source(parse(once)), once)
-        self.assertIn("  allocatable integer :: a(:), b(:, :)\n", once)
+        self.assertIn("  allocatable integer :: a(:)\n  allocatable integer :: b(:, :)\n", once)
         self.assertIn("  allocatable real :: r(:)\n", once)
         self.assertIn("  integer :: n\n", once)           # plain declarations are not merged with these
         self.assertIn("  allocate b(n, 2 * n)\n", once)

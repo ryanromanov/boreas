@@ -55,7 +55,7 @@ end subroutine"""
 
 class SubroutineTests(unittest.TestCase):
     def test_inout(self):
-        self.assertEqual(run("integer :: x = 1, y = 2\ncall swap(x, y)\nprint x, y", SWAP), ["2 1"])
+        self.assertEqual(run("integer :: x = 1\ninteger :: y = 2\ncall swap(x, y)\nprint x, y", SWAP), ["2 1"])
 
     def test_out_and_in(self):
         self.assertEqual(run("real :: a\ncall circle(2.0, a)\nprint a", AREA), ["12.0"])
@@ -130,7 +130,7 @@ end subroutine"""
 
     def test_subroutine_in_expression_rejected(self):
         with self.assertRaisesRegex(LangError, "is a subroutine"):
-            run("integer :: x = 1, y = 2\nprint swap(x, y)", SWAP)
+            run("integer :: x = 1\ninteger :: y = 2\nprint swap(x, y)", SWAP)
 
     def test_call_on_function_rejected(self):
         f = "function one() -> integer\n return 1\nend function"
@@ -259,7 +259,7 @@ end subroutine"""
         self.assertEqual(out, ["[[7, 7, 7], [8, 8, 8]]"])
 
     def test_nested_loops(self):
-        body = "integer :: i, j\nreal :: g(2, 2)\ndo j = 1, 2\n do i = 1, 2\n  g(i, j) = i * 10 + j\n end do\nend do\nprint g"
+        body = "integer :: i\ninteger :: j\nreal :: g(2, 2)\ndo j = 1, 2\n do i = 1, 2\n  g(i, j) = i * 10 + j\n end do\nend do\nprint g"
         self.assertEqual(run(body), ["[[11.0, 12.0], [21.0, 22.0]]"])
 
 
@@ -286,7 +286,7 @@ class ConstTests(unittest.TestCase):
         self.assertEqual(run("const integer :: a = 2\nconst integer :: b = a * 5\nprint b"), ["10"])
 
     def test_several_constants_in_one_declaration(self):
-        self.assertEqual(run("const integer :: a = 1, b = 2\nprint a + b"), ["3"])
+        self.assertEqual(run("const integer :: a = 1\nconst integer :: b = 2\nprint a + b"), ["3"])
 
     def test_constant_array(self):
         out = run("const integer :: p(3) = [2, 3, 5]\nprint p, sum(p), p(2)")
@@ -330,7 +330,7 @@ class ConstTests(unittest.TestCase):
     def test_printer_keeps_const(self):
         from boreas.printer import to_source
         from boreas.parser import parse
-        src = "program p\n  const integer :: a = 1, b = 2\n  const real :: c = 1.5\n  integer :: d = 3\nend program p\n"
+        src = "program p\n  const integer :: a = 1\n  const integer :: b = 2\n  const real :: c = 1.5\n  integer :: d = 3\nend program p\n"
         self.assertEqual(to_source(parse(src)), src)
 
 
@@ -475,6 +475,25 @@ end module"""
         text = to_source(parse(GEO + "\nprogram p\n use geometry: area\n print area(1.0)\nend program"))
         self.assertIn("  public function area(real :: r) -> real", text)
         self.assertEqual(to_source(parse(text)), text)
+
+
+class OneDeclarationPerLineTests(unittest.TestCase):
+    def test_several_names_on_one_line_are_rejected(self):
+        with self.assertRaisesRegex(LangError, "declare one variable per line"):
+            run("integer :: x, y")
+
+    def test_rejected_with_initializers_const_and_arrays(self):
+        for src in ("integer :: x = 1, y = 2", "const real :: a = 1.0, b = 2.0", "real :: v(3), w(2)",
+                    "allocatable real :: v(:), w(:)"):
+            with self.subTest(src=src):
+                with self.assertRaisesRegex(LangError, "declare one variable per line"):
+                    run(src)
+
+    def test_printer_puts_each_declaration_on_its_own_line(self):
+        from boreas.parser import parse
+        from boreas.printer import to_source
+        text = to_source(parse("program p\ninteger :: a\ninteger :: b = 2\nreal :: c\nend program p"))
+        self.assertIn("  integer :: a\n  integer :: b = 2\n  real :: c\n", text)
 
 
 if __name__ == "__main__":

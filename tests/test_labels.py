@@ -10,15 +10,15 @@ from test_fortran import GFORTRAN, fixture, read, run_bor, run_gfortran, same_ou
     assert_round_trips, conv
 
 
-def prog(body, decls="integer :: i, j, k, n"):
+def prog(body, decls="integer :: i\ninteger :: j\ninteger :: k\ninteger :: n"):
     return f"program t\n  {decls}\n{body}\nend program t\n"
 
 
-def run(body, decls="integer :: i, j, k, n"):
+def run(body, decls="integer :: i\ninteger :: j\ninteger :: k\ninteger :: n"):
     return run_bor(prog(body, decls))
 
 
-def fails(body, msg, decls="integer :: i, j, k, n"):
+def fails(body, msg, decls="integer :: i\ninteger :: j\ninteger :: k\ninteger :: n"):
     with unittest.TestCase().assertRaises(LangError) as cm:
         parse(prog(body, decls))
     assert msg in str(cm.exception), str(cm.exception)
@@ -99,7 +99,8 @@ end program t
 end module m
 program t
   use m: pi2
-  integer :: a(4), s
+  integer :: a(4)
+  integer :: s
   a = [1, 2, 3, 4]
   lo: do s = 1, 1
     print a(2:3), pi2
@@ -135,7 +136,7 @@ end program t
 class ErrorTests(unittest.TestCase):
     def test_missing_closing_label(self):
         e = fails("outer: do i = 1, 2\nend do", "must close with 'end do outer'")
-        self.assertIn("line 4", e)
+        self.assertIn("line 7", e)
 
     def test_missing_closing_label_while(self):
         fails("w: do while false\nend do", "must close with 'end do w'")
@@ -152,7 +153,7 @@ class ErrorTests(unittest.TestCase):
 
     def test_unknown_label(self):
         e = fails("do i = 1, 2\n exit nope\n end do", "'exit nope' does not name an enclosing loop")
-        self.assertIn("line 4", e)
+        self.assertIn("line 7", e)
         fails("do i = 1, 2\n cycle nope\n end do", "'cycle nope' does not name an enclosing loop")
 
     def test_label_outside_any_loop(self):
@@ -337,7 +338,8 @@ class RunTests(unittest.TestCase):
 
     def test_return_inside_labeled_loop(self):
         src = """function first(integer :: t) -> integer
-  integer :: i, j
+  integer :: i
+  integer :: j
   o: do i = 1, 5
     do j = 1, 5
       if i * j == t then
@@ -364,7 +366,9 @@ end program t
   end do a
 end subroutine
 program t
-  integer :: i, r, n
+  integer :: i
+  integer :: r
+  integer :: n
   n = 0
   a: do i = 1, 3
     call inner(r)
@@ -381,7 +385,8 @@ end program t
 
 class UpdateTests(unittest.TestCase):
     SUB = """subroutine tally(inout integer :: total, integer :: n)
-  integer :: i, j
+  integer :: i
+  integer :: j
   o: do i = 1, n
     do j = 1, n
       if j > i then
@@ -416,7 +421,7 @@ end program t
 
     def test_loop_variable_cannot_be_a_parameter(self):
         with self.assertRaises(LangError):
-            parse(self.SUB.replace("integer :: i, j", "integer :: j").replace("o: do i = 1, n", "o: do n = 1, 3"))
+            parse(self.SUB.replace("integer :: i\ninteger :: j", "integer :: j").replace("o: do i = 1, n", "o: do n = 1, 3"))
 
 
 class PrinterTests(unittest.TestCase):
@@ -484,7 +489,7 @@ class ConverterTests(unittest.TestCase):
     do j = 1, 2
       cycle in
     end do
-  end do in""", "  integer :: i, j")
+  end do in""", "  integer :: i\ninteger :: j")
         self.assertEqual(todos(findings), [])
         self.assertIn("in_: do i = 1, 3", text)
         self.assertIn("exit in_", text)
@@ -544,7 +549,7 @@ class ConverterTests(unittest.TestCase):
     a: do j = 1, 2
       cycle a2
     end do a
-  end do a2""", "  integer :: i, j")
+  end do a2""", "  integer :: i\ninteger :: j")
         self.assertEqual(todos(findings), [])
         parse(text)
 
