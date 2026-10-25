@@ -1,4 +1,6 @@
 import math
+import cmath
+import operator
 import sys
 from itertools import product
 from .lexer import LangError
@@ -21,6 +23,10 @@ def _mine(e, loop):
 class _Break(Exception): pass
 
 
+COMPARE = {"==": operator.eq, "/=": operator.ne, "<": operator.lt, "<=": operator.le,
+           ">": operator.gt, ">=": operator.ge}
+
+
 class _Null:
     """The absent value of an optional (`T?`) variable."""
     def __repr__(self): return "null"
@@ -40,6 +46,7 @@ def type_of(v):
     if isinstance(v, int): return "integer"
     if isinstance(v, float): return "real"
     if isinstance(v, str): return "string"
+    if isinstance(v, complex): return "complex"
     if isinstance(v, Array): return "array"
     if isinstance(v, Record): return v.rdef.name
     if v is NULL: return "null"
@@ -54,6 +61,8 @@ def coerce(typ, value, what):
         return value.copy() if isinstance(value, Record) else value
     if typ == "real" and got == "integer":
         return float(value)
+    if typ == "complex" and got in ("integer", "real"):
+        return complex(value)
     if typ[-1] == "?":                           # an optional type also takes null
         return NULL if value is NULL else coerce(typ[:-1], value, what)
     if value is NULL:
@@ -212,7 +221,7 @@ def _dot_product(a, b):
     _need_array("dot_product", b, rank=(1,))
     if a.shape != b.shape:
         raise LangError(f"dot_product(): shapes differ ({fmt_shape(a.shape)} vs {fmt_shape(b.shape)})")
-    return sum(x * y for x, y in zip(a.data, b.data))
+    return sum((x.conjugate() if isinstance(x, complex) else x) * y for x, y in zip(a.data, b.data))
 
 
 def _allocated(x):
@@ -249,7 +258,9 @@ def _modulo(a, b):
 
 
 def _atan(y, x=None):
-    return math.atan(y) if x is None else math.atan2(y, x)
+    if x is None:
+        return cmath.atan(y) if isinstance(y, complex) else math.atan(y)
+    return math.atan2(y, x)
 
 
 def _kind_of(x, name):
@@ -280,6 +291,39 @@ def _tiny(x):
     return sys.float_info.min
 
 
+def _complex_aware(real_fn, complex_fn):
+    """A math function that also accepts a complex argument (the real one rejects negative square roots,
+    out-of-range arcsines and so on instead of leaving the real line)."""
+    def apply(x):
+        try:
+            return real_fn(x)
+        except TypeError:
+            if isinstance(x, complex):
+                return complex_fn(x)
+            raise
+    return apply
+
+
+def _real(x):
+    return x.real if isinstance(x, complex) else float(x)
+
+
+def _cmplx(a, b=None):
+    if isinstance(a, complex):
+        if b is not None:
+            raise TypeError("cmplx(z) takes a single complex argument")
+        return a
+    return complex(a, 0.0 if b is None else b)
+
+
+def _need_complex(name, f):
+    def apply(z):
+        if not isinstance(z, complex):
+            raise TypeError(f"needs a complex number, got {type_of(z)}")
+        return f(z)
+    return apply
+
+
 BUILTINS = {
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
     "transpose": _transpose, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
@@ -290,18 +334,19 @@ BUILTINS = {
 }
 # Elementwise functions: applied to every element when given an array.
 ELEMENTAL = {
-    "sqrt": math.sqrt, "abs": abs, "sin": math.sin, "cos": math.cos, "exp": math.exp,
-    "log": math.log, "real": float, "int": int,
-    "tan": math.tan, "asin": math.asin, "acos": math.acos, "atan": _atan, "atan2": math.atan2,
-    "sinh": math.sinh, "cosh": math.cosh, "tanh": math.tanh,
-    "asinh": math.asinh, "acosh": math.acosh, "atanh": math.atanh,
-    "log10": math.log10, "hypot": math.hypot, "gamma": math.gamma, "log_gamma": math.lgamma,
-    "erf": math.erf, "erfc": math.erfc,
+    "abs": abs, "real": _real, "int": int, "atan": _atan, "atan2": math.atan2,
+    "hypot": math.hypot, "gamma": math.gamma, "log_gamma": math.lgamma, "erf": math.erf, "erfc": math.erfc,
     "floor": math.floor, "ceiling": math.ceil, "nint": lambda x: int(_round_half_away(x)),
     "aint": lambda x: float(math.trunc(x)), "anint": _round_half_away,
     "sign": _sign, "modulo": _modulo, "dim": lambda a, b: max(a - b, 0),
     "mod": lambda a, b: int(math.fmod(a, b)) if isinstance(a, int) and isinstance(b, int) else math.fmod(a, b),
+    "cmplx": _cmplx, "aimag": _need_complex("aimag", lambda z: z.imag),
+    "conjg": _need_complex("conjg", lambda z: z.conjugate()),
 }
+# These also take a complex argument and then give a complex result.
+ELEMENTAL.update({name: _complex_aware(getattr(math, name), getattr(cmath, name)) for name in (
+    "sqrt", "sin", "cos", "tan", "asin", "acos", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+    "exp", "log", "log10")})
 
 
 # A variable slot is [type, value, is_array, intent]. `value` is None until
@@ -309,7 +354,7 @@ ELEMENTAL = {
 # ordinary locals, "const" for constants, else "in" / "out" / "inout".
 # An allocatable array's slot has a fifth entry, its rank.
 TYPE, VALUE, IS_ARRAY, INTENT, RANK = range(5)
-DEFAULTS = {"integer": 0, "real": 0.0, "logical": False, "string": ""}
+DEFAULTS = {"integer": 0, "real": 0.0, "logical": False, "string": "", "complex": 0j}
 
 # A reference to something assignable is (slot, subs, name). `subs` is None for
 # the whole variable, else one entry per dimension: an int or an inclusive (lo, hi).
@@ -727,6 +772,7 @@ class Interp:
 
     def show(self, v):
         if isinstance(v, bool): return "true" if v else "false"
+        if isinstance(v, complex): return f"({v.real}, {v.imag})"
         if isinstance(v, Record):
             missing = v.first_unassigned()
             if missing:
@@ -992,12 +1038,17 @@ class Interp:
         if op in ("and", "or"):
             self.truth(a); self.truth(b)
             return (a and b) if op == "and" else (a or b)
+        if op in ("<", "<=", ">", ">=") and (isinstance(a, complex) or isinstance(b, complex)):
+            raise LangError(f"complex numbers cannot be ordered with '{op}'; compare abs() or the parts")
         if op in ("==", "/=", "<", "<=", ">", ">="):
-            return {"==": a == b, "/=": a != b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
+            try:
+                return COMPARE[op](a, b)
+            except TypeError:
+                raise LangError(f"cannot compare {type_of(a)} with {type_of(b)} using '{op}'")
         if isinstance(a, str) and op == "+" and isinstance(b, str):
             return a + b
         for v in (a, b):
-            if type_of(v) not in ("integer", "real"):
+            if type_of(v) not in ("integer", "real", "complex"):
                 raise LangError(f"operator {op!r} needs numbers, got {type_of(v)}")
         if op == "+": return a + b
         if op == "-": return a - b

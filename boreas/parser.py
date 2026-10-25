@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field, fields, is_dataclass
 from .lexer import lex, LangError
 
-TYPES = {"integer", "real", "logical", "string"}
+TYPES = {"integer", "real", "logical", "string", "complex"}
 
 
 # --- AST ---------------------------------------------------------------

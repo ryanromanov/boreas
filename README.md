@@ -33,7 +33,7 @@ Each variable is declared on its own line, with an optional initial value:
     real :: v(3) = [1.0, 2.0, 3.0]
 
 A variable you don't give a value starts at its type's default: `0` for `integer`, `0.0` for `real`,
-`false` for `logical` and `""` for `string`. Arrays and records start that way element by element
+`0.0 + 0.0i` for `complex`, `false` for `logical` and `""` for `string`. Arrays and records start that way element by element
 and field by field. The one exception is an `out` parameter, which starts with no value: producing
 it is the subroutine's job, so reading it first, or never assigning it, is an error.
 
@@ -48,6 +48,26 @@ about. `boreas convert` splits Fortran's `real :: x, y, z` into separate lines.
 
 A `const` needs a value and can never be assigned, used as a `do` variable, or
 passed as an `out`/`inout` argument. Fortran's `parameter` converts to `const`.
+
+## Complex numbers
+
+`complex` holds a real part and an imaginary part, both doubles. Build one with `cmplx(re, im)`;
+there is no literal syntax (`cmplx(re)` or an integer or real value widens when assigned to a
+`complex`):
+
+    complex :: z = cmplx(3.0, 4.0)
+    const complex :: i = cmplx(0.0, 1.0)
+    print abs(z), real(z), aimag(z), conjg(z)       ! 5.0 3.0 4.0 (3.0, -4.0)
+    print z * z + 1, z ** 2, exp(i * 3.141592653589793)
+
+- `+ - * / **` work, with integers and reals mixed in; `==` and `/=` compare. A complex cannot be
+  ordered with `<` (compare `abs` or the parts), and assigning a complex to a `real` is an error
+  (take `real(z)` or `aimag(z)`), where Fortran would silently drop the imaginary part.
+- `abs` (the modulus), `real`, `aimag`, `conjg`, `cmplx`, `sqrt`, `exp`, `log`, `log10`, the
+  trigonometric and hyperbolic functions and their inverses accept complex values, as do `sum`,
+  `product`, `matmul` and `transpose`. `dot_product(a, b)` conjugates `a`, like Fortran's.
+  `sqrt` of a negative *real* is still an error: write `sqrt(cmplx(x, 0.0))`.
+- A complex prints as `(re, im)`. Complex values can be fields, parameters, results and array elements.
 
 ## Arrays
 
@@ -329,6 +349,9 @@ report on stderr. Translations that change meaning are flagged, never silent:
   initialised in its declaration) becomes a TODO when the procedure changes it and can read the old
   value, because Boreas locals start fresh on every call. Ones that are never changed, or always
   assigned before they are read, convert without a note.
+- `complex`, `complex(kind=8)`, `complex*16` and `double complex` become `complex`; a literal
+  `(re, im)` becomes `cmplx(re, im)`; `dcmplx`, `dimag`, `dconjg`, `cabs`, `csqrt`, `cexp`, ... map to
+  the generic functions.
 - Old type-specific intrinsic names (`dsqrt`, `dabs`, `dsin`, `datan2`, `amax1`, `alog10`, `idint`, ...)
   become the generic function. Intrinsics Boreas lacks (Bessel functions, complex numbers, ...) stay TODOs.
 - `optional` arguments become `T?` parameters and `present(x)` is kept, so a call that leaves off

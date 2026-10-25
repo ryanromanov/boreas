@@ -192,6 +192,9 @@ def is_case_line(toks):
 
 # Old type-specific intrinsic names, which Fortran still accepts, and the generic function each one is.
 SPECIFIC_NAMES = {
+    "dcmplx": "cmplx", "dimag": "aimag", "dconjg": "conjg", "cdabs": "abs", "cabs": "abs", "zabs": "abs",
+    "csqrt": "sqrt", "cdsqrt": "sqrt", "zsqrt": "sqrt", "cexp": "exp", "cdexp": "exp", "zexp": "exp",
+    "clog": "log", "cdlog": "log", "zlog": "log", "csin": "sin", "ccos": "cos",
     "dble": "real", "float": "real", "sngl": "real", "idint": "int", "ifix": "int", "dint": "aint",
     "dnint": "anint", "idnint": "nint", "iabs": "abs", "dabs": "abs", "dsqrt": "sqrt", "dexp": "exp",
     "dlog": "log", "alog": "log", "dlog10": "log10", "alog10": "log10", "dsin": "sin", "dcos": "cos",
@@ -464,8 +467,14 @@ class FParser:
             return Bool(t.text == ".true.")
         if t.kind == "op" and t.text == "(":
             e = self.expr()
-            if self.at_op(","):
-                raise Unsupported("complex literal or implied-do")
+            if self.at_op(","):                          # (re, im) is a complex literal; (x(i), i=1,n) an implied do
+                nxt = self.peek(2)
+                if self.peek(1) is not None and self.peek(1).kind == "name" and nxt is not None and nxt.text == "=":
+                    raise Unsupported("implied-do")
+                self.k += 1
+                im = self.expr()
+                self.expect_op(")")
+                return Apply("cmplx", [e, im], self.line)
             self.expect_op(")")
             return e
         if t.kind == "op" and t.text in ("[", "(/"):
@@ -486,6 +495,9 @@ class FParser:
                 self.k += 1
                 args = self.call_arguments(name)
                 name = SPECIFIC_NAMES.get(name, name)
+                if name == "cmplx" and len(args) > 2:
+                    self.note(self.line, "cmplx(): kind argument dropped")
+                    args = args[:2]
                 if name in ("real", "int", "dble") and len(args) > 1:
                     self.note(self.line, f"{name}(): kind argument dropped")
                     args = args[:1]
@@ -829,8 +841,11 @@ class FParser:
     def type_spec(self):
         word = self.expect_name()
         if word == "double":
+            if self.at_name("complex"):
+                self.k += 1
+                return "complex"
             if not self.at_name("precision"):
-                raise Unsupported("expected 'double precision'")
+                raise Unsupported("expected 'double precision' or 'double complex'")
             self.k += 1
             self.note(self.line, "double precision became real (Boreas reals are double precision)", once=True)
             return "real"
@@ -845,8 +860,6 @@ class FParser:
             if not info.ok:
                 raise Unsupported(f"derived type '{name}' was not translated")
             return name
-        if word == "complex":
-            raise Unsupported(f"'{word}' is not supported")
         if word == "character":
             self.note(self.line, "character lengths are not tracked: Boreas strings never pad or truncate, "
                                  "so assigning to a shorter variable or comparing padded text can differ", once=True)
@@ -856,9 +869,9 @@ class FParser:
                 self.note(self.line, f"{word} kind dropped (Boreas has one integer and one real kind)", once=True)
         elif self.at_op("*") and self.peek(1) is not None and self.peek(1).kind == "int":
             self.k += 2
-        elif word == "real":
-            self.note(self.line, "default 'real' is single precision in Fortran but double in Boreas, "
-                                 "so results can differ in the last digits", once=True)
+        elif word in ("real", "complex"):
+            self.note(self.line, f"default '{word}' is single precision in Fortran but double in Boreas, "
+                                 f"so results can differ in the last digits", once=True)
         return "string" if word == "character" else word
 
     def dim_specs(self):
