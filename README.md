@@ -114,6 +114,22 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - Calls to procedures that exist nowhere in the file are marked TODO, because they would fail.
 - Names that are Boreas keywords (`in`, `out`, `string`, ...) are renamed.
 
+### Checking a conversion
+
+    boreas convert --verify [--timeout SECONDS] FILE.f90 [-o OUT]
+
+`--verify` converts the file as usual, then compiles the original with gfortran
+(set `FC` to use another compiler), runs it and the converted program with empty
+stdin and a timeout (default 10 s), and compares what they print. Spacing and
+commas are ignored, `T`/`F` equal `true`/`false`, and numbers match within 1e-9.
+
+It prints "verified: ... (N values compared)" and exits 0 on a match. On a
+mismatch it shows the first differing value from each program and exits 1.
+Common causes are Fortran's 32-bit default real and integer versus Boreas's
+doubles and unbounded integers, and constructs reported as TODO. Exit status 2
+means it could not verify (gfortran missing, the original does not compile, or
+it timed out).
+
 The converted file is checked by the test suite against real gfortran output.
 Try it on `examples/number_toys.f90`.
 
