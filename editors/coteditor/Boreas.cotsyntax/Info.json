@@ -1,0 +1,15 @@
+{
+  "kind": "code",
+  "fileMap": {
+    "extensions": [
+      "bor"
+    ]
+  },
+  "metadata": {
+    "author": "Ryan Romanosky",
+    "license": "MIT",
+    "version": "1.0.0",
+    "description": "Boreas, a Fortran-inspired language",
+    "distributionURL": "https://github.com/ryanromanov/boreas"
+  }
+}

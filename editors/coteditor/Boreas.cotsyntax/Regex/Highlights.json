@@ -1,0 +1,47 @@
+{
+  "keywords": [
+    {
+      "begin": "\\b(program|module|function|subroutine|record|const|use|call|return|exit|cycle|print|if|then|else|do|while|end|select|case|default|fallthrough|break|update|allocate|deallocate|allocatable|public|private|and|or|not)\\b",
+      "ignoreCase": true,
+      "regularExpression": true
+    },
+    {
+      "begin": "->|::",
+      "ignoreCase": true,
+      "regularExpression": true
+    }
+  ],
+  "types": [
+    {
+      "begin": "\\b(integer|real|logical|string)\\b",
+      "ignoreCase": true,
+      "regularExpression": true
+    },
+    {
+      "begin": "\\b(in|out|inout)\\b",
+      "ignoreCase": true,
+      "regularExpression": true
+    }
+  ],
+  "commands": [
+    {
+      "begin": "\\b(size|shape|reshape|matmul|transpose|dot_product|allocated|sum|maxval|minval|any|all|max|min|sqrt|abs|sin|cos|exp|log|real|int|mod)(?=\\s*\\()",
+      "ignoreCase": true,
+      "regularExpression": true
+    }
+  ],
+  "values": [
+    {
+      "begin": "\\b(true|false)\\b",
+      "ignoreCase": true,
+      "regularExpression": true
+    }
+  ],
+  "numbers": [
+    {
+      "begin": "\\b\\d+\\.\\d*(e[-+]?\\d+)?|\\.\\d+(e[-+]?\\d+)?|\\b\\d+e[-+]?\\d+|\\b\\d+\\b",
+      "ignoreCase": true,
+      "regularExpression": true
+    }
+  ]
+}

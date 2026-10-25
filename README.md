@@ -258,6 +258,14 @@ error, an imported constant is read-only, and modules cannot import each other i
 a cycle. Modules hold only constants and procedures for now (no mutable module
 variables). See `examples/modules.bor`.
 
+## Checking a file
+
+    boreas check FILE.bor [--json]
+
+Parses and checks a file without running it. Errors print as `file:line:col: message`
+(column 1 when the error has no column) and the exit status is 1; a clean file prints
+nothing and exits 0. `--json` prints `{"file": ..., "errors": [{"line", "col", "message"}]}`.
+
 ## Converting Fortran
 
     boreas convert legacy.f90 -o legacy.bor

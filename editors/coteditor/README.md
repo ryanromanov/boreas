@@ -1,0 +1,19 @@
+# CotEditor support
+
+Needs CotEditor 7 or later (`brew install --cask coteditor`). CotEditor 7 replaced the
+YAML syntax format with `.cotsyntax` packages, so the syntax here is a package.
+
+    ./install.sh
+
+Copies `Boreas.cotsyntax` into CotEditor's Syntaxes folder and the scripts into its
+Scripts folder, then restart CotEditor. `.bor` files pick up the Boreas syntax
+(highlighting, outline of procedures, modules and records, `!` comments).
+
+Scripts (Script menu > Boreas), all using `~/.local/bin/boreas`:
+
+- Run, Command-R: runs the document (unsaved edits included), output in a new document.
+- Check, Command-K: `boreas check`, errors in the Console as `file:line:col: message`.
+- Convert Fortran, Command-Shift-C: `boreas convert --verify` on the saved file.
+
+A shortcut that CotEditor already uses is ignored; rename the script file (`Run.@r.sh`:
+`@` is Command, `$` Shift, `~` Option, `^` Control) to pick another.
