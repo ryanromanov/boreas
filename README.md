@@ -32,6 +32,11 @@ Each variable is declared on its own line, with an optional initial value:
     integer :: count = 0
     real :: v(3) = [1.0, 2.0, 3.0]
 
+A variable you don't give a value starts at its type's default: `0` for `integer`, `0.0` for `real`,
+`false` for `logical` and `""` for `string`. Arrays and records start that way element by element
+and field by field. The one exception is an `out` parameter, which starts with no value: producing
+it is the subroutine's job, so reading it first, or never assigning it, is an error.
+
 `integer :: i, j` is an error ("declare one variable per line"). That way every
 variable can carry its own comment, and a change touches only the line it is
 about. `boreas convert` splits Fortran's `real :: x, y, z` into separate lines.
@@ -177,20 +182,20 @@ field per line, with no default values:
 
     point :: p = point(1.0, 2.0)           ! all fields, in order
     point :: q = point(y = 2.0, x = 1.0)   ! or by name, in any order
-    point :: r = point(y = 5.0)            ! any subset: the others have no value yet
+    point :: r = point(y = 5.0)            ! any subset: the others keep their defaults (0.0)
     p.x = 3.0
     print p.x + q.y, p
 
 - A record is a value: assigning one, passing it, or returning it copies it, so two variables never
   share fields. Records can hold other records and fixed-size array fields (`integer :: tags(3)`,
   with a literal size), and you can make arrays of records (`point :: pts(10)`).
-- Fields that hold no value yet are like unassigned variables: reading one is an error, and so is
-  printing a record that has one. Array fields start zeroed, like arrays.
+- Fields start at their type's default value (see Declarations), nested records and array fields
+  included, so `point :: p` is a usable zero point. There are no per-field defaults in the record.
 - `const point :: origin = point(0.0, 0.0)` makes a read-only record. Writing a field of a `const`
   record or an `in` parameter is an error.
 - A write to a field of an `out` or `inout` parameter needs `update`, like any write the caller sees:
-  `update p.x = p.x + dx`. An `out` record parameter must have every field assigned before the
-  subroutine returns. Two fields of one record may be passed as separate `out`/`inout` arguments;
+  `update p.x = p.x + dx`. An `out` record parameter starts with no values and must have every
+  field assigned before the subroutine returns. Two fields of one record may be passed as separate `out`/`inout` arguments;
   the same field twice (or a record and one of its fields) is an aliasing error.
 - Records cannot be compared or used in arithmetic (compare the fields), cannot be `select` subjects,
   and cannot be `allocatable` yet. In a module, a record is private unless marked `public`, and is
