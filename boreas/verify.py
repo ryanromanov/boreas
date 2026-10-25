@@ -84,8 +84,8 @@ def run_limited(cmd, timeout, **kw):
 
 def compile_original(gfortran, path, exe):
     for flags in (["-std=f2018"], []):
-        r = subprocess.run([gfortran, *flags, path, "-o", exe], capture_output=True, text=True,
-                           errors="replace")
+        r = subprocess.run([gfortran, *flags, os.path.abspath(path), "-o", exe], capture_output=True, text=True,
+                           errors="replace", cwd=os.path.dirname(exe))      # .mod files land in the scratch dir
         if r.returncode == 0:
             return
     raise VerifyError("could not compile the original with gfortran:\n" + r.stderr.rstrip())

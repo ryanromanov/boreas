@@ -1,6 +1,6 @@
 import os, sys, subprocess, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from test_fortran import GFORTRAN, fixture, read, run_bor, run_gfortran, same_output, todos
+from test_fortran import GFORTRAN, check_syntax, fixture, read, run_bor, run_gfortran, same_output, todos
 from boreas.fortran import convert
 from boreas.parser import parse
 from boreas.printer import to_source
@@ -24,7 +24,7 @@ class FixtureTests(unittest.TestCase):
     def check(self, name):
         path = fixture(name)
         if GFORTRAN:
-            subprocess.run([GFORTRAN, "-fsyntax-only", "-std=f2018", path], check=True, capture_output=True)
+            check_syntax(path)
         text, findings = convert(read(path), name)
         self.assertEqual(todos(findings), [])
         got = run_bor(text)

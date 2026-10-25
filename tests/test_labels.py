@@ -6,7 +6,7 @@ from boreas.interp import Interp
 from boreas.lexer import LangError
 from boreas.parser import parse, Do, DoWhile, Exit, Cycle
 from boreas.printer import to_source
-from test_fortran import GFORTRAN, fixture, read, run_bor, run_gfortran, same_output, todos, \
+from test_fortran import GFORTRAN, check_syntax, fixture, read, run_bor, run_gfortran, same_output, todos, \
     assert_round_trips, conv
 
 
@@ -467,7 +467,7 @@ class ConverterTests(unittest.TestCase):
     def test_fixture_matches_gfortran(self):
         path = fixture("labels.f90")
         if GFORTRAN:
-            subprocess.run([GFORTRAN, "-fsyntax-only", "-std=f2018", path], check=True, capture_output=True)
+            check_syntax(path)
         text, findings = convert(read(path), "labels.f90")
         self.assertEqual(todos(findings), [])
         assert_round_trips(read(path))

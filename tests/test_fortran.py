@@ -26,10 +26,17 @@ def run_bor(text):
     return out
 
 
+def check_syntax(path):
+    """gfortran -fsyntax-only, run in a scratch directory so the .mod files it writes stay out of the repo."""
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run([GFORTRAN, "-fsyntax-only", "-std=f2018", os.path.abspath(path)], check=True,
+                       capture_output=True, cwd=tmp)
+
+
 def run_gfortran(path):
     with tempfile.TemporaryDirectory() as tmp:
         exe = os.path.join(tmp, "a.out")
-        subprocess.run([GFORTRAN, path, "-o", exe], check=True, capture_output=True)
+        subprocess.run([GFORTRAN, os.path.abspath(path), "-o", exe], check=True, capture_output=True, cwd=tmp)
         return subprocess.run([exe], check=True, capture_output=True, text=True).stdout
 
 
@@ -60,7 +67,7 @@ class FixtureTests(unittest.TestCase):
     def check(self, name):
         path = name if os.path.isabs(name) else fixture(name)
         if GFORTRAN:
-            subprocess.run([GFORTRAN, "-fsyntax-only", "-std=f2018", path], check=True, capture_output=True)
+            check_syntax(path)
         text, findings = convert(read(path), name)
         self.assertEqual(todos(findings), [])
         assert_round_trips(read(path))
