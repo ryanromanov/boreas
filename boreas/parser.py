@@ -136,9 +136,9 @@ KEYWORDS = {"if", "then", "else", "do", "while", "end", "program", "function", "
 
 
 def check_constant(e, what, line):
-    """A field default is built from literals, arithmetic, array literals and record
-    constructors only: no variables, no function calls (record names are checked at link time)."""
-    if isinstance(e, (Num, Str, Bool)):
+    """A field default is built from literals, `const` names, arithmetic, array literals,
+    record constructors and built-in functions (which names are allowed is checked at link time)."""
+    if isinstance(e, (Num, Str, Bool, Var)):
         return
     if isinstance(e, Unary):
         check_constant(e.operand, what, line)
@@ -152,8 +152,8 @@ def check_constant(e, what, line):
         for a in e.args:
             check_constant(a.value if isinstance(a, NamedArg) else a, what, line)
     else:
-        raise LangError(f"line {line}: {what} must be a constant expression (literals, arithmetic, "
-                        f"array literals and record constructors)")
+        raise LangError(f"line {line}: {what} must be a constant expression (literals, const names, "
+                        f"arithmetic, array literals, record constructors and built-in functions)")
 
 
 def target_text(t):

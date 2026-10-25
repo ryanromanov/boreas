@@ -239,6 +239,9 @@ def overlaps(a, b):
     return all(max(_span(x)[0], _span(y)[0]) <= min(_span(x)[1], _span(y)[1]) for x, y in zip(a, b))
 
 
+PURE_BUILTINS = (set(BUILTINS) | set(ELEMENTAL)) - {"allocated"}
+
+
 def iter_apply(e):
     """Every Apply node inside an expression (None gives nothing)."""
     if isinstance(e, Apply):
@@ -283,6 +286,7 @@ class Interp:
             if r.name in unit.functions or r.name in BUILTINS or r.name in ELEMENTAL:
                 raise LangError(f"line {r.line}: the record '{r.name}' has the same name as a procedure")
         self.check_records(unit.records, base)
+        self.check_defaults(unit.records, base)
         for f in unit.functions.values():
             self.scopes[id(f)] = self.import_into(Scope(dict(unit.functions), {}, dict(unit.records)), f.uses)
         prog = unit.program
@@ -308,9 +312,12 @@ class Interp:
                     if not (isinstance(d, Num) and isinstance(d.value, int) and d.value >= 0):
                         raise LangError(f"line {f.line}: an array field of a record needs a literal size")
                 for n in iter_apply(f.init):
-                    if n.name not in scope.records:
+                    if n.name in scope.records:
+                        continue
+                    if n.name in scope.funcs or n.name not in PURE_BUILTINS:
                         raise LangError(f"line {f.line}: the default of field '{f.name}' calls '{n.name}', "
-                                        f"which is not a record (defaults are constants)")
+                                        f"which is neither a record nor a built-in function "
+                                        f"(defaults are constants)")
 
         def contains(name, path):
             if name in path:
@@ -322,9 +329,12 @@ class Interp:
 
         for name in records:
             contains(name, ())
+
+    def check_defaults(self, records, scope):
+        """Build one of each record now, so a bad default fails when the program loads."""
         saved, self.scope = self.scope, scope
         try:
-            for r in records.values():              # build one now, so a bad default fails at load time
+            for r in records.values():
                 self.new_record(r)
         finally:
             self.scope = saved
@@ -377,6 +387,7 @@ class Interp:
             self.declare(d, env)
             scope.consts[d.name] = env[d.name]
         self.scope = saved
+        self.check_defaults(mod.records, scope)         # defaults may use the constants above
         self.loading.pop()
         self.exports[name] = {
             **{f.name: f for f in mod.functions.values() if f.public},
@@ -536,12 +547,14 @@ class Interp:
 
     def apply_default(self, rec, f, owner):
         """Give a field its declared default, evaluated in the scope the record was defined in."""
+        where = f"line {f.line}: the default of field '{f.name}' in record '{rec.rdef.name}'"
         saved, self.scope = self.scope, owner
         try:
-            value = self.eval(f.init, {})
+            value = self.eval(f.init, dict(owner.consts))
+        except LangError as err:
+            raise LangError(f"{where}: {err}")
         finally:
             self.scope = saved
-        where = f"line {f.line}: the default of field '{f.name}' in record '{rec.rdef.name}'"
         slot = rec.fields[f.name]
         if slot[IS_ARRAY]:
             arr = slot[VALUE]

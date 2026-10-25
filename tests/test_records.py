@@ -231,14 +231,52 @@ class FieldDefaultTests(unittest.TestCase):
         sub = "subroutine noop(out r :: x)\nend subroutine"
         self.assertEqual(run("r :: v\nv.a = 9\ncall noop(v)\nprint v", sub, defs), ["r(a=1, b=2)"])
 
-    def test_default_must_be_a_constant(self):
-        fails("print 1", "must be a constant expression", defs="record r\n  real :: a = n\nend record\n")
+    def test_default_must_be_a_constant_expression(self):
         fails("print 1", "must be a constant expression",
               defs="record r\n  real :: a = select case 1\n case default -> 1.0\n end select\nend record\n")
+        fails("print 1", "must be a constant expression",
+              defs=POINT + "record r\n  real :: a = point(1.0, 2.0).x\nend record\n")
 
-    def test_default_cannot_call_a_function(self):
+    def test_default_cannot_use_a_variable(self):
+        fails("print 1", "the default of field 'a' in record 'r': 'n' is not declared",
+              defs="record r\n  real :: a = n\nend record\n")
+
+    def test_default_cannot_call_a_user_function(self):
         f = "function f(real :: x) -> real\n return x\nend function"
-        fails("print 1", "calls 'f', which is not a record", f, "record r\n  real :: a = f(1.0)\nend record\n")
+        fails("print 1", "calls 'f', which is neither a record nor a built-in", f,
+              "record r\n  real :: a = f(1.0)\nend record\n")
+
+    def test_a_user_function_named_like_a_builtin_is_still_a_user_function(self):
+        mod = ("module m\n function sqrt(real :: x) -> real\n  return x\n end function\n"
+               " public record r\n  real :: a = sqrt(4.0)\n end record\nend module\n")
+        with self.assertRaisesRegex(LangError, "calls 'sqrt', which is neither a record nor a built-in"):
+            run_source(mod + "program t\n print 1\nend program")
+
+    def test_default_can_call_built_in_functions(self):
+        defs = ("record r\n  real :: a = sqrt(16.0)\n  real :: b = abs(-2.5) * 2.0\n  integer :: n = mod(17, 5)\n"
+                "  real :: s = sum([1.0, 2.0, 3.0])\n  integer :: v(3) = reshape([1, 2, 3], [3])\nend record\n")
+        self.assertEqual(run("r :: x\nprint x.a, x.b, x.n, x.s, x.v", defs=defs), ["4.0 5.0 2 6.0 [1, 2, 3]"])
+
+    def test_default_can_use_earlier_module_constants(self):
+        mod = ("module m\n const real :: base = 2.0\n const real :: twice = base * 2.0\n public record cfg\n"
+               "  real :: a = base\n  real :: b = twice + 1\n end record\nend module\n")
+        self.assertEqual(run("use m: cfg\ncfg :: c\nprint c.a, c.b", mod, ""), ["2.0 5.0"])
+
+    def test_default_can_be_a_const_record(self):
+        mod = ("module m\n public record point\n  real :: x\n  real :: y\n end record\n"
+               " public const point :: home = point(1.0, 2.0)\n public record agent\n  point :: at = home\n end record\n"
+               "end module\n")
+        self.assertEqual(run("use m: agent\nagent :: a\nprint a.at", mod, ""), ["point(x=1.0, y=2.0)"])
+
+    def test_default_can_use_a_constant_declared_after_the_record(self):
+        mod = ("module m\n public record cfg\n  real :: a = late\n end record\n const real :: late = 2.0\nend module\n")
+        self.assertEqual(run("use m: cfg\ncfg :: c\nprint c.a", mod, ""), ["2.0"])
+
+    def test_constant_that_builds_the_record_before_its_default_exists(self):
+        mod = ("module m\n public record cfg\n  real :: a = late\n  real :: b\n end record\n"
+               " public const cfg :: first = cfg(b = 1.0)\n const real :: late = 2.0\nend module\n")
+        with self.assertRaisesRegex(LangError, "'late' is not declared"):
+            run_source(mod + "program t\n print 1\nend program")
 
     def test_default_type_mismatch_fails_at_load_time(self):
         fails("print 1", "the default of field 'a' in record 'r'", defs='record r\n  real :: a = "x"\nend record\n')

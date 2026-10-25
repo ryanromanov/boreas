@@ -191,7 +191,8 @@ field per line, with no default values:
   with a literal size), and you can make arrays of records (`point :: pts(10)`).
 - Fields start at their type's default value (see Declarations), nested records and array fields
   included, so `point :: p` is a usable zero point. A field may declare its own default with a
-  constant expression (literals, arithmetic, array literals, record constructors):
+  constant expression (literals, `const` names from the same module, arithmetic, array literals,
+  record constructors, and built-in functions such as `sqrt`; not variables or your own functions):
 
       record config
         integer :: count = 5
