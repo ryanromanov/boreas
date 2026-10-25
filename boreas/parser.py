@@ -33,17 +33,19 @@ class Assign: target: object; value: object; line: int; update: bool = False
 @dataclass
 class If: branches: list; orelse: list   # branches: [(cond, body)]
 @dataclass
-class Do: var: str; lo: object; hi: object; step: object; body: list; line: int
+class Do:
+    var: str; lo: object; hi: object; step: object; body: list; line: int
+    label: str = None          # `outer: do ...` / `end do outer`
 @dataclass
-class DoWhile: cond: object; body: list
+class DoWhile: cond: object; body: list; label: str = None; line: int = 0
 @dataclass
 class Print: args: list
 @dataclass
 class Return: value: object
 @dataclass
-class Exit: pass
+class Exit: label: str = None; line: int = 0      # label names an enclosing loop
 @dataclass
-class Cycle: pass
+class Cycle: label: str = None; line: int = 0
 @dataclass
 class ExprStmt: expr: object
 @dataclass
@@ -111,6 +113,39 @@ def check_writes(body, params):
             check_writes(s.body, params)
         elif isinstance(s, DoWhile):
             check_writes(s.body, params)
+
+
+def sub_bodies(s):
+    """The statement lists nested directly inside `s`."""
+    if isinstance(s, If):
+        return [b for _, b in s.branches] + [s.orelse]
+    if isinstance(s, (Do, DoWhile)):
+        return [s.body]
+    return []
+
+
+def check_loops(body, enclosing=()):
+    """`exit L` / `cycle L` must name an enclosing loop, and a label cannot be
+    reused by a loop inside the loop that already carries it."""
+    for s in body:
+        if isinstance(s, list):
+            check_loops(s, enclosing)
+        elif isinstance(s, (Exit, Cycle)) and s.label is not None and s.label not in enclosing:
+            word = "exit" if isinstance(s, Exit) else "cycle"
+            if enclosing:
+                known = "enclosing loops are " + ", ".join(f"'{l}'" for l in enclosing)
+            else:
+                known = "this is not inside a labeled loop"
+            raise LangError(f"line {s.line}: '{word} {s.label}' does not name an enclosing loop ({known})")
+        else:
+            inner = enclosing
+            if isinstance(s, (Do, DoWhile)) and s.label is not None:
+                if s.label in enclosing:
+                    raise LangError(f"line {s.line}: loop label '{s.label}' is already "
+                                    f"used by an enclosing loop")
+                inner = enclosing + (s.label,)
+            for b in sub_bodies(s):
+                check_loops(b, inner)
 
 
 # --- Parser ------------------------------------------------------------
@@ -195,6 +230,7 @@ class Parser:
         if self.tok.kind == "ident":
             self.next()
         check_writes(body, {})
+        check_loops(body)
         return Program(name, body, uses=uses)
 
     def uses(self):
@@ -270,6 +306,7 @@ class Parser:
         if self.tok.kind == "ident":
             self.next()
         check_writes(body, {n: intent for _, n, intent in params})
+        check_loops(body)
         return Function(name, params, ret, body, is_sub, uses=uses)
 
     def params(self, is_sub):
@@ -348,12 +385,13 @@ class Parser:
             val = None if self.tok.kind == "nl" else self.expr()
             self.newline()
             return Return(val)
-        if self.at("exit"):
-            self.next(); self.newline()
-            return Exit()
-        if self.at("cycle"):
-            self.next(); self.newline()
-            return Cycle()
+        if self.at("exit", "cycle"):
+            word = self.next().text
+            label = self.ident() if self.tok.kind == "ident" else None
+            self.newline()
+            return (Exit if word == "exit" else Cycle)(label, t.line)
+        if t.kind == "ident" and self.toks[self.i + 1].text == ":" and self.toks[self.i + 2].text == "do":
+            return self.do_stmt()                  # `outer: do ...`
         update = bool(self.accept("update"))
         e = self.expr()
         if update or self.at("="):
@@ -411,14 +449,20 @@ class Parser:
         return If(branches, orelse)
 
     def do_stmt(self):
+        label = None
+        if self.tok.kind == "ident" and self.toks[self.i + 1].text == ":":
+            label = self.next().text
+            if label in ("end", "else"):
+                self.error(f"'{label}' cannot be used as a loop label")
+            self.next()                            # the ':'
         line = self.expect("do").line
         if self.accept("while"):
             cond = self.expr()
             self.newline()
             body = self.block("do")
             self.expect("do")
-            self.newline()
-            return DoWhile(cond, body)
+            self.end_label(label)
+            return DoWhile(cond, body, label, line)
         var = self.ident()
         self.expect("=")
         lo = self.expr()
@@ -428,8 +472,18 @@ class Parser:
         self.newline()
         body = self.block("do")
         self.expect("do")
+        self.end_label(label)
+        return Do(var, lo, hi, step, body, line, label)
+
+    def end_label(self, label):
+        """After `end do`: a labeled loop must repeat its label, an unlabeled one must not have one."""
+        if label is not None:
+            if self.tok.kind != "ident" or self.tok.text != label:
+                self.error(f"loop '{label}' must close with 'end do {label}'")
+            self.next()
+        elif self.tok.kind == "ident":
+            self.error("this loop has no label, so it closes with plain 'end do'")
         self.newline()
-        return Do(var, lo, hi, step, body, line)
 
     # -- expressions (lowest to highest precedence)
     def expr(self):

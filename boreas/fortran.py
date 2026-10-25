@@ -241,6 +241,8 @@ class FParser:
         self.once = set()
         self.modules = {}           # module name -> Scope, in source order
         self.fn_lines = {}          # id(Function) -> line of its header
+        self.loops = []             # enclosing named do loops: (Fortran name, Boreas label), innermost last
+        self.construct = None       # the name in front of the statement being read: `outer: do`
 
     # -- reporting
     def note(self, line, msg, once=False):
@@ -684,9 +686,13 @@ class FParser:
         if t0.kind != "name":
             raise Unsupported("unrecognised statement (labels are not supported)")
         name = t0.text
+        self.construct = None
         if len(toks) > 2 and toks[1].kind == "op" and toks[1].text == ":" and toks[2].kind == "name":
-            self.k = 2                                # strip a construct name: `outer: do ...`
-            self.note(it.line, f"construct name '{name}' dropped")
+            self.k = 2                                # `outer: do ...`
+            if toks[2].text == "do":
+                self.construct = name                 # st_do keeps it as the loop's label
+            else:
+                self.note(it.line, f"construct name '{name}' dropped")
             name = toks[2].text
         elif self.is_assignment():
             return [self.assignment(it)]
@@ -1042,6 +1048,16 @@ class FParser:
         return [If([(cond, inner)], [])]
 
     def st_do(self, it, scope):
+        cname, self.construct = self.construct, None
+        if cname is None:
+            return self.do_loop(it, scope, None)
+        self.loops.append((cname, self.rename(cname)))
+        try:
+            return self.do_loop(it, scope, self.loops[-1][1])
+        finally:
+            self.loops.pop()
+
+    def do_loop(self, it, scope, label):
         if self.at_name("concurrent"):
             self.skip_block("do")
             raise Unsupported("'do concurrent' is not supported; skipped")
@@ -1053,9 +1069,9 @@ class FParser:
             cond = self.expr()
             self.expect_op(")")
             self.end_of_statement()
-            return [DoWhile(cond, self.block_until(scope, "do"))]
+            return [DoWhile(cond, self.block_until(scope, "do"), label, it.line)]
         if self.peek() is None:
-            return [DoWhile(Bool(True), self.block_until(scope, "do"))]
+            return [DoWhile(Bool(True), self.block_until(scope, "do"), label, it.line)]
         var = self.rename(self.expect_name())
         self.expect_op("=")
         lo = self.expr()
@@ -1063,22 +1079,29 @@ class FParser:
         hi = self.expr()
         step = self.expr() if self.accept_op(",") else None
         self.end_of_statement()
-        return [Do(var, lo, hi, step, self.block_until(scope, "do"), it.line)]
+        return [Do(var, lo, hi, step, self.block_until(scope, "do"), it.line, label)]
 
     def block_until(self, scope, kind):
         body = self.parse_body(scope, {("end", kind)})
         self.i += 1
         return body
 
+    def loop_target(self, word):
+        """The Boreas label for the construct name after `exit` / `cycle`, or None when there is none."""
+        if self.peek() is None:
+            return None
+        name = self.expect_name()
+        self.end_of_statement()
+        for fname, label in reversed(self.loops):
+            if fname == name:
+                return label
+        raise Unsupported(f"'{word} {name}': '{name}' is not an enclosing do loop")
+
     def st_exit(self, it, scope):
-        if self.peek() is not None:
-            raise Unsupported("'exit' with a construct name")
-        return [Exit()]
+        return [Exit(self.loop_target("exit"), it.line)]
 
     def st_cycle(self, it, scope):
-        if self.peek() is not None:
-            raise Unsupported("'cycle' with a construct name")
-        return [Cycle()]
+        return [Cycle(self.loop_target("cycle"), it.line)]
 
     def st_return(self, it, scope):
         if self.peek() is not None:
