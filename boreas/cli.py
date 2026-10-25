@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import sys
 from .lexer import LangError
 from .parser import parse
@@ -6,6 +8,7 @@ from .interp import Interp
 
 USAGE = """usage:
   boreas FILE.bor                    run a program
+  boreas check FILE.bor [--json]     parse and check without running; exit 1 on errors
   boreas convert FILE.f90 [-o OUT]   convert free-form Fortran to Boreas source
   boreas convert --verify [--timeout SECONDS] FILE.f90 [-o OUT]
                                      also run the original with gfortran and compare output"""
@@ -13,6 +16,38 @@ USAGE = """usage:
 
 def run_source(src, out=print):
     Interp(parse(src), out).run()
+
+
+def check_source(src):
+    """Parse and link without running. Returns None if clean, else (line, col, message);
+    line and col are None when the error does not carry them."""
+    try:
+        Interp(parse(src), lambda *a: None)
+    except LangError as e:
+        m = re.match(r"line (\d+): (.*)", str(e), re.S)
+        return (int(m.group(1)) if m else None, e.col, m.group(2) if m else str(e))
+    return None
+
+
+def check_command(args):
+    as_json = "--json" in args
+    files = [a for a in args if a != "--json"]
+    if len(files) != 1 or files[0].startswith("-"):
+        sys.exit(USAGE)
+    path = files[0]
+    try:
+        with open(path) as f:
+            src = f.read()
+    except OSError as e:
+        sys.exit(f"error: {e}")
+    err = check_source(src)
+    if as_json:
+        print(json.dumps({"file": path, "errors": [] if err is None else
+                          [{"line": err[0], "col": err[1], "message": err[2]}]}))
+    elif err:
+        line, col, msg = err
+        print(f"{path}:{line or 1}:{col or 1}: {msg}")
+    sys.exit(0 if err is None else 1)
 
 
 def convert_command(args):
@@ -75,7 +110,9 @@ def main():
     if not args or args[0] in ("-h", "--help"):
         sys.exit(USAGE)
     try:
-        if args[0] == "convert":
+        if args[0] == "check":
+            check_command(args[1:])
+        elif args[0] == "convert":
             convert_command(args[1:])
         elif len(args) == 1:
             run_source(open(args[0]).read())

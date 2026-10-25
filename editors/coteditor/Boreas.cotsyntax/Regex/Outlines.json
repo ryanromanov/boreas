@@ -1,0 +1,14 @@
+[
+  {
+    "kind": "function",
+    "ignoreCase": true,
+    "pattern": "^[\\t ]*(function|subroutine)[\\t ]+[a-z_][a-z0-9_]*",
+    "template": ""
+  },
+  {
+    "kind": "container",
+    "ignoreCase": true,
+    "pattern": "^[\\t ]*(module|record|program)[\\t ]+[a-z_][a-z0-9_]*",
+    "template": ""
+  }
+]

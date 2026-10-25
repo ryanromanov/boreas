@@ -356,7 +356,9 @@ class Parser:
         return self.toks[self.i]
 
     def error(self, msg):
-        raise LangError(f"line {self.tok.line}: {msg} (at {self.tok.text!r})")
+        err = LangError(f"line {self.tok.line}: {msg} (at {self.tok.text!r})")
+        err.col = self.tok.col or None
+        raise err
 
     def next(self):
         t = self.tok
