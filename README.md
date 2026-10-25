@@ -72,6 +72,63 @@ label, and labels live in their own namespace (they never clash with variables).
 After `exit outer`, `i` keeps the value it had when the loop stopped, exactly as
 with a plain `exit`.
 
+## select case
+
+Choose between values without a chain of `if`s. Case values are literals or
+`const` names; ranges use `lo:hi`, `:hi` or `lo:`. The selector may be an
+integer, string or logical (not real).
+
+    select case grade
+    case 90:100
+      print "A"
+    case 80:89
+      print "B"
+    case 1, 3, 5
+      print "odd and small"
+    case default
+      print "other"
+    end select
+
+- Each case runs only its own body; there is no implicit fallthrough.
+- `case default` is optional, may appear anywhere, at most once.
+- Case values must not overlap. Literal overlaps are parse errors; overlaps
+  involving `const` names are reported when the select runs.
+- `break` leaves the nearest enclosing select early. It is a parse error
+  outside a select, and also when a loop sits between the `break` and the
+  select (use `exit` for the loop).
+- `exit` and `cycle` inside a select refer to the enclosing loop; `return` works as usual.
+
+To let cases flow into each other, put `fallthrough` after `select case`. Finishing
+a case body then continues into the next case's body in source order (including
+`case default`) until a `break` or the end of the select:
+
+    select case fallthrough grade
+    case 3
+      print "bronze"
+    case 2
+      print "silver"
+      break
+    case 1
+      print "gold"
+    end select
+
+`grade = 3` prints bronze and silver; `grade = 2` prints silver; `grade = 1` prints gold.
+
+`select case` is also an expression. Each arm is `case <values> -> <expr>`
+and `case default -> <expr>` is required, so the expression is always exhaustive.
+It has no fallthrough mode and no `break`:
+
+    label = select case grade
+      case 90:100 -> "A"
+      case 80:89 -> "B"
+      case 1, 3 -> "small"
+      case default -> "other"
+    end select
+
+It can be used anywhere an expression can. Only the chosen arm is evaluated. Arms
+must have the same type (integer arms widen to real next to a real arm).
+`select`, `case`, `default`, `fallthrough` and `break` are reserved words.
+
 ## Subroutines and parameter modes
 
 Results come back through `out` / `inout` parameters:
@@ -126,6 +183,8 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - `! TODO(convert): ...` comments quote any line that could not be translated
   (`select case`, `allocate`, derived types, `goto`, `read`, ...).
 - `parameter` constants become `const`.
+- `select case` becomes Boreas `select case`. A case value that is not a literal or a
+  `parameter` leaves that one construct as a TODO.
 - Loop names become labels (`outer: do` ... `end do outer`), and `exit name` / `cycle name`
   are translated. Names on `if` / `select` / `block` constructs are dropped.
 - Modules become Boreas modules. Fortran is public by default, so names get `public`
