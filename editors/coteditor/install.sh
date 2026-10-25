@@ -5,7 +5,7 @@ set -e
 here=$(cd "$(dirname "$0")" && pwd)
 # The syntax cannot be copied from a script: the App Store/cask build is sandboxed and macOS
 # blocks writes into its container. Import it from CotEditor's settings instead.
-echo "syntax: in CotEditor open Settings > Format, use the + button's Import... item,"
+echo "syntax: in CotEditor open Settings > Format, use the "..." menu's Import item,"
 echo "        and choose $here/Boreas.cotsyntax"
 
 # Scripts (Script menu > Open Scripts Folder shows where CotEditor looks)
