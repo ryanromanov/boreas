@@ -47,6 +47,31 @@ Built in: `size`, `shape`, `reshape`, `matmul`, `transpose`, `dot_product`,
 `sum`, `maxval`, `minval`, `any`, `all`; `sqrt`, `abs`, `sin`, `cos`, `exp`,
 `log`, `real`, `int`, `mod` apply to every element.
 
+## Labeled loops
+
+A loop can be given a label so that `exit` and `cycle` can target an outer loop
+from inside an inner one:
+
+    outer: do i = 1, n
+      do j = 1, n
+        if grid(i, j) == target then
+          exit outer          ! leave the whole nest
+        end if
+        if skip(j) then
+          cycle outer         ! next i
+        end if
+      end do
+    end do outer
+
+`do while` loops can be labeled too (`scan: do while cond ... end do scan`).
+A labeled loop must close with `end do <label>`, and an unlabeled loop closes
+with plain `end do`. `exit <label>` and `cycle <label>` must name a loop that
+encloses them within the same procedure; an unknown label, or reusing a label
+inside a loop that already has it, is an error. Sibling loops may share a
+label, and labels live in their own namespace (they never clash with variables).
+After `exit outer`, `i` keeps the value it had when the loop stopped, exactly as
+with a plain `exit`.
+
 ## Subroutines and parameter modes
 
 Results come back through `out` / `inout` parameters:
@@ -101,6 +126,8 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - `! TODO(convert): ...` comments quote any line that could not be translated
   (`select case`, `allocate`, derived types, `goto`, `read`, ...).
 - `parameter` constants become `const`.
+- Loop names become labels (`outer: do` ... `end do outer`), and `exit name` / `cycle name`
+  are translated. Names on `if` / `select` / `block` constructs are dropped.
 - Modules become Boreas modules. Fortran is public by default, so names get `public`
   unless the Fortran says `private`. `use m` becomes an explicit `use m: a, b` listing
   the names the code actually uses (names a module re-exports are imported from where
