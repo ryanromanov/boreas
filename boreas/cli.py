@@ -9,6 +9,7 @@ from .interp import Interp
 USAGE = """usage:
   boreas FILE.bor                    run a program
   boreas check FILE.bor [--json]     parse and check without running; exit 1 on errors
+  boreas lsp                         language server on stdin/stdout (errors as diagnostics)
   boreas convert FILE.f90 [-o OUT]   convert free-form Fortran to Boreas source
   boreas convert --verify [--timeout SECONDS] FILE.f90 [-o OUT]
                                      also run the original with gfortran and compare output"""
@@ -112,6 +113,9 @@ def main():
     try:
         if args[0] == "check":
             check_command(args[1:])
+        elif args[0] == "lsp" and len(args) == 1:
+            from .lsp import serve
+            serve()
         elif args[0] == "convert":
             convert_command(args[1:])
         elif len(args) == 1:
