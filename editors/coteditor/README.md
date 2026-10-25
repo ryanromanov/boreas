@@ -5,8 +5,9 @@ YAML syntax format with `.cotsyntax` packages, so the syntax here is a package.
 
     ./install.sh
 
-Copies `Boreas.cotsyntax` into CotEditor's Syntaxes folder and the scripts into its
-Scripts folder, then restart CotEditor. `.bor` files pick up the Boreas syntax
+Copies the scripts into CotEditor's Scripts folder. The syntax has to be imported by hand
+(CotEditor is sandboxed, so a script cannot write into its Syntaxes folder): Settings >
+Format, the + button, Import..., then pick `Boreas.cotsyntax`. `.bor` files pick up the Boreas syntax
 (highlighting, outline of procedures, modules and records, `!` comments).
 
 Scripts (Script menu > Boreas), all using `~/.local/bin/boreas`:
