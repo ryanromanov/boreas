@@ -25,7 +25,7 @@
   ],
   "commands": [
     {
-      "begin": "\\b(size|shape|reshape|matmul|transpose|dot_product|allocated|present|sum|maxval|minval|any|all|max|min|sqrt|abs|sin|cos|exp|log|real|int|mod)(?=\\s*\\()",
+      "begin": "\\b(size|shape|reshape|matmul|transpose|dot_product|allocated|present|sum|product|maxval|minval|any|all|max|min|huge|epsilon|tiny|sqrt|abs|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|log|log10|gamma|log_gamma|erf|erfc|hypot|real|int|floor|ceiling|nint|aint|anint|mod|modulo|sign|dim)(?=\\s*\\()",
       "ignoreCase": true,
       "regularExpression": true
     }

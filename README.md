@@ -61,8 +61,19 @@ Fortran. A scalar subscript drops that dimension; `:` keeps it.
 
 Operators work elementwise and need matching shapes (scalars broadcast).
 Built in: `size`, `shape`, `reshape`, `matmul`, `transpose`, `dot_product`,
-`sum`, `maxval`, `minval`, `any`, `all`; `sqrt`, `abs`, `sin`, `cos`, `exp`,
-`log`, `real`, `int`, `mod` apply to every element.
+`sum`, `product`, `maxval`, `minval`, `any`, `all`, `max`, `min`, plus these, which apply to every
+element of an array:
+
+- `sqrt`, `abs`, `exp`, `log`, `log10`, `gamma`, `log_gamma`, `erf`, `erfc`, `hypot(a, b)`
+- `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2(y, x)` (`atan(y, x)` works too), `sinh`,
+  `cosh`, `tanh`, `asinh`, `acosh`, `atanh`
+- `real`, `int` (truncates), `floor`, `ceiling`, `nint` (halves round away from zero), `aint`,
+  `anint`
+- `mod` (sign of the first argument), `modulo` (sign of the second), `sign(a, b)`, `dim(a, b)`
+
+`huge(x)`, `epsilon(x)` and `tiny(x)` give the limits of `x`'s type: an integer is a 32-bit one
+(`2147483647`, like Fortran's default) and a real is a double. A math error such as `asin(2.0)`
+or `modulo(1, 0)` stops the program with a message, where Fortran would give NaN.
 
 ## Labeled loops
 
@@ -318,6 +329,8 @@ report on stderr. Translations that change meaning are flagged, never silent:
   initialised in its declaration) becomes a TODO when the procedure changes it and can read the old
   value, because Boreas locals start fresh on every call. Ones that are never changed, or always
   assigned before they are read, convert without a note.
+- Old type-specific intrinsic names (`dsqrt`, `dabs`, `dsin`, `datan2`, `amax1`, `alog10`, `idint`, ...)
+  become the generic function. Intrinsics Boreas lacks (Bessel functions, complex numbers, ...) stay TODOs.
 - `optional` arguments become `T?` parameters and `present(x)` is kept, so a call that leaves off
   trailing optional arguments works unchanged. An optional argument the procedure modifies
   (`intent(out)`/`inout`) or an optional array becomes a TODO and a required argument.

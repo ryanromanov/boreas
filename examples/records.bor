@@ -25,7 +25,8 @@ program demo
   point :: a = point(3.0, 4.0)
   point :: b = a                 ! b is a copy
   segment :: s
-
+  
+ 
   call shift(b, 1.0, 1.0)
   print "a =", a, " b =", b
 
