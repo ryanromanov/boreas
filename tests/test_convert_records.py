@@ -75,7 +75,7 @@ class TypeTests(unittest.TestCase):
         self.assertEqual(run_bor(text), ["10 4"])
 
     def test_default_that_boreas_cannot_evaluate_is_dropped_with_a_todo(self):
-        src = ("program p\n  implicit none\n  integer :: v\n  type :: t\n    real :: a = 1.0\n    real :: b = hypot(3.0, 4.0)\n"
+        src = ("program p\n  implicit none\n  integer :: v\n  type :: t\n    real :: a = 1.0\n    real :: b = besj0(3.0)\n"
                "  end type t\n  type(t) :: x\n  print *, x%a\nend program\n")
         text, findings = conv(src)
         self.assertIn("default of component 'b' dropped", messages(todos(findings)))

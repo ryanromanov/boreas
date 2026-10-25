@@ -293,10 +293,10 @@ class TranslationTests(unittest.TestCase):
         self.assertTrue(any("single precision" in f[2] for f in findings))
 
     def test_unknown_procedures_are_todos_in_the_output(self):
-        text, findings = conv("print *, nint(2.6)\n  call mystery(1)", "")
+        text, findings = conv("print *, besj0(2.6)\n  call mystery(1)", "")
         names = [f[2] for f in todos(findings)]
-        self.assertTrue(any("nint" in m for m in names) and any("mystery" in m for m in names))
-        self.assertIn("TODO(convert): function 'nint'", text)
+        self.assertTrue(any("besj0" in m for m in names) and any("mystery" in m for m in names))
+        self.assertIn("TODO(convert): function 'besj0'", text)
         self.assertIn("2 construct(s)", text)
 
     def test_dble_and_kind_arguments(self):

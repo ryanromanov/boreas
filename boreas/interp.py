@@ -1,4 +1,5 @@
 import math
+import sys
 from itertools import product
 from .lexer import LangError
 from .parser import *
@@ -226,17 +227,79 @@ def _reduce(name, f):
     return lambda a: f(_need_array(name, a).data)
 
 
+def _round_half_away(x):
+    """Fortran's nearest whole number: halves round away from zero (Python's round() rounds to even)."""
+    return math.copysign(math.floor(abs(x) + 0.5), x)
+
+
+def _sign(a, b):
+    """|a| with the sign of b (a real b of -0.0 counts as negative, like Fortran)."""
+    if isinstance(a, int) and isinstance(b, int):
+        return -abs(a) if b < 0 else abs(a)
+    return math.copysign(abs(a), b)
+
+
+def _modulo(a, b):
+    """The remainder with the sign of b (mod() takes the sign of a)."""
+    if isinstance(a, int) and isinstance(b, int):
+        return a % b
+    if b == 0:
+        raise ZeroDivisionError("modulo by zero")
+    return a - math.floor(a / b) * b
+
+
+def _atan(y, x=None):
+    return math.atan(y) if x is None else math.atan2(y, x)
+
+
+def _kind_of(x, name):
+    if isinstance(x, Array):
+        if not x.data:
+            raise LangError(f"{name}() of an empty array")
+        x = x.data[0]
+    return type_of(x)
+
+
+def _huge(x):
+    """The largest value of x's type: a 32-bit integer (like Fortran's default) or a double."""
+    kind = _kind_of(x, "huge")
+    if kind == "integer": return 2 ** 31 - 1
+    if kind == "real": return sys.float_info.max
+    raise LangError(f"huge() needs an integer or a real, got {kind}")
+
+
+def _epsilon(x):
+    if _kind_of(x, "epsilon") != "real":
+        raise LangError("epsilon() needs a real")
+    return sys.float_info.epsilon
+
+
+def _tiny(x):
+    if _kind_of(x, "tiny") != "real":
+        raise LangError("tiny() needs a real")
+    return sys.float_info.min
+
+
 BUILTINS = {
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
     "transpose": _transpose, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
     "sum": _reduce("sum", sum), "maxval": _reduce("maxval", max), "minval": _reduce("minval", min),
     "any": _reduce("any", any), "all": _reduce("all", all),
-    "max": max, "min": min,
+    "max": max, "min": min, "product": _reduce("product", math.prod),
+    "huge": _huge, "epsilon": _epsilon, "tiny": _tiny,
 }
 # Elementwise functions: applied to every element when given an array.
 ELEMENTAL = {
     "sqrt": math.sqrt, "abs": abs, "sin": math.sin, "cos": math.cos, "exp": math.exp,
     "log": math.log, "real": float, "int": int,
+    "tan": math.tan, "asin": math.asin, "acos": math.acos, "atan": _atan, "atan2": math.atan2,
+    "sinh": math.sinh, "cosh": math.cosh, "tanh": math.tanh,
+    "asinh": math.asinh, "acosh": math.acosh, "atanh": math.atanh,
+    "log10": math.log10, "hypot": math.hypot, "gamma": math.gamma, "log_gamma": math.lgamma,
+    "erf": math.erf, "erfc": math.erfc,
+    "floor": math.floor, "ceiling": math.ceil, "nint": lambda x: int(_round_half_away(x)),
+    "aint": lambda x: float(math.trunc(x)), "anint": _round_half_away,
+    "sign": _sign, "modulo": _modulo, "dim": lambda a, b: max(a - b, 0),
     "mod": lambda a, b: int(math.fmod(a, b)) if isinstance(a, int) and isinstance(b, int) else math.fmod(a, b),
 }
 

@@ -190,6 +190,18 @@ def is_case_line(toks):
     return False
 
 
+# Old type-specific intrinsic names, which Fortran still accepts, and the generic function each one is.
+SPECIFIC_NAMES = {
+    "dble": "real", "float": "real", "sngl": "real", "idint": "int", "ifix": "int", "dint": "aint",
+    "dnint": "anint", "idnint": "nint", "iabs": "abs", "dabs": "abs", "dsqrt": "sqrt", "dexp": "exp",
+    "dlog": "log", "alog": "log", "dlog10": "log10", "alog10": "log10", "dsin": "sin", "dcos": "cos",
+    "dtan": "tan", "dasin": "asin", "dacos": "acos", "datan": "atan", "datan2": "atan2",
+    "dsinh": "sinh", "dcosh": "cosh", "dtanh": "tanh", "dmod": "mod", "amod": "mod", "dsign": "sign",
+    "isign": "sign", "ddim": "dim", "idim": "dim", "dmax1": "max", "amax1": "max", "max0": "max",
+    "dmin1": "min", "amin1": "min", "min0": "min",
+}
+
+
 @dataclass
 class Info:
     type: str
@@ -473,8 +485,7 @@ class FParser:
             else:
                 self.k += 1
                 args = self.call_arguments(name)
-                if name in ("dble", "float"):
-                    name = "real"
+                name = SPECIFIC_NAMES.get(name, name)
                 if name in ("real", "int", "dble") and len(args) > 1:
                     self.note(self.line, f"{name}(): kind argument dropped")
                     args = args[:1]
