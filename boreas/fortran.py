@@ -17,7 +17,8 @@ from .printer import to_source
 # so a Fortran variable with one of these names is renamed.
 RESERVED = {"const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
-            "else", "do", "while", "print", "call", "return", "exit", "cycle"}
+            "else", "do", "while", "print", "call", "return", "exit", "cycle",
+            "select", "case", "default", "fallthrough", "break"}
 
 TYPE_WORDS = {"integer", "real", "logical", "character", "double", "complex", "type"}
 FIXED_FORM_EXTENSIONS = (".f", ".for", ".f77", ".ftn")
@@ -148,6 +149,8 @@ def classify(toks):
         return None
     t0 = toks[0].text
     nxt = toks[1] if len(toks) > 1 else None
+    if is_case_line(toks):
+        return ("case",)
     if nxt is not None and nxt.kind == "op" and nxt.text in ("=", "("):
         if nxt.text == "=" or t0 not in ("else", "elseif", "end"):
             return None
@@ -168,6 +171,22 @@ def classify(toks):
     if t0 == "contains" and nxt is None:
         return ("contains",)
     return None
+
+
+def is_case_line(toks):
+    """`case (...)` or `case default`, optionally followed by a construct name."""
+    if len(toks) < 2 or toks[0].text != "case" or toks[0].kind != "name":
+        return False
+    if toks[1].kind == "name" and toks[1].text == "default":
+        return len(toks) <= 3
+    if not (toks[1].kind == "op" and toks[1].text == "("):
+        return False
+    depth = 0
+    for j, t in enumerate(toks[1:], 1):
+        depth += (t.kind == "op" and t.text == "(") - (t.kind == "op" and t.text == ")")
+        if depth == 0:
+            return j == len(toks) - 1 or (j == len(toks) - 2 and toks[-1].kind == "name")
+    return False
 
 
 @dataclass
@@ -1130,8 +1149,95 @@ class FParser:
         return [Call(name, args, it.line)]
 
     def st_select(self, it, scope):
-        self.skip_block("select")
-        raise Unsupported("'select case' is not supported yet; skipped")
+        resume = self.i
+        try:
+            return self.select_case(scope)
+        except Unsupported:                  # leave this construct as a TODO; the rest still converts
+            self.i = resume
+            self.skip_block("select")
+            raise
+
+    def select_case(self, scope):
+        if not self.at_name("case"):
+            raise Unsupported("'select type' and 'select rank' are not supported; skipped")
+        self.k += 1
+        self.expect_op("(")
+        subject = self.expr()
+        self.expect_op(")")
+        self.end_of_statement()
+        stops = {("end", "select"), ("case",)}
+        lead = self.parse_body(scope, stops)           # only comments may precede the first case
+        if any(not isinstance(n, Comment) or isinstance(n, StopMarker) for n in lead):
+            raise Unsupported("statements before the first 'case'")
+        cases, line = [], self.line
+        while True:
+            cur = self.items[self.i]
+            self.i += 1
+            toks = self.tokens(cur)
+            if classify(toks) != ("case",):
+                break                                  # `end select`
+            self.toks, self.k, self.line = toks, 1, cur.line
+            values = self.case_selector(scope)
+            cases.append(Case(values, self.parse_body(scope, stops), cur.line))
+        if not cases:
+            raise Unsupported("'select case' without any case")
+        if sum(c.values is None for c in cases) > 1:
+            raise Unsupported("more than one 'case default'")
+        try:
+            check_cases([(c.values, c.line) for c in cases])
+        except LangError as e:
+            raise Unsupported(str(e).split(": ", 1)[-1])
+        return lead + [Select(subject, cases, line)]
+
+    def case_selector(self, scope):
+        """After `case`: `default` (None) or `( value, lo:hi, :hi, lo: )`."""
+        if self.at_name("default"):
+            self.k += 1
+            values = None
+        else:
+            self.expect_op("(")
+            values = []
+            while True:
+                if self.accept_op(":"):
+                    values.append(Slice(None, self.case_value(scope)))
+                else:
+                    lo = self.case_value(scope)
+                    if self.accept_op(":"):
+                        hi = None if self.at_op(",", ")") else self.case_value(scope)
+                        values.append(Slice(lo, hi))
+                    else:
+                        values.append(lo)
+                if not self.accept_op(","):
+                    break
+            self.expect_op(")")
+        if self.at_name():                              # a construct name: `case (1) name`
+            self.k += 1
+        self.end_of_statement()
+        return values
+
+    def case_value(self, scope):
+        """Boreas case values are literals or `const` names; real or computed ones are not translated."""
+        e = self.expr()
+        if isinstance(e, Var):
+            if not self.is_parameter(e.name, scope):
+                raise Unsupported(f"case value '{e.name}' is not a named constant")
+        elif literal_value(e) is NOT_LITERAL:
+            raise Unsupported("case value is not a literal or a named constant")
+        elif isinstance(literal_value(e), float):
+            raise Unsupported("real case value")
+        return e
+
+    def is_parameter(self, name, scope):
+        for sc in (scope, scope.module):
+            info = sc.decls.get(name) if sc is not None else None
+            if info is not None:
+                return info.parameter and not info.dims
+        try:
+            imported = name in self.imported_names(scope)
+        except KeyError:
+            return False
+        return imported and any(m.decls.get(name) is not None and m.decls[name].parameter
+                                and not m.decls[name].dims for m in self.modules.values())
 
     def st_associate(self, it, scope):
         self.skip_block("associate")
@@ -1429,6 +1535,9 @@ class FParser:
                 self.fix_returns(s.orelse, result)
             elif isinstance(s, (Do, DoWhile)):
                 self.fix_returns(s.body, result)
+            elif isinstance(s, Select):
+                for c in s.cases:
+                    self.fix_returns(c.body, result)
 
     # -- parameter modes
     def infer_intents(self, unit):
@@ -1503,6 +1612,10 @@ class FParser:
                         read_expr(cond)
                         scan(b, False)
                     scan(s.orelse, False)
+                elif isinstance(s, Select):
+                    read_expr(s.subject)
+                    for c in s.cases:
+                        scan(c.body, False)
                 elif isinstance(s, Do):
                     if s.var == name:
                         counts[1] += 1

@@ -17,6 +17,7 @@ class _Cycle(Exception):
 def _mine(e, loop):
     """Does this exit/cycle target `loop`? Otherwise the loop lets it pass outwards."""
     return e.label is None or e.label == loop.label
+class _Break(Exception): pass
 
 
 def type_of(v):
@@ -283,6 +284,16 @@ class Interp:
                     self.exec_block(body, env)
                     return
             self.exec_block(s.orelse, env)
+        elif k is Select:
+            n = self.select_index(s.subject, [c.values for c in s.cases], env, s.line)
+            try:
+                while n is not None and n < len(s.cases):
+                    self.exec_block(s.cases[n].body, env)
+                    if not s.flow:
+                        break
+                    n += 1                  # `select case fallthrough`: run the next case's body too
+            except _Break:
+                pass
         elif k is Do:
             ref = self.resolve(Var(s.var), env, s.line)
             lo, hi = self.eval(s.lo, env), self.eval(s.hi, env)
@@ -326,6 +337,8 @@ class Interp:
             raise _Exit(s.label)
         elif k is Cycle:
             raise _Cycle(s.label)
+        elif k is Break:
+            raise _Break()
         elif k is ExprStmt:
             self.eval(s.expr, env)
 
@@ -470,7 +483,64 @@ class Interp:
         if k is Binary:
             return self.binary(e.op, self.eval(e.left, env), self.eval(e.right, env))
         if k is Apply: return self.apply(e, env)
+        if k is SelectExpr: return self.select_expr(e, env)
         raise LangError(f"cannot evaluate {k.__name__}")
+
+    # -- select case
+    def case_value(self, e, env, line):
+        """A case value is a literal, a signed number or a `const` name."""
+        if isinstance(e, Var):
+            slot = self.lookup(e.name, env, line)
+            if slot[INTENT] != "const" or slot[IS_ARRAY]:
+                raise LangError(f"line {line}: case value '{e.name}' is not a scalar const")
+            return slot[VALUE]
+        v = literal_value(e)
+        if v is NOT_LITERAL:
+            raise LangError(f"line {line}: a case value must be a literal or the name of a const")
+        return v
+
+    def select_index(self, subject, groups, env, line):
+        """Which group of case values (a list, or None for default) matches the subject: its index,
+        the default's index when nothing matches, or None. The values are evaluated now, checked
+        against the subject's type, and must not overlap."""
+        v = self.eval(subject, env)
+        typ = type_of(v)
+        if typ not in ("integer", "string", "logical"):
+            raise LangError(f"line {line}: select case needs an integer, string or logical value, got {typ}")
+        entries, default = [], None                   # entries: (lo, hi, is_point, group)
+        for n, values in enumerate(groups):
+            if values is None:
+                default = n
+                continue
+            for item in values:
+                point = not isinstance(item, Slice)
+                lo = self.case_value(item if point else item.lo, env, line) if point or item.lo is not None else None
+                hi = lo if point else self.case_value(item.hi, env, line) if item.hi is not None else None
+                for x in (lo, hi):
+                    if x is not None and type_of(x) != typ:
+                        raise LangError(f"line {line}: case value {show_value(x)} is {type_of(x)}, "
+                                        f"but the select value is {typ}")
+                if not point and typ == "logical":
+                    raise LangError(f"line {line}: a logical case value cannot be a range")
+                if lo is not None and hi is not None and lo > hi:
+                    raise LangError(f"line {line}: the range {show_range(lo, hi, False)} is empty")
+                entries.append((lo, hi, point, n))
+        check_overlap([e[:3] for e in entries], line)
+        for lo, hi, _, n in entries:
+            if (lo is None or lo <= v) and (hi is None or v <= hi):
+                return n
+        return default
+
+    def select_expr(self, e, env):
+        n = self.select_index(e.subject, [a.values for a in e.arms], env, e.line)
+        v = self.eval(e.arms[n].value, env)
+        t, kinds = type_of(v), arm_types(e.arms)      # kinds: arms whose type is known without evaluating
+        if kinds - {t}:
+            if kinds <= {"integer", "real"} and t in ("integer", "real"):
+                return float(v)                       # integer arms widen to real next to a real arm
+            raise LangError(f"line {e.line}: the arms of a select expression have different types "
+                            f"({' and '.join(sorted(kinds | {t}))})")
+        return v
 
     def common_shape(self, values):
         shapes = {v.shape for v in values if isinstance(v, Array)}

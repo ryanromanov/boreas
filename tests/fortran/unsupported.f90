@@ -15,12 +15,9 @@ program mixed
   end do
   print *, 'total:', total
 
-  select case (total)
-  case (6)
-    print *, 'six'
-  case default
-    print *, 'other'
-  end select
+  associate (t => total)
+    print *, 'alias', t
+  end associate
 
   allocate(buf(3))
   buf = 1
