@@ -190,12 +190,24 @@ field per line, with no default values:
   share fields. Records can hold other records and fixed-size array fields (`integer :: tags(3)`,
   with a literal size), and you can make arrays of records (`point :: pts(10)`).
 - Fields start at their type's default value (see Declarations), nested records and array fields
-  included, so `point :: p` is a usable zero point. There are no per-field defaults in the record.
+  included, so `point :: p` is a usable zero point. A field may declare its own default with a
+  constant expression (literals, arithmetic, array literals, record constructors):
+
+      record config
+        integer :: count = 5
+        real :: scale = 1.0
+        logical :: verbose
+      end record
+
+      config :: c                    ! count = 5, scale = 1.0, verbose = false
+      config :: d = config(scale = 2.5)
+
+  A constructor overrides defaults, and fields it leaves out keep them.
 - `const point :: origin = point(0.0, 0.0)` makes a read-only record. Writing a field of a `const`
   record or an `in` parameter is an error.
 - A write to a field of an `out` or `inout` parameter needs `update`, like any write the caller sees:
-  `update p.x = p.x + dx`. An `out` record parameter starts with no values and must have every
-  field assigned before the subroutine returns. Two fields of one record may be passed as separate `out`/`inout` arguments;
+  `update p.x = p.x + dx`. An `out` record parameter starts with no values, except for fields that
+  declare a default, and must have every field assigned before the subroutine returns. Two fields of one record may be passed as separate `out`/`inout` arguments;
   the same field twice (or a record and one of its fields) is an aliasing error.
 - Records cannot be compared or used in arithmetic (compare the fields), cannot be `select` subjects,
   and cannot be `allocatable` yet. In a module, a record is private unless marked `public`, and is

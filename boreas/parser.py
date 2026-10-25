@@ -135,6 +135,27 @@ KEYWORDS = {"if", "then", "else", "do", "while", "end", "program", "function", "
             "allocatable", "in", "out", "inout", "true", "false", "and", "or", "not"}
 
 
+def check_constant(e, what, line):
+    """A field default is built from literals, arithmetic, array literals and record
+    constructors only: no variables, no function calls (record names are checked at link time)."""
+    if isinstance(e, (Num, Str, Bool)):
+        return
+    if isinstance(e, Unary):
+        check_constant(e.operand, what, line)
+    elif isinstance(e, Binary):
+        check_constant(e.left, what, line)
+        check_constant(e.right, what, line)
+    elif isinstance(e, ArrayLit):
+        for x in e.items:
+            check_constant(x, what, line)
+    elif isinstance(e, Apply):
+        for a in e.args:
+            check_constant(a.value if isinstance(a, NamedArg) else a, what, line)
+    else:
+        raise LangError(f"line {line}: {what} must be a constant expression (literals, arithmetic, "
+                        f"array literals and record constructors)")
+
+
 def target_text(t):
     """How an assignment target reads in a message: `p.x`, `a`, `a`."""
     if isinstance(t, FieldAccess):
@@ -417,7 +438,7 @@ class Parser:
                 self.error("record fields are plain declarations: 'type :: name'")
             f = self.decl()
             if f.init is not None:
-                raise LangError(f"line {f.line}: record fields have no default values ('{f.name}')")
+                check_constant(f.init, f"the default of field '{f.name}'", f.line)
             fields.append(f)
             self.skip_newlines()
         self.expect("end")
