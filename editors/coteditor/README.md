@@ -13,7 +13,7 @@ Format, the "..." menu under the syntax list, Import, then pick `Boreas.cotsynta
 Scripts (Script menu > Boreas), all using `~/.local/bin/boreas`:
 
 - Run, Command-R: runs the document (unsaved edits included), output in a new document.
-- Check, Command-K: `boreas check`, errors in the Console as `file:line:col: message`.
+- Check, Control-Command-K (Command-K is CotEditor's Quick Actions): `boreas check`, errors in the Console as `file:line:col: message`.
 - Convert Fortran, Command-Shift-C: `boreas convert --verify` on the saved file.
 
 A shortcut that CotEditor already uses is ignored; rename the script file (`Run.@r.sh`:

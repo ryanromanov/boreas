@@ -2,7 +2,7 @@
 # %%%{CotEditorXInput=AllText}%%%
 # %%%{CotEditorXOutput=Discard}%%%
 # Parses the current document without running it. Errors appear in the Console
-# as file:line:col: message. Uses the editor text, so unsaved changes are included. Command-K.
+# as file:line:col: message. Uses the editor text, so unsaved changes are included. Control-Command-K.
 dir=$(mktemp -d)
 tmp=$dir/doc.bor
 trap 'rm -rf "$dir"' EXIT
