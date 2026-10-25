@@ -20,7 +20,22 @@ def _mine(e, loop):
 class _Break(Exception): pass
 
 
+class _Null:
+    """The absent value of an optional (`T?`) variable."""
+    def __repr__(self): return "null"
+    def copy(self): return self
+
+
+NULL = _Null()
+
+
+def base_type(t):
+    """`integer` for `integer?`."""
+    return t[:-1] if t.endswith("?") else t
+
+
 def type_of(v):
+    if v is NULL: return "null"
     if isinstance(v, bool): return "logical"
     if isinstance(v, int): return "integer"
     if isinstance(v, float): return "real"
@@ -31,7 +46,13 @@ def type_of(v):
 
 
 def coerce(typ, value, what):
-    """Assignment rules: integer -> real is implicit; everything else must match."""
+    """Assignment rules: integer -> real is implicit; everything else must match. Only an
+    optional type (`integer?`) can hold null."""
+    if value is NULL:
+        if typ.endswith("?"):
+            return NULL
+        raise LangError(f"{what}: cannot assign null to {typ} (declare it '{typ}?' to allow null)")
+    typ = base_type(typ)
     got = type_of(value)
     if got == typ:
         return value.copy() if isinstance(value, Record) else value
@@ -198,13 +219,17 @@ def _allocated(x):
     raise LangError("allocated() needs the name of an allocatable array")   # apply() handles real calls
 
 
+def _present(x):
+    raise LangError("present() needs a single value")   # apply() handles real calls
+
+
 def _reduce(name, f):
     return lambda a: f(_need_array(name, a).data)
 
 
 BUILTINS = {
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
-    "transpose": _transpose, "dot_product": _dot_product, "allocated": _allocated,
+    "transpose": _transpose, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
     "sum": _reduce("sum", sum), "maxval": _reduce("maxval", max), "minval": _reduce("minval", min),
     "any": _reduce("any", any), "all": _reduce("all", all),
     "max": max, "min": min,
@@ -239,7 +264,7 @@ def overlaps(a, b):
     return all(max(_span(x)[0], _span(y)[0]) <= min(_span(x)[1], _span(y)[1]) for x, y in zip(a, b))
 
 
-PURE_BUILTINS = (set(BUILTINS) | set(ELEMENTAL)) - {"allocated"}
+PURE_BUILTINS = (set(BUILTINS) | set(ELEMENTAL)) - {"allocated", "present"}
 
 
 def iter_apply(e):
@@ -306,7 +331,7 @@ class Interp:
                 if f.name in seen:
                     raise LangError(f"line {f.line}: record '{r.name}' has two fields called '{f.name}'")
                 seen.add(f.name)
-                if f.type not in DEFAULTS and f.type not in scope.records:
+                if base_type(f.type) not in DEFAULTS and base_type(f.type) not in scope.records:
                     raise LangError(f"line {f.line}: field '{f.name}' of record '{r.name}' has unknown type '{f.type}'")
                 for d in f.dims or []:
                     if not (isinstance(d, Num) and isinstance(d.value, int) and d.value >= 0):
@@ -324,8 +349,8 @@ class Interp:
                 raise LangError(f"line {records[name].line}: record '{name}' contains itself: "
                                 + " -> ".join(path[path.index(name):] + (name,)))
             for f in scope.records[name].fields:
-                if f.type in scope.records:
-                    contains(f.type, path + (name,))
+                if base_type(f.type) in scope.records:
+                    contains(base_type(f.type), path + (name,))
 
         for name in records:
             contains(name, ())
@@ -491,10 +516,11 @@ class Interp:
         if s.name in env:
             raise LangError(f"{where}: '{s.name}' already declared")
         sub = None
-        if s.type not in DEFAULTS:
-            sub = self.scope.records.get(s.type)
+        base = base_type(s.type)
+        if base not in DEFAULTS:
+            sub = self.scope.records.get(base)
             if sub is None:
-                raise LangError(f"{where}: unknown type '{s.type}'")
+                raise LangError(f"{where}: unknown type '{base}'")
             if s.allocatable:
                 raise LangError(f"{where}: allocatable arrays of records are not supported")
         if s.allocatable:
@@ -503,6 +529,8 @@ class Interp:
         if s.dims is None:
             if s.init is not None:
                 val = coerce(s.type, self.eval(s.init, env), where)
+            elif s.type.endswith("?"):
+                val = NULL                               # an optional variable starts absent
             else:
                 val = self.new_record(sub) if sub is not None else DEFAULTS[s.type]
             env[s.name] = [s.type, val, False, "const" if s.const else None]
@@ -529,15 +557,18 @@ class Interp:
         owner = self.owner[id(rdef)]
         fields = {}
         for f in rdef.fields:
-            sub = owner.records.get(f.type)
+            sub = owner.records.get(base_type(f.type))
             if f.dims is None:
-                value = self.new_record(sub, blank) if sub else (None if blank else DEFAULTS[f.type])
+                if f.type.endswith("?"):
+                    value = None if blank else NULL      # an optional field starts absent
+                else:
+                    value = self.new_record(sub, blank) if sub else (None if blank else DEFAULTS[f.type])
                 fields[f.name] = [f.type, value, False, None]
             else:
                 shape = [d.value for d in f.dims]
                 n = math.prod(shape)
                 data = ([self.new_record(sub, blank) for _ in range(n)] if sub
-                        else [None if blank else DEFAULTS[f.type]] * n)
+                        else [None if blank else DEFAULTS[base_type(f.type)]] * n)
                 fields[f.name] = [f.type, Array(shape, data), True, None]
         rec = Record(rdef, fields)
         for f in rdef.fields:
@@ -712,6 +743,8 @@ class Interp:
             value = self.read(ref)
             if isinstance(value, Array):
                 raise LangError(f"line {line}: '{ref[2]}' is an array; pick one element before using a field")
+            if value is NULL:
+                raise LangError(f"line {line}: '{ref[2]}' is null, so it has no fields (check with present())")
             if not isinstance(value, Record):
                 raise LangError(f"line {line}: '{ref[2]}' is not a record")
             return value, ref
@@ -775,6 +808,7 @@ class Interp:
     def eval(self, e, env):
         k = type(e)
         if k in (Num, Str, Bool): return e.value
+        if k is Null: return NULL
         if k is Var:
             slot = self.lookup(e.name, env)
             v = slot[VALUE]
@@ -794,10 +828,15 @@ class Interp:
             raise LangError("named arguments are only for building records")
         if k is Unary:
             v = self.eval(e.operand, env)
+            if v is NULL:
+                raise LangError(f"'{e.op}' cannot be used with null; check with present() or use ??")
             if isinstance(v, Record):
                 raise LangError(f"records cannot be used with '{e.op}'; use their fields")
             f = (lambda x: not self.truth(x)) if e.op == "not" else (lambda x: -x) if e.op == "-" else (lambda x: x)
             return Array(v.shape, [f(x) for x in v.data]) if isinstance(v, Array) else f(v)
+        if k is Binary and e.op == "??":              # the right side is only evaluated when needed
+            left = self.eval(e.left, env)
+            return self.eval(e.right, env) if left is NULL else left
         if k is Binary:
             return self.binary(e.op, self.eval(e.left, env), self.eval(e.right, env))
         if k is Apply: return self.apply(e, env)
@@ -875,6 +914,10 @@ class Interp:
         return shapes.pop()
 
     def binary(self, op, a, b):
+        if a is NULL or b is NULL:
+            if op in ("==", "/="):
+                return (a is b) == (op == "==")
+            raise LangError(f"operator {op!r} cannot be used with null; check with present() or use ??")
         # whole-array operations: scalars broadcast, arrays must have the same shape
         if isinstance(a, Array) or isinstance(b, Array):
             shape = self.common_shape([a, b])
@@ -907,6 +950,10 @@ class Interp:
         raise LangError(f"unknown operator {op}")
 
     def apply(self, e, env):
+        if e.name == "present" and e.name not in env and "present" not in self.scope.funcs:
+            if len(e.args) != 1 or isinstance(e.args[0], (NamedArg, Slice)):
+                raise LangError(f"line {e.line}: present() takes one value")
+            return self.eval(e.args[0], env) is not NULL
         if e.name == "allocated" and e.name not in env and "allocated" not in self.scope.funcs:
             if len(e.args) != 1 or not isinstance(e.args[0], Var):
                 raise LangError(f"line {e.line}: allocated() needs the name of an allocatable array")
@@ -970,9 +1017,20 @@ class Interp:
             self.scope = saved
         return None
 
+    def pad_optional(self, f, args, line):
+        """Check the argument count and fill in null for optional parameters left off the end."""
+        most = len(f.params)
+        least = most
+        while least and f.params[least - 1][0].endswith("?"):
+            least -= 1
+        if not least <= len(args) <= most:
+            count = str(most) if least == most else f"{least} to {most}"
+            raise LangError(f"line {line}: {f.name} expects {count} arguments, got {len(args)}")
+        return list(args) + [NULL] * (most - len(args))
+
     def call_function(self, f, args, line):
         if len(args) != len(f.params):
-            raise LangError(f"line {line}: {f.name} expects {len(f.params)} arguments, got {len(args)}")
+            args = self.pad_optional(f, args, line)
         value = self.run_body(f, self.bind(f, args, line))
         if f.ret is None:
             return None
@@ -997,8 +1055,7 @@ class Interp:
             raise LangError(f"line {s.line}: unknown subroutine '{s.name}'")
         if not f.is_sub:
             raise LangError(f"line {s.line}: '{s.name}' is a function; use it in an expression")
-        if len(s.args) != len(f.params):
-            raise LangError(f"line {s.line}: {s.name} expects {len(f.params)} arguments, got {len(s.args)}")
+        self.pad_optional(f, s.args, s.line)
 
         outs, values = [], []   # outs: (param index, reference)
         for n, ((typ, name, intent), a) in enumerate(zip(f.params, s.args)):
@@ -1036,6 +1093,7 @@ class Interp:
                     raise LangError(f"line {s.line}: '{name}' is passed as {f.params[n][2]} and also "
                                     f"as another argument to {s.name}; arguments must not alias")
 
+        values += [NULL] * (len(f.params) - len(values))          # omitted optional arguments are null
         callee = self.bind(f, values, s.line)
         value = self.run_body(f, callee)
         if value is not None:

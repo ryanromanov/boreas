@@ -214,6 +214,33 @@ field per line, with no default values:
   and cannot be `allocatable` yet. In a module, a record is private unless marked `public`, and is
   imported by name: `use geometry: point`. See `examples/records.bor`.
 
+## Optional values
+
+A plain `integer`, `real`, `logical`, `string` or record always holds a value. Add `?` to the type
+and the variable may instead be absent (`null`):
+
+    integer? :: n                       ! starts as null
+    print present(n), n == null         ! false true
+    n = 4
+    print n ?? 10                       ! 4; `a ?? b` is a, or b when a is null
+    n = null
+
+- `null` only goes into a `?` type; assigning it to a plain one is an error. An optional variable
+  starts as `null`, where a plain one starts at its type's zero.
+- Using an absent value is an error: arithmetic, ordering, conditions and passing it to a plain
+  parameter all fail with a message. What you can do with one: test it (`present(x)`,
+  `x == null`, `x /= null`), give it a fallback (`x ?? y`), store it, print it (`null`) and pass it
+  to another optional parameter. `??` is the loosest operator (`n ?? 0 + 1` is `n ?? (0 + 1)`),
+  chains left to right, and only evaluates its right side when the left is null.
+- `in` parameters may be optional, and such arguments can be left off the end of a call
+  (`step_or()` for `function step_or(integer? :: step)`); they arrive as `null`. Only trailing ones can be left
+  off; to skip one in the middle, pass `null`.
+- A function may return `-> integer?` to say "no result" (`return null`).
+- Record fields can be optional (`address? :: home`); they start as `null`. Reading a field
+  through a null record is an error (`p.home.city` when `p.home` is null). A record still cannot
+  contain itself, even optionally.
+- Not supported: optional `out`/`inout` parameters, arrays of optional values, `?.` chaining.
+
 ## Subroutines and parameter modes
 
 Results come back through `out` / `inout` parameters:
@@ -291,6 +318,9 @@ report on stderr. Translations that change meaning are flagged, never silent:
   initialised in its declaration) becomes a TODO when the procedure changes it and can read the old
   value, because Boreas locals start fresh on every call. Ones that are never changed, or always
   assigned before they are read, convert without a note.
+- `optional` arguments become `T?` parameters and `present(x)` is kept, so a call that leaves off
+  trailing optional arguments works unchanged. An optional argument the procedure modifies
+  (`intent(out)`/`inout`) or an optional array becomes a TODO and a required argument.
 - `select case` becomes Boreas `select case`. A case value that is not a literal or a
   `parameter` leaves that one construct as a TODO.
 - Loop names become labels (`outer: do` ... `end do outer`), and `exit name` / `cycle name`

@@ -6,8 +6,8 @@ from .lexer import LangError
 from .parser import *
 
 # Higher binds tighter. Mirrors the grammar in parser.py:
-# or < and < not < compare < add < mul < unary < **
-PREC = {"or": 1, "and": 2, "==": 4, "/=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
+# ?? < or < and < not < compare < add < mul < unary < **
+PREC = {"??": 0, "or": 1, "and": 2, "==": 4, "/=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
         "+": 5, "-": 5, "*": 6, "/": 6, "**": 8}
 ATOM = 10
 
@@ -41,6 +41,8 @@ def _expr(e):
         return "true" if e.value else "false"
     if k is Var:
         return e.name
+    if k is Null:
+        return "null"
     if k is ArrayLit:
         return "[" + ", ".join(expr(x) for x in e.items) + "]"
     if k is Slice:

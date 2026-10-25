@@ -14,6 +14,8 @@ class Bool: value: bool
 @dataclass
 class Var:  name: str
 @dataclass
+class Null: pass          # the absent value of an optional (`T?`) variable
+@dataclass
 class ArrayLit: items: list
 @dataclass
 class Slice: lo: object; hi: object
@@ -132,13 +134,13 @@ def root_name(target):
 KEYWORDS = {"if", "then", "else", "do", "while", "end", "program", "function", "subroutine", "module",
             "record", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print",
             "select", "case", "default", "fallthrough", "break", "update", "allocate", "deallocate",
-            "allocatable", "in", "out", "inout", "true", "false", "and", "or", "not"}
+            "allocatable", "in", "out", "inout", "true", "false", "null", "and", "or", "not"}
 
 
 def check_constant(e, what, line):
     """A field default is built from literals, `const` names, arithmetic, array literals,
     record constructors and built-in functions (which names are allowed is checked at link time)."""
-    if isinstance(e, (Num, Str, Bool, Var)):
+    if isinstance(e, (Num, Str, Bool, Var, Null)):
         return
     if isinstance(e, Unary):
         check_constant(e.operand, what, line)
@@ -517,7 +519,7 @@ class Parser:
                 funcs[f.name] = f
             elif self.at("allocatable"):
                 self.error("a module cannot hold allocatable arrays; declare them inside a procedure")
-            elif self.tok.kind == "ident" and (self.tok.text in TYPES or self.toks[self.i + 1].text == "::"):
+            elif self.tok.kind == "ident" and (self.tok.text in TYPES or self.typed_ahead()):
                 self.error("a module holds constants, records and procedures; declare this with 'const'")
             else:
                 self.error("expected 'const', 'record', 'function', 'subroutine' or 'end module'")
@@ -559,6 +561,8 @@ class Parser:
                     if intent != "in" and not is_sub:
                         self.error("only subroutines may have out or inout parameters")
                 t = self.type_name()
+                if t.endswith("?") and intent != "in":
+                    self.error("an optional ('?') parameter must be an 'in' parameter")
                 self.expect("::")
                 params.append((t, self.ident(), intent))
                 if not self.accept(","):
@@ -566,14 +570,24 @@ class Parser:
         self.expect(")")
         return params
 
+    def typed_ahead(self):
+        """Does a `::` (after an optional `?`) follow the current token?"""
+        j = self.i + 1
+        if self.toks[j].text == "?":
+            j += 1
+        return self.toks[j].text == "::"
+
     def type_name(self, anywhere=False):
-        """A built-in type, or (when a `::` follows, or `anywhere`) the name of a record."""
+        """A built-in type, or (when a `::` follows, or `anywhere`) the name of a record; a `?`
+        right after it makes the value optional (`integer?`)."""
         t = self.tok
         if t.kind == "ident" and t.text in TYPES:
-            return self.next().text
-        if t.kind == "ident" and t.text not in KEYWORDS and (anywhere or self.toks[self.i + 1].text == "::"):
-            return self.next().text
-        self.error("expected a type (integer, real, logical, string, or a record)")
+            name = self.next().text
+        elif t.kind == "ident" and t.text not in KEYWORDS and (anywhere or self.typed_ahead()):
+            name = self.next().text
+        else:
+            self.error("expected a type (integer, real, logical, string, or a record)")
+        return name + "?" if self.accept("?") else name
 
     # -- statements
     def block(self, *closers):
@@ -605,7 +619,7 @@ class Parser:
                                                               or self.toks[self.i + 2].text == "::"):
             self.next()
             return self.decl(allocatable=True)
-        if t.kind == "ident" and (t.text in TYPES or (t.text not in KEYWORDS and self.toks[self.i + 1].text == "::")):
+        if t.kind == "ident" and (t.text in TYPES or (t.text not in KEYWORDS and self.typed_ahead())):
             return self.decl()
         if self.at("record"):
             self.error("records are defined at the top level or inside a module, not in a procedure")
@@ -703,6 +717,8 @@ class Parser:
             while self.accept(","):
                 dims.append(self.expr())
             self.expect(")")
+        if typ.endswith("?") and (dims is not None or allocatable):
+            self.error(f"'{name}' is an array of optional values, which is not supported")
         init = self.expr() if self.accept("=") else None
         if allocatable and init is not None:
             self.error(f"allocatable array '{name}' cannot have an initializer")
@@ -887,7 +903,14 @@ class Parser:
 
     # -- expressions (lowest to highest precedence)
     def expr(self):
-        return self.or_()
+        return self.coalesce()
+
+    def coalesce(self):
+        """`a ?? b`: a, or b when a is absent. The loosest operator, so `n ?? 0 + 1` is `n ?? (0 + 1)`."""
+        e = self.or_()
+        while self.accept("??"):
+            e = Binary("??", e, self.or_())
+        return e
 
     def or_(self):
         e = self.and_()
@@ -951,6 +974,8 @@ class Parser:
             return Bool(True)
         if self.accept("false"):
             return Bool(False)
+        if self.accept("null"):
+            return Null()
         if self.accept("("):
             e = self.expr()
             self.expect(")")
