@@ -10,7 +10,7 @@ from dataclasses import dataclass, fields, is_dataclass
 
 from .lexer import LangError
 from .parser import *
-from .interp import BUILTINS, ELEMENTAL
+from .interp import BUILTINS, ELEMENTAL, PURE_BUILTINS
 from .printer import to_source
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
@@ -19,7 +19,7 @@ RESERVED = {"const", "update", "use", "module", "public", "private", "and", "or"
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "call", "return", "exit", "cycle",
             "select", "case", "default", "fallthrough", "break",
-            "allocatable", "allocate", "deallocate"}
+            "allocatable", "allocate", "deallocate", "record"}
 
 TYPE_WORDS = {"integer", "real", "logical", "character", "double", "complex", "type"}
 FIXED_FORM_EXTENSIONS = (".f", ".for", ".f77", ".ftn")
@@ -231,6 +231,20 @@ class Raw:
 
 
 @dataclass
+class TypeInfo:
+    """A Fortran derived type. `fields` are Boreas Decls; `ok` is False when it could not be translated."""
+    name: str
+    scope: object                 # the scope that defines it
+    fields: list
+    line: int
+    ok: bool = True
+
+    @property
+    def module(self):
+        return self.scope if self.scope.kind == "module" else None
+
+
+@dataclass
 class StopMarker(Comment):
     line: int = 0
 
@@ -263,6 +277,8 @@ class FParser:
         self.once = set()
         self.modules = {}           # module name -> Scope, in source order
         self.fn_lines = {}          # id(Function) -> line of its header
+        self.types = {}             # derived type name -> TypeInfo, in source order
+        self.cur_scope = None       # the scope of the statement being parsed
         self.loops = []             # enclosing named do loops: (Fortran name, Boreas label), innermost last
         self.construct = None       # the name in front of the statement being read: `outer: do`
 
@@ -449,28 +465,52 @@ class FParser:
             return ArrayLit(items)
         if t.kind == "name":
             name = t.text
-            if self.at_op("%"):
-                raise Unsupported("derived-type component")
             if not self.at_op("("):
-                return Var(self.rename(name))
-            self.k += 1
-            args = []
-            if not self.at_op(")"):
-                while True:
-                    a = self.argument(name)
-                    if a is not None:
-                        args.append(a)
-                    if not self.accept_op(","):
-                        break
-            self.expect_op(")")
-            if name in ("dble", "float"):
-                name = "real"
-            if name in ("real", "int", "dble") and len(args) > 1:
-                self.note(self.line, f"{name}(): kind argument dropped")
-                args = args[:1]
-            intrinsic = name in BUILTINS or name in ELEMENTAL
-            return Apply(name if intrinsic else self.rename(name), args, self.line)
+                e = Var(self.rename(name))
+            else:
+                self.k += 1
+                args = self.call_arguments(name)
+                if name in ("dble", "float"):
+                    name = "real"
+                if name in ("real", "int", "dble") and len(args) > 1:
+                    self.note(self.line, f"{name}(): kind argument dropped")
+                    args = args[:1]
+                intrinsic = name in BUILTINS or name in ELEMENTAL
+                e = Apply(name if intrinsic else self.rename(name), args, self.line)
+            while self.accept_op("%"):                       # derived-type component: p%x, pts(2)%pos%y
+                if isinstance(e, Apply) and any(isinstance(a, Slice) for a in e.args):
+                    raise Unsupported("a component of an array section (pts(1:3)%x)")
+                if isinstance(e, Var) and self.is_array_name(e.name):
+                    raise Unsupported(f"a component of a whole array ({e.name}%...): Boreas needs one element")
+                field = self.rename(self.expect_name())
+                args = None
+                if self.accept_op("("):
+                    args = self.call_arguments(field)
+                e = FieldAccess(e, field, args, self.line)
+            return e
         raise Unsupported(f"unexpected {t.text!r} in expression")
+
+    def is_array_name(self, name):
+        s = self.cur_scope
+        while s is not None:
+            info = s.decls.get(name)
+            if info is not None:
+                return info.dims is not None or info.shape_dropped
+            s = s.host
+        return False
+
+    def call_arguments(self, fname):
+        """The arguments after an opening parenthesis, through the closing one."""
+        args = []
+        if not self.at_op(")"):
+            while True:
+                a = self.argument(fname)
+                if a is not None:
+                    args.append(a)
+                if not self.accept_op(","):
+                    break
+        self.expect_op(")")
+        return args
 
     def argument(self, fname):
         t, t2 = self.peek(), self.peek(1)
@@ -479,6 +519,9 @@ class FParser:
                 self.k += 2
                 self.expr()
                 return None
+            if self.rename(fname) in self.types:             # a structure constructor: point(x = 1.0)
+                self.k += 2
+                return NamedArg(self.rename(t.text), self.expr())
             raise Unsupported(f"keyword argument '{t.text}=' in {fname}()")
         lo = None if self.at_op(":") else self.expr()
         if self.accept_op(":"):
@@ -672,7 +715,7 @@ class FParser:
             return None
         for n in iter_nodes(nodes):
             for name in (getattr(n, "name", None), getattr(n, "var", None)):
-                if isinstance(name, str) and name in scope.skipped and not isinstance(n, (Decl, Function)) \
+                if isinstance(name, str) and name in scope.skipped and not isinstance(n, (Decl, Function, NamedArg)) \
                         and name not in scope.decls and (name not in scope.dummies or name in scope.bad_dummies):
                     return name
         return None
@@ -704,6 +747,7 @@ class FParser:
     # -- statements
     def statement(self, it, toks, scope):
         self.toks, self.k = toks, 0
+        self.cur_scope = scope
         t0 = toks[0]
         if t0.kind != "name":
             raise Unsupported("unrecognised statement (labels are not supported)")
@@ -718,8 +762,6 @@ class FParser:
             name = toks[2].text
         elif self.is_assignment():
             return [self.assignment(it)]
-        if any(t.kind == "op" and t.text == "%" for t in toks):
-            raise Unsupported("derived-type component")
         if name in TYPE_WORDS and name != "type" and not (len(toks) > self.k + 1 and toks[self.k + 1].text == "="):
             return self.declaration(it, scope)
         handler = getattr(self, "st_" + name, None)
@@ -736,28 +778,31 @@ class FParser:
         raise Unsupported("unrecognised statement")
 
     def is_assignment(self):
-        t = self.peek(1)
-        if t is None:
-            return False
-        if t.kind == "op" and t.text == "=":
-            return True
-        if t.kind == "op" and t.text == "(":
-            depth, j = 0, self.k + 1
-            while j < len(self.toks):
-                tj = self.toks[j]
-                if tj.kind == "op" and tj.text == "(":
-                    depth += 1
-                elif tj.kind == "op" and tj.text == ")":
-                    depth -= 1
-                    if depth == 0:
-                        nxt = self.toks[j + 1] if j + 1 < len(self.toks) else None
-                        return nxt is not None and nxt.kind == "op" and nxt.text in ("=", "=>")
+        """Is this `name = ...`, `name(...) = ...` or `name%part(...)%part = ...`?"""
+        j = self.k + 1
+        while j < len(self.toks):
+            t = self.toks[j]
+            if t.kind == "op" and t.text == "(":
+                depth = 0
+                while j < len(self.toks):
+                    tj = self.toks[j]
+                    if tj.kind == "op" and tj.text == "(":
+                        depth += 1
+                    elif tj.kind == "op" and tj.text == ")":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    j += 1
                 j += 1
+            elif t.kind == "op" and t.text == "%":
+                j += 2
+            else:
+                return t.kind == "op" and t.text in ("=", "=>") and j > self.k + 0
         return False
 
     def assignment(self, it):
         target = self.primary()
-        if not isinstance(target, (Var, Apply)):
+        if not isinstance(target, (Var, Apply, FieldAccess)):
             raise Unsupported("cannot assign to this expression")
         if self.at_op("=>"):
             raise Unsupported("pointer assignment")
@@ -775,7 +820,18 @@ class FParser:
             self.k += 1
             self.note(self.line, "double precision became real (Boreas reals are double precision)", once=True)
             return "real"
-        if word in ("complex", "type"):
+        if word == "type":
+            if not self.accept_op("("):
+                raise Unsupported("expected 'type(name)'")
+            name = self.rename(self.expect_name())
+            self.expect_op(")")
+            info = self.types.get(name)
+            if info is None:
+                raise Unsupported(f"derived type '{name}' is not defined earlier in this file")
+            if not info.ok:
+                raise Unsupported(f"derived type '{name}' was not translated")
+            return name
+        if word == "complex":
             raise Unsupported(f"'{word}' is not supported")
         if word == "character":
             self.note(self.line, "character lengths are not tracked: Boreas strings never pad or truncate, "
@@ -860,7 +916,7 @@ class FParser:
                     attrs["dimension"] = self.dim_specs()
             elif word in ("parameter", "save", "public", "private", "target", "intrinsic", "value", "optional", "external"):
                 attrs[word] = True
-                if word == "save" and scope.kind not in ("program", "module"):
+                if word == "save" and scope.kind not in ("program", "module", "type"):
                     self.note(it.line, "'save': Fortran keeps these variables between calls, Boreas locals do not")
                 if word == "optional":
                     self.note(it.line, "'optional' dropped: Boreas has no optional arguments")
@@ -903,7 +959,7 @@ class FParser:
                             dims.append(hi)
                 if attrs.get("parameter") and init is None:
                     raise Unsupported(f"constant '{name}' has no value here (implied-shape or set elsewhere)")
-                if not attrs.get("parameter") and init is not None and scope.kind not in ("program", "module") \
+                if not attrs.get("parameter") and init is not None and scope.kind not in ("program", "module", "type") \
                         and name not in scope.dummies:
                     self.note(line, f"'{name}' is initialised in a declaration inside a procedure: "
                                     f"Fortran implicitly SAVEs it between calls, Boreas re-initialises it each call")
@@ -930,6 +986,8 @@ class FParser:
 
     def allocatable_dims(self, name, specs, init, scope):
         """The dims of an allocatable local: one `:` per dimension, which is its rank."""
+        if scope.kind == "type":
+            raise Unsupported(f"allocatable component '{name}': Boreas record fields cannot be allocatable")
         if name in scope.dummies:
             scope.bad_dummies.add(name)
             scope.skipped.add(name)
@@ -1021,7 +1079,8 @@ class FParser:
 
     def own_exports(self, mod):
         """Public names defined in a module that Boreas can export, in source order."""
-        names = [r.scope.name for r in self.raw if r.scope.module is mod and r.scope.host is mod]
+        names = [t.name for t in self.types.values() if t.ok and t.scope is mod]
+        names += [r.scope.name for r in self.raw if r.scope.module is mod and r.scope.host is mod]
         names += [n for n, info in mod.decls.items() if info.parameter]
         return [n for n in names if self.is_public(mod, n)]
 
@@ -1351,11 +1410,158 @@ class FParser:
         self.block_form("forall")
 
     def st_type(self, it, scope):
+        if self.at_op("("):                          # type(point) :: p
+            self.k = 0
+            return self.declaration(it, scope)
+        return self.type_definition(it, scope)
+
+    def type_definition(self, it, scope):
+        """`type [, attrs] [::] name` through `end type`: a Boreas record, or a TODO for the
+        whole type when any part of it cannot be translated (variables of it are then skipped)."""
+        bad, access = None, None
+        while self.accept_op(","):
+            word = self.expect_name()
+            if word in ("public", "private"):
+                access = word
+            elif word == "bind":
+                self.skip_parens()
+                self.note(it.line, "bind(c) ignored: Boreas records have no C layout")
+            elif word in ("extends", "abstract"):
+                bad = bad or f"'{word}' (inheritance) is not supported"
+                if self.at_op("("):
+                    self.skip_parens()
+            else:
+                bad = bad or f"unknown type attribute '{word}'"
+        self.accept_op("::")
+        name = self.rename(self.expect_name())
         if self.at_op("("):
-            self.remember_skipped(scope)
-            raise Unsupported("derived-type variables are not supported")
-        self.skip_block("type")
-        raise Unsupported("derived-type definitions are not supported; skipped")
+            bad = bad or "parameterized derived types are not supported"
+            self.skip_parens()
+        self.end_of_statement()
+        fields, holder = [], Scope("type", name)
+        holder.host = scope
+        while self.i < len(self.items):
+            cur = self.items[self.i]
+            self.i += 1
+            if cur.comment is not None:
+                continue
+            self.line = cur.line
+            toks = self.tokens(cur)
+            lab = classify(toks)
+            if lab == ("end", "type") or (lab is not None and lab[0] == "end" and lab[1] in (None, "type")):
+                break
+            if lab == ("contains",):
+                bad = bad or "type-bound procedures are not supported"
+                self.skip_block("type")
+                break
+            word = toks[0].text if toks and toks[0].kind == "name" else ""
+            if word in ("private", "public") and len(toks) == 1:
+                self.note(cur.line, f"'{word}' in a type: Boreas record fields are always accessible")
+                continue
+            if word == "sequence" and len(toks) == 1:
+                continue
+            self.toks, self.k = toks, 0
+            if word in TYPE_WORDS and word != "type" or word == "type":
+                try:
+                    for c in self.declaration(cur, holder):         # an entity that could not be declared
+                        bad = bad or c.text.replace("TODO(convert): ", "")
+                except Unsupported as e:
+                    bad = bad or f"{e}: {cur.text}"
+            else:
+                bad = bad or f"unsupported statement in a type: {cur.text}"
+        else:
+            raise LangError("unexpected end of file: 'type' is missing its 'end type'")
+        for cname, info in holder.decls.items():
+            dims = None
+            if info.dims is not None:
+                dims = [self.literal_size(d, holder) for d in info.dims]
+                if None in dims:
+                    bad = bad or f"component '{cname}' has an array size that is not an integer constant"
+                    continue
+            fields.append(Decl(info.type, cname, dims, self.component_default(cname, info, scope, holder),
+                               info.line))
+        if name in self.types:
+            self.todo(it.line, f"derived type '{name}' is defined more than once")
+        if bad:
+            self.types[name] = TypeInfo(name, scope, [], it.line, ok=False)
+            raise Unsupported(f"derived type '{name}' was not translated: {bad}")
+        if scope.kind == "module" and access:
+            scope.access[name] = access
+        self.types[name] = TypeInfo(name, scope, fields, it.line)
+        return []
+
+    def literal_size(self, e, scope):
+        """An array size as a literal Num, folding constants (parameters, + - *); None if it is not one."""
+        v = self.const_int(e, scope)
+        return None if v is None else Num(v)
+
+    def const_int(self, e, scope, depth=0):
+        if depth > 20:
+            return None
+        if isinstance(e, Num) and isinstance(e.value, int):
+            return e.value
+        if isinstance(e, Var):
+            s = scope
+            while s is not None:
+                info = s.decls.get(e.name)
+                if info is not None:
+                    return self.const_int(info.init, s, depth + 1) if info.parameter and info.init is not None else None
+                s = s.host
+            return None
+        if isinstance(e, Unary) and e.op == "-":
+            v = self.const_int(e.operand, scope, depth + 1)
+            return None if v is None else -v
+        if isinstance(e, Binary) and e.op in ("+", "-", "*"):
+            a, b = self.const_int(e.left, scope, depth + 1), self.const_int(e.right, scope, depth + 1)
+            if a is None or b is None:
+                return None
+            return a + b if e.op == "+" else a - b if e.op == "-" else a * b
+        return None
+
+    def component_default(self, cname, info, scope, holder):
+        """The default of a component as a Boreas constant expression, or None (with a TODO)."""
+        if info.init is None:
+            return None
+        import copy
+        try:
+            return self.constant_expr(copy.deepcopy(info.init), scope, holder, 0)
+        except Unsupported as e:
+            self.todo(info.line, f"default of component '{cname}' dropped: {e}")
+            return None
+
+    def constant_expr(self, e, scope, holder, depth):
+        """Rewrite a Fortran default so Boreas accepts it: parameters are inlined unless they are
+        module constants; only records, built-in functions and literals may remain."""
+        if depth > 20:
+            raise Unsupported("it refers to itself")
+        if isinstance(e, Var):
+            s = scope
+            while s is not None:
+                info = s.decls.get(e.name)
+                if info is not None and info.parameter and info.init is not None:
+                    if s.kind == "module":
+                        return e
+                    import copy
+                    return self.constant_expr(copy.deepcopy(info.init), s, holder, depth + 1)
+                if info is not None:
+                    break
+                s = s.host
+            raise Unsupported(f"'{e.name}' is not a constant")
+        if isinstance(e, Unary):
+            e.operand = self.constant_expr(e.operand, scope, holder, depth)
+        elif isinstance(e, Binary):
+            e.left = self.constant_expr(e.left, scope, holder, depth)
+            e.right = self.constant_expr(e.right, scope, holder, depth)
+        elif isinstance(e, ArrayLit):
+            e.items = [self.constant_expr(x, scope, holder, depth) for x in e.items]
+        elif isinstance(e, Apply):
+            if e.name not in self.types and e.name not in PURE_BUILTINS:
+                raise Unsupported(f"'{e.name}' is not a record or a built-in function Boreas has")
+            e.args = [NamedArg(a.name, self.constant_expr(a.value, scope, holder, depth)) if isinstance(a, NamedArg)
+                      else self.constant_expr(a, scope, holder, depth) for a in e.args]
+        elif not isinstance(e, (Num, Str, Bool)):
+            raise Unsupported("it is not a constant expression")
+        return e
 
     # output
     def print_items(self):
@@ -1431,7 +1637,13 @@ class FParser:
             self.fn_lines[id(fn)] = r.line
             target[fn.name] = fn
             built.append((fn, r.scope))
-        unit = Unit(functions, program, modules)
+        records = {}
+        for t in self.types.values():
+            if not t.ok:
+                continue
+            rd = RecordDef(t.name, t.fields, t.module is not None and self.is_public(t.module, t.name), t.line)
+            (modules[t.module.name].records if t.module is not None else records)[t.name] = rd
+        unit = Unit(functions, program, modules, records)
         self.link_uses(unit, built)
         self.infer_intents(unit)
         self.check_calls(unit)
@@ -1452,6 +1664,7 @@ class FParser:
     def build_module(self, ms):
         consts = []
         mod = Module(ms.name, [], consts, {}, ms.line, list(ms.comments))
+        mod.comments += [c.text for c in ms.body or [] if isinstance(c, Comment) and c.text.startswith("TODO(convert)")]
         for name, info in ms.decls.items():
             if name in ms.externals:
                 continue
@@ -1466,7 +1679,14 @@ class FParser:
         return mod
 
     def references(self, nodes):
-        return {n.name for n in iter_nodes(nodes) if isinstance(n, (Var, Apply, Call))}
+        """Names used in `nodes`: variables, calls, constructors, and the types of declarations."""
+        out = set()
+        for n in iter_nodes(nodes):
+            if isinstance(n, (Var, Apply, Call)):
+                out.add(n.name)
+            elif isinstance(n, Decl):
+                out.add(n.type)
+        return out
 
     def make_uses(self, entries, refs):
         """Fortran `use` entries -> explicit Boreas imports. `use m` (everything) becomes the
@@ -1487,14 +1707,17 @@ class FParser:
             if isinstance(owner, Program):
                 owner.uses = self.make_uses(scope.uses, self.references(owner.body))
             else:
-                owner.uses = self.make_uses(scope.uses, self.references(owner.body))
+                sig = {p[0] for p in owner.params} | ({owner.ret} if owner.ret else set())
+                owner.uses = self.make_uses(scope.uses, self.references(owner.body) | sig)
                 if scope.module is not None:
                     by_module.setdefault(scope.module.name, []).append(owner)
         for name, ms in self.modules.items():
             mod = unit.modules[name]
-            refs = self.references([d.init for d in mod.consts])
+            refs = self.references([d.init for d in mod.consts]) | {d.type for d in mod.consts}
+            for r in mod.records.values():
+                refs |= self.references([fl.init for fl in r.fields]) | {fl.type for fl in r.fields}
             for f in by_module.get(name, []):
-                refs |= self.references(f.body)
+                refs |= self.references(f.body) | {p[0] for p in f.params} | ({f.ret} if f.ret else set())
             mod.uses = self.make_uses(ms.uses, refs)
 
     def visible_procs(self, unit, f):
@@ -1665,15 +1888,42 @@ class FParser:
                                       f"functions only take 'in' arguments, so make it a subroutine")
                     self.todo(line, f"function '{f.name}' modifies argument '{p[1]}'")
                     p[2] = "in"
+        for f in funcs:                            # an out record must be completely assigned in Boreas
+            for p in f.params:
+                t = self.types.get(p[0])
+                if p[2] == "out" and t is not None and t.ok:
+                    need = {fl.name for fl in t.fields if fl.init is None}
+                    written = self.fields_written(f.body, p[1])
+                    if written is not True and not need <= written:
+                        p[2] = "inout"
+                        f.comments.append(f"note: argument '{p[1]}' is intent(out) but the body does not assign "
+                                          f"every field; it is 'inout' in Boreas")
+                        self.note(self.fn_lines.get(id(f), 0), f"{f.name}: intent(out) record '{p[1]}' "
+                                  f"is not fully assigned; made inout")
         for f in funcs:                            # writes that reach the caller are marked `update`
             modes = {p[1]: p[2] for p in f.params}
             for n in iter_nodes(f.body):
-                if isinstance(n, Assign) and modes.get(n.target.name) in ("out", "inout"):
+                if isinstance(n, Assign) and modes.get(root_name(n.target)) in ("out", "inout"):
                     n.update = True
                 elif isinstance(n, Do) and n.var in modes:
                     msg = f"loop variable '{n.var}' is a dummy argument; Boreas loop variables must be locals"
                     f.comments.append("TODO(convert): " + msg)
                     self.todo(n.line, msg)
+
+    def fields_written(self, body, name):
+        """The fields of record `name` assigned whole (`name%f = ...`), or True if the whole
+        record is assigned or handed to a procedure (then we cannot tell)."""
+        written = set()
+        for n in iter_nodes(body):
+            if isinstance(n, Assign):
+                t = n.target
+                if isinstance(t, Var) and t.name == name:
+                    return True
+                if isinstance(t, FieldAccess) and t.args is None and isinstance(t.base, Var) and t.base.name == name:
+                    written.add(t.field)
+            elif isinstance(n, Call) and any(isinstance(a, Var) and a.name == name for a in n.args):
+                return True
+        return written
 
     def usage(self, body, name, procs):
         """Count (reads, writes) of `name` in a statement list."""
@@ -1685,6 +1935,8 @@ class FParser:
                     counts[0] += 1
 
         def ref_name(e):
+            while isinstance(e, FieldAccess):
+                e = e.base
             return e.name if isinstance(e, (Var, Apply)) else None
 
         def scan(stmts, top=True):
@@ -1694,10 +1946,12 @@ class FParser:
                 elif isinstance(s, Assign):
                     if ref_name(s.target) == name:
                         counts[1] += 1
-                        counts[2] += top
-                        if isinstance(s.target, Apply):
-                            for a in s.target.args:
+                        counts[2] += top and not isinstance(s.target, FieldAccess)    # a field is a partial write
+                        t = s.target
+                        while isinstance(t, (Apply, FieldAccess)):
+                            for a in t.args or []:
                                 read_expr(a)
+                            t = t.base if isinstance(t, FieldAccess) else None
                     else:
                         read_expr(s.target)
                     read_expr(s.value)
@@ -1732,7 +1986,7 @@ class FParser:
                                 counts[0] += 1
                             if mode in ("out", "inout"):
                                 counts[1] += 1
-                                counts[2] += top and mode == "out"
+                                counts[2] += top and mode == "out" and not isinstance(a, FieldAccess)
                         else:
                             read_expr(a)
                 elif isinstance(s, (Print, Return, ExprStmt)):
@@ -1756,7 +2010,7 @@ class FParser:
             declared = {d.name for d in iter_nodes(node.body) if isinstance(d, Decl)} | imported
             declared |= {d.name for d in mod.consts} if mod else set()
             declared |= {p[1] for p in getattr(node, "params", [])}
-            known = set(procs) | set(BUILTINS) | set(ELEMENTAL)
+            known = set(procs) | set(BUILTINS) | set(ELEMENTAL) | set(self.types)
             seen = set()
             for n in iter_nodes(node.body):
                 if isinstance(n, Apply) and n.name not in declared and n.name not in known:

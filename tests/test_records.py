@@ -185,6 +185,13 @@ class FieldDefaultTests(unittest.TestCase):
         self.assertEqual(run("config :: c\nprint c", defs=self.CFG),
                          ['config(count=5, scale=1.0, verbose=false, name=none)'])
 
+    def test_positional_constructor_may_leave_out_trailing_fields_with_defaults(self):
+        self.assertEqual(run("config :: c = config(1, 2.0, true)\nprint c.name", defs=self.CFG), ["none"])
+        fails("config :: c = config(1)", "needs all 4 field", defs=self.CFG)       # verbose has no default
+        defs = "record r\n  integer :: a\n  integer :: b = 2\n  integer :: c\nend record\n"
+        fails("r :: x = r(1)", "needs all 3 field", defs=defs)             # c has no default
+        self.assertEqual(run("r :: x = r(1, 5, 6)\nprint x", defs=defs), ["r(a=1, b=5, c=6)"])
+
     def test_constructor_overrides_and_omitted_fields_keep_defaults(self):
         self.assertEqual(run("config :: c = config(scale = 2.5)\nprint c.count, c.scale", defs=self.CFG), ["5 2.5"])
         self.assertEqual(run("config :: c = config(1, 3.0, true, \"x\")\nprint c", defs=self.CFG),

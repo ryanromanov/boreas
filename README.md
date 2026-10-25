@@ -266,12 +266,19 @@ Reads free-form Fortran (not fixed-form `.f`) and writes Boreas source plus a
 report on stderr. Translations that change meaning are flagged, never silent:
 
 - `! TODO(convert): ...` comments quote any line that could not be translated
-  (derived types, `goto`, `read`, ...).
+  (`goto`, `read`, type-bound procedures, ...).
 - `parameter` constants become `const`.
 - `allocatable` locals, `allocate` / `deallocate` (one statement per array) and `allocated()` are
   translated. `stat=`, `errmsg=`, `source=`, `mold=`, non-1 lower bounds, allocatable
   dummy arguments, results and module variables become TODOs. A whole-array assignment to an
   allocatable with no earlier `allocate` gets a note, since Fortran allocated it automatically.
+- Derived types become records, with `%` turned into `.` and `type(point)` into `point`. Component
+  defaults carry over (parameters are folded in unless they are module constants), constructors
+  keep their positional and keyword forms, and a type defined in a program or procedure moves to
+  the top level. An `intent(out)` record that the body does not fully assign becomes `inout`.
+  Types with inheritance (`extends`), type-bound procedures, allocatable or pointer components,
+  or array sizes that aren't constants become a TODO for the whole type, and code that uses it
+  becomes TODOs too.
 - `select case` becomes Boreas `select case`. A case value that is not a literal or a
   `parameter` leaves that one construct as a TODO.
 - Loop names become labels (`outer: do` ... `end do outer`), and `exit name` / `cycle name`
