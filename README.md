@@ -129,6 +129,30 @@ It can be used anywhere an expression can. Only the chosen arm is evaluated. Arm
 must have the same type (integer arms widen to real next to a real arm).
 `select`, `case`, `default`, `fallthrough` and `break` are reserved words.
 
+## Allocatable arrays
+
+Arrays whose size is only known at run time are declared `allocatable` with one `:` per
+dimension (the number of colons is the rank), given a size with `allocate`, and freed with
+`deallocate`:
+
+    allocatable integer :: a(:)
+    allocatable real :: m(:, :)
+    n = 5
+    print allocated(a)          ! false
+    allocate a(n)               ! elements start at 0 / 0.0 / false / ""
+    allocate m(n, 2 * n)
+    print allocated(a), size(a) ! true 5
+    deallocate a                ! may be allocated again, with any size
+
+Allocatable arrays are locals of functions, subroutines and the program, and have no
+initializer and no `const`. Anything but `allocated(a)` and `allocate` on an unallocated array
+is a run-time error (reading, writing, `size(a)`, passing it, printing it, sections, whole-array
+assignment). `allocate` on an allocated array and `deallocate` on an unallocated one are errors.
+Extents must be non-negative integers (zero is fine). Whole-array assignment never allocates or
+resizes. An allocated array can be passed to any procedure taking an array parameter; parameters
+cannot themselves be `allocatable`, so a callee cannot allocate its caller's array. A leftover
+allocation is freed at the end of its scope.
+
 ## Subroutines and parameter modes
 
 Results come back through `out` / `inout` parameters:
@@ -181,8 +205,12 @@ Reads free-form Fortran (not fixed-form `.f`) and writes Boreas source plus a
 report on stderr. Translations that change meaning are flagged, never silent:
 
 - `! TODO(convert): ...` comments quote any line that could not be translated
-  (`select case`, `allocate`, derived types, `goto`, `read`, ...).
+  (derived types, `goto`, `read`, ...).
 - `parameter` constants become `const`.
+- `allocatable` locals, `allocate` / `deallocate` (one statement per array) and `allocated()` are
+  translated. `stat=`, `errmsg=`, `source=`, `mold=`, non-1 lower bounds, allocatable
+  dummy arguments, results and module variables become TODOs. A whole-array assignment to an
+  allocatable with no earlier `allocate` gets a note, since Fortran allocated it automatically.
 - `select case` becomes Boreas `select case`. A case value that is not a literal or a
   `parameter` leaves that one construct as a TODO.
 - Loop names become labels (`outer: do` ... `end do outer`), and `exit name` / `cycle name`
