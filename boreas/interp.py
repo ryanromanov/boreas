@@ -239,6 +239,22 @@ def overlaps(a, b):
     return all(max(_span(x)[0], _span(y)[0]) <= min(_span(x)[1], _span(y)[1]) for x, y in zip(a, b))
 
 
+def iter_apply(e):
+    """Every Apply node inside an expression (None gives nothing)."""
+    if isinstance(e, Apply):
+        yield e
+        for a in e.args:
+            yield from iter_apply(a.value if isinstance(a, NamedArg) else a)
+    elif isinstance(e, Unary):
+        yield from iter_apply(e.operand)
+    elif isinstance(e, Binary):
+        yield from iter_apply(e.left)
+        yield from iter_apply(e.right)
+    elif isinstance(e, ArrayLit):
+        for x in e.items:
+            yield from iter_apply(x)
+
+
 class Scope:
     """What a procedure (or the program) can see besides its own variables:
     procedures and constants, both its own and the ones it imported."""
@@ -291,6 +307,10 @@ class Interp:
                 for d in f.dims or []:
                     if not (isinstance(d, Num) and isinstance(d.value, int) and d.value >= 0):
                         raise LangError(f"line {f.line}: an array field of a record needs a literal size")
+                for n in iter_apply(f.init):
+                    if n.name not in scope.records:
+                        raise LangError(f"line {f.line}: the default of field '{f.name}' calls '{n.name}', "
+                                        f"which is not a record (defaults are constants)")
 
         def contains(name, path):
             if name in path:
@@ -302,6 +322,12 @@ class Interp:
 
         for name in records:
             contains(name, ())
+        saved, self.scope = self.scope, scope
+        try:
+            for r in records.values():              # build one now, so a bad default fails at load time
+                self.new_record(r)
+        finally:
+            self.scope = saved
 
     def import_into(self, scope, uses):
         taken = set(scope.funcs) | set(scope.consts) | set(scope.records)
@@ -502,7 +528,33 @@ class Interp:
                 data = ([self.new_record(sub, blank) for _ in range(n)] if sub
                         else [None if blank else DEFAULTS[f.type]] * n)
                 fields[f.name] = [f.type, Array(shape, data), True, None]
-        return Record(rdef, fields)
+        rec = Record(rdef, fields)
+        for f in rdef.fields:
+            if f.init is not None:                  # a declared default applies even to a blank record
+                self.apply_default(rec, f, owner)
+        return rec
+
+    def apply_default(self, rec, f, owner):
+        """Give a field its declared default, evaluated in the scope the record was defined in."""
+        saved, self.scope = self.scope, owner
+        try:
+            value = self.eval(f.init, {})
+        finally:
+            self.scope = saved
+        where = f"line {f.line}: the default of field '{f.name}' in record '{rec.rdef.name}'"
+        slot = rec.fields[f.name]
+        if slot[IS_ARRAY]:
+            arr = slot[VALUE]
+            if isinstance(value, Array):
+                if value.shape != arr.shape:
+                    raise LangError(f"{where} has shape {fmt_shape(value.shape)}, the field has "
+                                    f"shape {fmt_shape(arr.shape)}")
+                values = value.data
+            else:
+                values = [value] * len(arr.data)
+            slot[VALUE] = Array(arr.shape, [coerce(slot[TYPE], x, where) for x in values])
+        else:
+            slot[VALUE] = coerce(slot[TYPE], value, where)
 
     def construct(self, rdef, e, env):
         """`point(1.0, 2.0)` gives every field in order; `point(x = 1.0)` gives only the named

@@ -146,9 +146,6 @@ class NestedTests(unittest.TestCase):
 
 
 class DefinitionTests(unittest.TestCase):
-    def test_field_defaults_are_rejected(self):
-        fails("print 1", "no default values", defs="record q\n  real :: z = 1.0\nend record\n")
-
     def test_record_cannot_contain_itself(self):
         fails("print 1", "contains itself: a -> a", defs="record a\n  a :: inner\nend record\n")
         fails("print 1", "contains itself: a -> b -> a",
@@ -178,6 +175,84 @@ class DefinitionTests(unittest.TestCase):
     def test_field_lines_are_plain_declarations(self):
         fails("print 1", "plain declarations", defs="record r\n  const integer :: n\nend record\n")
         fails("print 1", "declare one variable per line", defs="record r\n  real :: x, y\nend record\n")
+
+
+class FieldDefaultTests(unittest.TestCase):
+    CFG = ("record config\n  integer :: count = 5\n  real :: scale = 1.0\n  logical :: verbose\n"
+           "  string :: name = \"none\"\nend record\n")
+
+    def test_declared_record_starts_with_its_defaults(self):
+        self.assertEqual(run("config :: c\nprint c", defs=self.CFG),
+                         ['config(count=5, scale=1.0, verbose=false, name=none)'])
+
+    def test_constructor_overrides_and_omitted_fields_keep_defaults(self):
+        self.assertEqual(run("config :: c = config(scale = 2.5)\nprint c.count, c.scale", defs=self.CFG), ["5 2.5"])
+        self.assertEqual(run("config :: c = config(1, 3.0, true, \"x\")\nprint c", defs=self.CFG),
+                         ["config(count=1, scale=3.0, verbose=true, name=x)"])
+
+    def test_every_new_record_gets_the_default(self):
+        body = "config :: cs(3)\ncs(2).count = 9\nprint cs(1).count, cs(2).count, cs(3).count"
+        self.assertEqual(run(body, defs=self.CFG), ["5 9 5"])
+
+    def test_defaults_are_per_instance(self):
+        body = "config :: a\nconfig :: b\na.count = 1\nprint a.count, b.count"
+        self.assertEqual(run(body, defs=self.CFG), ["1 5"])
+
+    def test_default_arithmetic_and_negatives(self):
+        defs = "record r\n  real :: a = -2.5\n  real :: b = 2.0 * 3.0 + 1\n  integer :: n = -(3 - 1)\nend record\n"
+        self.assertEqual(run("r :: x\nprint x.a, x.b, x.n", defs=defs), ["-2.5 7.0 -2"])
+
+    def test_integer_default_widens_to_real(self):
+        self.assertEqual(run("r :: x\nprint x.a", defs="record r\n  real :: a = 2\nend record\n"), ["2.0"])
+
+    def test_nested_record_default_and_record_typed_default(self):
+        defs = (POINT + "record seg\n  point :: a = point(1.0, 2.0)\n  point :: b\nend record\n"
+                "record holder\n  seg :: s\nend record\n")
+        self.assertEqual(run("holder :: h\nprint h.s.a, h.s.b", defs=defs),
+                         ["point(x=1.0, y=2.0) point(x=0.0, y=0.0)"])
+
+    def test_array_field_defaults(self):
+        defs = "record r\n  integer :: v(3) = 7\n  integer :: w(3) = [1, 2, 3]\n  integer :: z(2)\nend record\n"
+        self.assertEqual(run("r :: x\nprint x.v, x.w, x.z", defs=defs), ["[7, 7, 7] [1, 2, 3] [0, 0]"])
+        fails("print 1", "has shape \\(2\\)", defs="record r\n  integer :: v(3) = [1, 2]\nend record\n")
+
+    def test_copies_keep_values_and_defaults_do_not_alias(self):
+        body = "config :: a\nconfig :: b = a\nb.count = 0\nprint a.count, b.count"
+        self.assertEqual(run(body, defs=self.CFG), ["5 0"])
+
+    def test_out_record_starts_with_defaults_and_needs_only_the_rest(self):
+        defs = "record r\n  integer :: a = 1\n  integer :: b\nend record\n"
+        sub = "subroutine fill(out r :: x)\n  update x.b = x.a + 1\nend subroutine"
+        self.assertEqual(run("r :: v\ncall fill(v)\nprint v", sub, defs), ["r(a=1, b=2)"])
+
+    def test_out_record_whose_fields_all_have_defaults_may_be_left_alone(self):
+        # the caller's own values are replaced by the defaults, not kept
+        defs = "record r\n  integer :: a = 1\n  integer :: b = 2\nend record\n"
+        sub = "subroutine noop(out r :: x)\nend subroutine"
+        self.assertEqual(run("r :: v\nv.a = 9\ncall noop(v)\nprint v", sub, defs), ["r(a=1, b=2)"])
+
+    def test_default_must_be_a_constant(self):
+        fails("print 1", "must be a constant expression", defs="record r\n  real :: a = n\nend record\n")
+        fails("print 1", "must be a constant expression",
+              defs="record r\n  real :: a = select case 1\n case default -> 1.0\n end select\nend record\n")
+
+    def test_default_cannot_call_a_function(self):
+        f = "function f(real :: x) -> real\n return x\nend function"
+        fails("print 1", "calls 'f', which is not a record", f, "record r\n  real :: a = f(1.0)\nend record\n")
+
+    def test_default_type_mismatch_fails_at_load_time(self):
+        fails("print 1", "the default of field 'a' in record 'r'", defs='record r\n  real :: a = "x"\nend record\n')
+
+    def test_module_record_defaults_and_imports(self):
+        mod = ("module m\n public record cfg\n  integer :: n = 3\n  real :: s = 0.5\n end record\nend module\n")
+        self.assertEqual(run("use m: cfg\ncfg :: c\nprint c.n, c.s", mod, ""), ["3 0.5"])
+
+    def test_printer_round_trip_with_defaults(self):
+        from boreas.parser import parse
+        from boreas.printer import to_source
+        text = to_source(parse(self.CFG + "program t\n print 1\nend program\n"))
+        self.assertIn("record config\n  integer :: count = 5\n  real :: scale = 1.0\n  logical :: verbose\n", text)
+        self.assertEqual(to_source(parse(text)), text)
 
 
 class ProcedureTests(unittest.TestCase):
