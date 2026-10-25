@@ -200,6 +200,7 @@ class Info:
     parameter: bool
     line: int
     allocatable: bool = False
+    optional: bool = False
 
 
 class Scope:
@@ -918,8 +919,6 @@ class FParser:
                     attrs["dimension"] = self.dim_specs()
             elif word in ("parameter", "save", "public", "private", "target", "intrinsic", "value", "optional", "external"):
                 attrs[word] = True
-                if word == "optional":
-                    self.note(it.line, "'optional' dropped: Boreas has no optional arguments")
             elif word == "allocatable":
                 attrs["allocatable"] = True
             elif word in ("pointer", "volatile", "asynchronous", "protected"):
@@ -964,7 +963,8 @@ class FParser:
                     scope.saved[name] = (line, "declared save" if attrs.get("save")
                                          else "initialised in its declaration, which implies save")
                 scope.decls[name] = Info(typ, dims, dropped, attrs.get("intent"), init,
-                                         bool(attrs.get("parameter")), line, bool(attrs.get("allocatable")))
+                                         bool(attrs.get("parameter")), line, bool(attrs.get("allocatable")),
+                                         bool(attrs.get("optional")))
                 if attrs.get("external"):
                     scope.externals.add(name)
                 if scope.kind == "module":
@@ -1832,8 +1832,13 @@ class FParser:
                 else:
                     self.note(line, f"dummy argument '{d}' had no declaration; assumed {typ}")
                 params.append([typ, d, None])
-            else:
+            elif info.optional and (info.dims is not None or info.shape_dropped or info.allocatable):
+                msg = f"argument '{d}' is an optional array; Boreas optional arguments are single values"
+                self.todo(line, msg)
+                s.comments.append("TODO(convert): " + msg)
                 params.append([info.type, d, info.intent])
+            else:
+                params.append([info.type + "?" if info.optional else info.type, d, info.intent])
         fn = Function(s.name, params, ret, decls + self.local_decls(s, body, proc_names) + body, is_sub, list(s.comments))
         return fn
 
@@ -1898,6 +1903,14 @@ class FParser:
                                       f"functions only take 'in' arguments, so make it a subroutine")
                     self.todo(line, f"function '{f.name}' modifies argument '{p[1]}'")
                     p[2] = "in"
+        for f in funcs:                            # Boreas optional arguments are read-only
+            for p in f.params:
+                if p[0].endswith("?") and p[2] != "in":
+                    p[0] = p[0][:-1]
+                    msg = (f"argument '{p[1]}' is optional and modified; Boreas optional arguments are "
+                           f"read-only, so it became a required '{p[2]}' argument")
+                    f.comments.append("TODO(convert): " + msg)
+                    self.todo(self.fn_lines.get(id(f), 0), msg)
         for f in funcs:                            # an out record must be completely assigned in Boreas
             for p in f.params:
                 t = self.types.get(p[0])
