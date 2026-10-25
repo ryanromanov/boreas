@@ -6,7 +6,9 @@ from .interp import Interp
 
 USAGE = """usage:
   boreas FILE.bor                    run a program
-  boreas convert FILE.f90 [-o OUT]   convert free-form Fortran to Boreas source"""
+  boreas convert FILE.f90 [-o OUT]   convert free-form Fortran to Boreas source
+  boreas convert --verify [--timeout SECONDS] FILE.f90 [-o OUT]
+                                     also run the original with gfortran and compare output"""
 
 
 def run_source(src, out=print):
@@ -15,18 +17,29 @@ def run_source(src, out=print):
 
 def convert_command(args):
     from .fortran import convert, FIXED_FORM_EXTENSIONS
-    path, out_path = None, None
+    path, out_path, do_verify, timeout = None, None, False, None
     it = iter(args)
     for a in it:
-        if a == "-o":
+        if a == "--verify":
+            do_verify = True
+        elif a == "--timeout":
+            try:
+                timeout = float(next(it, None))
+                if not timeout > 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                sys.exit("error: --timeout needs a positive number of seconds")
+        elif a == "-o":
             out_path = next(it, None)
             if out_path is None:
                 sys.exit("error: -o needs a file name")
+        elif a.startswith("-") and len(a) > 1:
+            sys.exit(USAGE)
         elif path is None:
             path = a
         else:
             sys.exit(USAGE)
-    if path is None:
+    if path is None or (timeout is not None and not do_verify):
         sys.exit(USAGE)
     if path.lower().endswith(FIXED_FORM_EXTENSIONS):
         sys.exit(f"error: {path} looks like fixed-form Fortran, which is not supported yet "
@@ -51,6 +64,10 @@ def convert_command(args):
         print(f"{where}: {'TODO' if kind == 'todo' else 'note'}: {msg}", file=report)
     print(f"converted {path}: {len(todos)} TODO(s), {len(notes)} note(s)"
           + (f" -> {out_path}" if out_path else ""), file=report)
+    if do_verify:
+        from .verify import verify, DEFAULT_TIMEOUT
+        sys.stdout.flush()
+        sys.exit(verify(path, text, bool(todos), timeout or DEFAULT_TIMEOUT))
 
 
 def main():

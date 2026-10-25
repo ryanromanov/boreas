@@ -5,6 +5,7 @@ from boreas.interp import Interp
 from boreas.lexer import LangError
 from boreas.parser import parse
 from boreas.printer import to_source, without_comments
+from boreas.verify import words, same_output
 
 HERE = os.path.dirname(__file__)
 GFORTRAN = shutil.which("gfortran")
@@ -23,28 +24,6 @@ def run_bor(text):
     out = []
     Interp(parse(text), out.append).run()
     return out
-
-
-def words(text):
-    """Normalise program output so Fortran list-directed output and Boreas output compare equal."""
-    text = re.sub(r"[\[\],]", " ", text)
-    return [{"T": "true", "F": "false"}.get(w, w) for w in text.split()]
-
-
-def same_output(a, b):
-    ta, tb = words(a), words(b)
-    if len(ta) != len(tb):
-        return False
-    for x, y in zip(ta, tb):
-        try:
-            fx, fy = float(x), float(y)
-        except ValueError:
-            if x != y:
-                return False
-        else:
-            if abs(fx - fy) > 1e-9 * max(1.0, abs(fx), abs(fy)):
-                return False
-    return True
 
 
 def run_gfortran(path):
