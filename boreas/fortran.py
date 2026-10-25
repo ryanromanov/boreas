@@ -18,7 +18,8 @@ from .printer import to_source
 RESERVED = {"const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "call", "return", "exit", "cycle",
-            "select", "case", "default", "fallthrough", "break"}
+            "select", "case", "default", "fallthrough", "break",
+            "allocatable", "allocate", "deallocate"}
 
 TYPE_WORDS = {"integer", "real", "logical", "character", "double", "complex", "type"}
 FIXED_FORM_EXTENSIONS = (".f", ".for", ".f77", ".ftn")
@@ -198,6 +199,7 @@ class Info:
     init: object
     parameter: bool
     line: int
+    allocatable: bool = False
 
 
 class Scope:
@@ -212,6 +214,7 @@ class Scope:
         self.host = None              # enclosing scope, for internal procedures
         self.body = None
         self.skipped = set()          # declared in Fortran we could not translate
+        self.bad_dummies = set()      # dummy arguments whose declaration we could not translate
         self.line = 0
         self.module = None            # for procedures inside a module: that module's scope
         self.uses = []                # [(module name, names or None for "all", line)]
@@ -670,7 +673,7 @@ class FParser:
         for n in iter_nodes(nodes):
             for name in (getattr(n, "name", None), getattr(n, "var", None)):
                 if isinstance(name, str) and name in scope.skipped and not isinstance(n, (Decl, Function)) \
-                        and name not in scope.decls and name not in scope.dummies:
+                        and name not in scope.decls and (name not in scope.dummies or name in scope.bad_dummies):
                     return name
         return None
 
@@ -724,7 +727,7 @@ class FParser:
             self.k += 1
             return handler(it, scope)
         if name in ("go", "goto", "common", "equivalence", "data", "namelist", "include",
-                    "allocate", "deallocate", "nullify", "read", "open", "close", "inquire", "rewind",
+                    "nullify", "read", "open", "close", "inquire", "rewind",
                     "backspace", "format", "entry", "pause", "dimension", "parameter", "pointer",
                     "target", "intrinsic", "import", "enum", "sync", "lock", "unlock"):
             raise Unsupported(f"'{name}' is not supported")
@@ -861,7 +864,9 @@ class FParser:
                     self.note(it.line, "'save': Fortran keeps these variables between calls, Boreas locals do not")
                 if word == "optional":
                     self.note(it.line, "'optional' dropped: Boreas has no optional arguments")
-            elif word in ("allocatable", "pointer", "volatile", "asynchronous", "protected"):
+            elif word == "allocatable":
+                attrs["allocatable"] = True
+            elif word in ("pointer", "volatile", "asynchronous", "protected"):
                 raise Unsupported(f"'{word}' declarations are not supported")
             else:
                 raise Unsupported(f"unknown attribute '{word}'")
@@ -880,7 +885,9 @@ class FParser:
                 if self.accept_op("="):
                     init = self.expr()
                 dims, dropped = None, False
-                if specs is not None:
+                if attrs.get("allocatable"):
+                    dims = self.allocatable_dims(name, specs, init, scope)
+                elif specs is not None:
                     if name in scope.dummies:
                         dropped = True
                         self.note(line, f"shape of dummy argument '{name}' dropped; "
@@ -901,7 +908,7 @@ class FParser:
                     self.note(line, f"'{name}' is initialised in a declaration inside a procedure: "
                                     f"Fortran implicitly SAVEs it between calls, Boreas re-initialises it each call")
                 scope.decls[name] = Info(typ, dims, dropped, attrs.get("intent"), init,
-                                         bool(attrs.get("parameter")), line)
+                                         bool(attrs.get("parameter")), line, bool(attrs.get("allocatable")))
                 if attrs.get("external"):
                     scope.externals.add(name)
                 if scope.kind == "module":
@@ -920,6 +927,23 @@ class FParser:
                 break
         self.end_of_statement()
         return out
+
+    def allocatable_dims(self, name, specs, init, scope):
+        """The dims of an allocatable local: one `:` per dimension, which is its rank."""
+        if name in scope.dummies:
+            scope.bad_dummies.add(name)
+            scope.skipped.add(name)
+            raise Unsupported(f"allocatable dummy argument '{name}': Boreas parameters cannot be "
+                              f"allocatable, and a callee cannot allocate its caller's array")
+        if scope.kind == "module":
+            scope.skipped.add(name)
+            raise Unsupported(f"allocatable module variable '{name}': Boreas modules hold constants "
+                              f"and procedures only")
+        if specs is None or not all(sp == "deferred" for sp in specs):
+            raise Unsupported(f"allocatable '{name}' needs a deferred shape such as '(:)'")
+        if init is not None:
+            raise Unsupported("allocatable with an initializer")
+        return [Slice(None, None) for _ in specs]
 
     def st_implicit(self, it, scope):
         if self.at_name("none"):
@@ -1148,6 +1172,73 @@ class FParser:
         self.end_of_statement()
         return [Call(name, args, it.line)]
 
+    def allocation_objects(self, scope, what):
+        """The `(a(n), b(m, k), stat=...)` part of allocate / deallocate: [(name, extents)]."""
+        self.expect_op("(")
+        objects = []
+        while True:
+            t, t2 = self.peek(), self.peek(1)
+            if t is not None and t2 is not None and t.kind == "name" and t2.kind == "op" and t2.text == "=":
+                raise Unsupported(f"'{what}' with {t.text}= is not supported")
+            name = self.rename(self.expect_name())
+            if self.at_op("::"):
+                raise Unsupported(f"'{what}' with a type-spec is not supported")
+            info = scope.decls.get(name)
+            if info is None or not info.allocatable or name in scope.dummies:
+                raise Unsupported(f"'{what}' of '{name}', which is not a local allocatable array "
+                                  f"that Boreas can allocate")
+            dims = []
+            if self.at_op("("):
+                self.k += 1
+                while True:
+                    a = self.argument(what)
+                    if isinstance(a, Slice):
+                        if not (isinstance(a.lo, Num) and a.lo.value == 1 and a.hi is not None):
+                            raise Unsupported("allocate with a lower bound other than 1")
+                        a = a.hi
+                    dims.append(a)
+                    if not self.accept_op(","):
+                        break
+                self.expect_op(")")
+            objects.append((name, dims))
+            if not self.accept_op(","):
+                break
+        self.expect_op(")")
+        self.end_of_statement()
+        return objects
+
+    def st_allocate(self, it, scope):
+        out = []
+        for name, dims in self.allocation_objects(scope, "allocate"):
+            if len(dims) != len(scope.decls[name].dims):
+                raise Unsupported(f"allocate of '{name}' needs {len(scope.decls[name].dims)} extent(s)")
+            out.append(Allocate(name, dims, it.line))
+        return out
+
+    def st_deallocate(self, it, scope):
+        out = []
+        for name, dims in self.allocation_objects(scope, "deallocate"):
+            if dims:
+                raise Unsupported("deallocate takes whole arrays")
+            out.append(Deallocate(name, it.line))
+        return out
+
+    def note_auto_allocation(self, body):
+        """Fortran 2003 allocates on assignment; Boreas does not. Flag a whole-array assignment
+        to an allocatable that no earlier `allocate` (in text order) covers."""
+        allocatable, ready = set(), set()
+        for n in iter_nodes(body):
+            if isinstance(n, Decl) and n.allocatable:
+                allocatable.add(n.name)
+            elif isinstance(n, Allocate):
+                ready.add(n.name)
+            elif isinstance(n, Deallocate):
+                ready.discard(n.name)
+            elif isinstance(n, Assign) and isinstance(n.target, Var) and n.target.name in allocatable \
+                    and n.target.name not in ready:
+                self.note(n.line, f"assignment to allocatable '{n.target.name}' relied on automatic allocation "
+                                  f"in Fortran; Boreas requires an explicit allocate")
+
     def st_select(self, it, scope):
         resume = self.i
         try:
@@ -1344,6 +1435,8 @@ class FParser:
         self.link_uses(unit, built)
         self.infer_intents(unit)
         self.check_calls(unit)
+        for owner in self.all_functions(unit) + ([program] if program else []):
+            self.note_auto_allocation(owner.body)
         if program is not None:
             while program.body and isinstance(program.body[-1], StopMarker):
                 program.body.pop()
@@ -1421,7 +1514,8 @@ class FParser:
             if name in proc_names or name in scope.externals:
                 self.note(info.line, f"declaration of '{name}' dropped: it is a procedure, not a variable")
                 continue
-            decls.append(Decl(info.type, name, info.dims, info.init, info.line, info.parameter))
+            decls.append(Decl(info.type, name, info.dims, info.init, info.line, info.parameter,
+                              allocatable=info.allocatable))
         return decls
 
     def implicit_decls(self, scope, body, proc_names, line):
@@ -1624,6 +1718,8 @@ class FParser:
                 elif isinstance(s, DoWhile):
                     read_expr(s.cond)
                     scan(s.body, False)
+                elif isinstance(s, Allocate):
+                    read_expr(s.dims)
                 elif isinstance(s, Call):
                     callee = procs.get(s.name)
                     for i, a in enumerate(s.args):

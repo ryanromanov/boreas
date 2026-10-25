@@ -146,13 +146,17 @@ def _dot_product(a, b):
     return sum(x * y for x, y in zip(a.data, b.data))
 
 
+def _allocated(x):
+    raise LangError("allocated() needs the name of an allocatable array")   # apply() handles real calls
+
+
 def _reduce(name, f):
     return lambda a: f(_need_array(name, a).data)
 
 
 BUILTINS = {
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
-    "transpose": _transpose, "dot_product": _dot_product,
+    "transpose": _transpose, "dot_product": _dot_product, "allocated": _allocated,
     "sum": _reduce("sum", sum), "maxval": _reduce("maxval", max), "minval": _reduce("minval", min),
     "any": _reduce("any", any), "all": _reduce("all", all),
     "max": max, "min": min,
@@ -166,9 +170,11 @@ ELEMENTAL = {
 
 
 # A variable slot is [type, value, is_array, intent]. `value` is None until
-# assigned (scalars only; an array always exists); `intent` is None for
+# assigned (scalars) or allocated (allocatable arrays); `intent` is None for
 # ordinary locals, "const" for constants, else "in" / "out" / "inout".
-TYPE, VALUE, IS_ARRAY, INTENT = range(4)
+# An allocatable array's slot has a fifth entry, its rank.
+TYPE, VALUE, IS_ARRAY, INTENT, RANK = range(5)
+DEFAULTS = {"integer": 0, "real": 0.0, "logical": False, "string": ""}
 
 # A reference to something assignable is (slot, subs, name). `subs` is None for
 # the whole variable, else one entry per dimension: an int or an inclusive (lo, hi).
@@ -331,6 +337,13 @@ class Interp:
             self.out(" ".join(self.show(self.eval(a, env)) for a in s.args))
         elif k is Call:
             self.call_subroutine(s, env)
+        elif k is Allocate:
+            self.allocate(s, env)
+        elif k is Deallocate:
+            slot = self.allocatable(s.name, env, s.line)
+            if slot[VALUE] is None:
+                raise LangError(f"line {s.line}: cannot deallocate '{s.name}': it is not allocated")
+            slot[VALUE] = None
         elif k is Return:
             raise _Return(self.eval(s.value, env) if s.value else None)
         elif k is Exit:
@@ -346,6 +359,9 @@ class Interp:
         where = f"line {s.line}"
         if s.name in env:
             raise LangError(f"{where}: '{s.name}' already declared")
+        if s.allocatable:
+            env[s.name] = [s.type, None, True, None, len(s.dims)]
+            return
         if s.dims is None:
             val = None
             if s.init is not None:
@@ -356,7 +372,7 @@ class Interp:
         if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in shape):
             raise LangError(f"{where}: array dimensions must be non-negative integers")
         n = math.prod(shape)
-        default = {"integer": 0, "real": 0.0, "logical": False, "string": ""}[s.type]
+        default = DEFAULTS[s.type]
         data = [default] * n
         if s.init is not None:
             init = self.eval(s.init, env)
@@ -368,6 +384,30 @@ class Interp:
             else:
                 data = [coerce(s.type, init, where)] * n
         env[s.name] = [s.type, Array(shape, data), True, "const" if s.const else None]
+
+    def allocatable(self, name, env, line):
+        """The slot of a local allocatable array, for allocate / deallocate / allocated."""
+        slot = self.lookup(name, env, line)
+        if len(slot) <= RANK:
+            raise LangError(f"line {line}: '{name}' is not an allocatable array")
+        return slot
+
+    def allocate(self, s, env):
+        slot = self.allocatable(s.name, env, s.line)
+        if slot[VALUE] is not None:
+            raise LangError(f"line {s.line}: cannot allocate '{s.name}': it is already allocated "
+                            f"(deallocate it first)")
+        if len(s.dims) != slot[RANK]:
+            raise LangError(f"line {s.line}: '{s.name}' has {slot[RANK]} dimension(s) but "
+                            f"{len(s.dims)} extent(s) were given to allocate")
+        shape = [self.eval(d, env) for d in s.dims]
+        if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in shape):
+            raise LangError(f"line {s.line}: array extents must be non-negative integers")
+        slot[VALUE] = Array(shape, [DEFAULTS[slot[TYPE]]] * math.prod(shape))
+
+    def not_allocated(self, name, line=None):
+        where = f"line {line}: " if line else ""
+        return LangError(f"{where}'{name}' is not allocated; use 'allocate {name}(...)' first")
 
     def show(self, v):
         if isinstance(v, bool): return "true" if v else "false"
@@ -421,6 +461,8 @@ class Interp:
         if not isinstance(t, (Var, Apply)):
             raise LangError(f"line {line}: this must be a variable or array element")
         slot = self.lookup(t.name, env, line)
+        if slot[IS_ARRAY] and slot[VALUE] is None:
+            raise self.not_allocated(t.name, line)
         if isinstance(t, Var):
             return slot, None, t.name
         if not slot[IS_ARRAY]:
@@ -467,7 +509,10 @@ class Interp:
         k = type(e)
         if k in (Num, Str, Bool): return e.value
         if k is Var:
-            v = self.lookup(e.name, env)[VALUE]
+            slot = self.lookup(e.name, env)
+            v = slot[VALUE]
+            if v is None and slot[IS_ARRAY]:
+                raise self.not_allocated(e.name)
             if v is None:
                 raise LangError(f"'{e.name}' is used before it is assigned")
             return v
@@ -580,6 +625,10 @@ class Interp:
         raise LangError(f"unknown operator {op}")
 
     def apply(self, e, env):
+        if e.name == "allocated" and e.name not in env and "allocated" not in self.scope.funcs:
+            if len(e.args) != 1 or not isinstance(e.args[0], Var):
+                raise LangError(f"line {e.line}: allocated() needs the name of an allocatable array")
+            return self.allocatable(e.args[0].name, env, e.line)[VALUE] is not None
         if e.name in env:  # indexing or slicing
             if not env[e.name][IS_ARRAY]:
                 raise LangError(f"line {e.line}: '{e.name}' is not an array")
