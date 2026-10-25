@@ -214,6 +214,8 @@ class Scope:
         self.host = None              # enclosing scope, for internal procedures
         self.body = None
         self.skipped = set()          # declared in Fortran we could not translate
+        self.saved = {}               # local name -> (line, why) for variables Fortran keeps between calls
+        self.save_all = None          # line of a bare `save` statement (every local is saved)
         self.bad_dummies = set()      # dummy arguments whose declaration we could not translate
         self.line = 0
         self.module = None            # for procedures inside a module: that module's scope
@@ -916,8 +918,6 @@ class FParser:
                     attrs["dimension"] = self.dim_specs()
             elif word in ("parameter", "save", "public", "private", "target", "intrinsic", "value", "optional", "external"):
                 attrs[word] = True
-                if word == "save" and scope.kind not in ("program", "module", "type"):
-                    self.note(it.line, "'save': Fortran keeps these variables between calls, Boreas locals do not")
                 if word == "optional":
                     self.note(it.line, "'optional' dropped: Boreas has no optional arguments")
             elif word == "allocatable":
@@ -959,10 +959,10 @@ class FParser:
                             dims.append(hi)
                 if attrs.get("parameter") and init is None:
                     raise Unsupported(f"constant '{name}' has no value here (implied-shape or set elsewhere)")
-                if not attrs.get("parameter") and init is not None and scope.kind not in ("program", "module", "type") \
-                        and name not in scope.dummies:
-                    self.note(line, f"'{name}' is initialised in a declaration inside a procedure: "
-                                    f"Fortran implicitly SAVEs it between calls, Boreas re-initialises it each call")
+                if not attrs.get("parameter") and scope.kind not in ("program", "module", "type") \
+                        and name not in scope.dummies and (init is not None or attrs.get("save")):
+                    scope.saved[name] = (line, "declared save" if attrs.get("save")
+                                         else "initialised in its declaration, which implies save")
                 scope.decls[name] = Info(typ, dims, dropped, attrs.get("intent"), init,
                                          bool(attrs.get("parameter")), line, bool(attrs.get("allocatable")))
                 if attrs.get("external"):
@@ -1098,10 +1098,19 @@ class FParser:
         return out
 
     def st_save(self, it, scope):
-        if scope.kind not in ("program", "module"):
-            self.note(it.line, "'save': Fortran keeps variables between calls, Boreas locals do not")
+        """`save` alone keeps every local between calls; `save :: a, b` keeps those."""
+        names = []
+        self.accept_op("::")
         while self.peek() is not None:
-            self.k += 1
+            t = self.next()
+            if t.kind == "name":
+                names.append(self.rename(t.text))
+        if scope.kind not in ("program", "module"):
+            if names:
+                for n in names:
+                    scope.saved[n] = (it.line, "named in a save statement")
+            else:
+                scope.save_all = it.line
         return []
 
     def st_external(self, it, scope):
@@ -1646,6 +1655,7 @@ class FParser:
         unit = Unit(functions, program, modules, records)
         self.link_uses(unit, built)
         self.infer_intents(unit)
+        self.check_saved(unit, built)
         self.check_calls(unit)
         for owner in self.all_functions(unit) + ([program] if program else []):
             self.note_auto_allocation(owner.body)
@@ -1909,6 +1919,53 @@ class FParser:
                     msg = f"loop variable '{n.var}' is a dummy argument; Boreas loop variables must be locals"
                     f.comments.append("TODO(convert): " + msg)
                     self.todo(n.line, msg)
+
+    def check_saved(self, unit, built):
+        """Fortran keeps `save`d locals (and ones initialised in their declaration) between calls;
+        Boreas locals start fresh. That only matters if the procedure changes the variable and
+        could read the old value, so only then is it a TODO."""
+        for fn, scope in built:
+            if not isinstance(fn, Function):
+                continue
+            saved = dict(scope.saved)
+            if scope.save_all is not None:
+                for name, info in scope.decls.items():
+                    if name not in scope.dummies and not info.parameter:
+                        saved.setdefault(name, (scope.save_all, "the procedure has a bare save statement"))
+            procs = self.visible_procs(unit, fn)
+            for name, (line, why) in saved.items():
+                info = scope.decls.get(name)
+                if info is None or info.parameter or name in scope.dummies or name in (scope.name, scope.result):
+                    continue
+                _, writes, _ = self.usage(fn.body, name, procs)
+                if not writes or self.overwritten_first(fn.body, name):
+                    continue
+                msg = (f"'{name}' ({why}) keeps its value between calls in Fortran, and this procedure changes "
+                       f"it; Boreas locals start fresh on every call, so the converted procedure behaves "
+                       f"differently (pass it in as an inout argument, or keep the state in the caller)")
+                self.todo(line, msg)
+                fn.comments.append("TODO(convert): " + msg)
+
+    def overwritten_first(self, body, name):
+        """Is `name` always assigned before anything can read it? (Then a saved value is never seen.)"""
+        def mentions(x):
+            for n in iter_nodes(x):
+                if isinstance(n, (Var, Apply, Call)) and n.name == name:
+                    return True
+                if isinstance(n, Do) and n.var == name:
+                    return True
+            return False
+
+        for s in body:
+            for s in (s if isinstance(s, list) else [s]):
+                if not mentions(s):
+                    continue
+                if isinstance(s, Assign) and isinstance(s.target, Var) and s.target.name == name:
+                    return not mentions(s.value)
+                if isinstance(s, Do) and s.var == name:
+                    return not mentions([s.lo, s.hi, s.step])
+                return False
+        return False
 
     def fields_written(self, body, name):
         """The fields of record `name` assigned whole (`name%f = ...`), or True if the whole

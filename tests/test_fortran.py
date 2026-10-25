@@ -282,14 +282,11 @@ class TranslationTests(unittest.TestCase):
         self.assertIn("subroutine outer(out real :: x)", text)
         self.assertEqual(run_bor(text), ["2.0"])
 
-    def test_save_and_character_length_are_noted(self):
-        src = ("subroutine s()\n  integer, save :: n\n  character(len=3) :: c\n  n = 1\n  c = 'abcdef'\nend subroutine\n"
+    def test_character_length_is_noted(self):
+        src = ("subroutine s()\n  character(len=3) :: c\n  c = 'abcdef'\nend subroutine\n"
                "program p\n  call s()\nend program\n")
         _, findings = convert(src)
-        self.assertTrue(any("'save'" in f[2] for f in findings))
         self.assertTrue(any("character lengths" in f[2] for f in findings))
-        src = "subroutine s()\n  integer n\n  save n\n  n = 1\nend subroutine\nprogram p\nend program\n"
-        self.assertTrue(any("'save'" in f[2] for f in convert(src)[1]))
 
     def test_single_precision_real_is_noted(self):
         _, findings = conv("real :: x\n  x = 1.0", "")
@@ -335,7 +332,7 @@ class TranslationTests(unittest.TestCase):
         src = "subroutine counter(n)\n  integer, intent(out) :: n\n  integer :: calls = 0\n  calls = calls + 1\n  n = calls\nend subroutine\n" \
               "program p\n  integer :: k\n  call counter(k)\n  print *, k\nend program\n"
         _, findings = convert(src)
-        self.assertTrue(any("SAVE" in f[2] for f in findings))
+        self.assertTrue(any("keeps its value between calls" in f[2] for f in todos(findings)))
 
     def test_module_variable_is_a_todo_and_its_uses_are_skipped(self):
         src = ("module m\n  implicit none\n  integer :: counter = 0\n  integer, parameter :: k = 3\ncontains\n"
