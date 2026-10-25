@@ -87,6 +87,14 @@ def _comment(text):
     return "! " + " ".join(str(text).split())
 
 
+def _label(s):
+    return f"{s.label}: " if s.label else ""
+
+
+def _end_do(s):
+    return "end do" + (" " + s.label if s.label else "")
+
+
 def stmts(body, depth=1):
     """Print a statement list; consecutive plain declarations of one type share a line."""
     pad = "  " * depth
@@ -127,9 +135,9 @@ def stmt(s, depth):
     if k is Return:
         return [pad + "return" + (" " + expr(s.value) if s.value is not None else "")]
     if k is Exit:
-        return [pad + "exit"]
+        return [pad + "exit" + (" " + s.label if s.label else "")]
     if k is Cycle:
-        return [pad + "cycle"]
+        return [pad + "cycle" + (" " + s.label if s.label else "")]
     if k is ExprStmt:
         return [pad + expr(s.expr)]
     if k is If:
@@ -143,12 +151,12 @@ def stmt(s, depth):
         lines.append(pad + "end if")
         return lines
     if k is Do:
-        head = f"{pad}do {s.var} = {expr(s.lo)}, {expr(s.hi)}"
+        head = f"{pad}{_label(s)}do {s.var} = {expr(s.lo)}, {expr(s.hi)}"
         if s.step is not None:
             head += f", {expr(s.step)}"
-        return [head] + stmts(s.body, depth + 1) + [pad + "end do"]
+        return [head] + stmts(s.body, depth + 1) + [pad + _end_do(s)]
     if k is DoWhile:
-        return [f"{pad}do while {expr(s.cond)}"] + stmts(s.body, depth + 1) + [pad + "end do"]
+        return [f"{pad}{_label(s)}do while {expr(s.cond)}"] + stmts(s.body, depth + 1) + [pad + _end_do(s)]
     if k is Decl:
         return [f"{pad}{_decl_head(s)} :: {_decl_entity(s)}"]
     raise LangError(f"cannot print statement {k.__name__}")

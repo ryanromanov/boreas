@@ -6,8 +6,17 @@ from .parser import *
 
 class _Return(Exception):
     def __init__(self, value): self.value = value
-class _Exit(Exception): pass
-class _Cycle(Exception): pass
+class _Exit(Exception):
+    def __init__(self, label=None):
+        self.label = label          # None: the innermost loop
+class _Cycle(Exception):
+    def __init__(self, label=None):
+        self.label = label
+
+
+def _mine(e, loop):
+    """Does this exit/cycle target `loop`? Otherwise the loop lets it pass outwards."""
+    return e.label is None or e.label == loop.label
 
 
 def type_of(v):
@@ -285,9 +294,12 @@ class Interp:
                 self.write(ref, i, s.line)
                 try:
                     self.exec_block(s.body, env)
-                except _Cycle:
-                    pass
-                except _Exit:
+                except _Cycle as e:
+                    if not _mine(e, s):
+                        raise
+                except _Exit as e:
+                    if not _mine(e, s):
+                        raise
                     exited = True
                     break
                 i += step
@@ -297,9 +309,12 @@ class Interp:
             while self.truth(self.eval(s.cond, env)):
                 try:
                     self.exec_block(s.body, env)
-                except _Cycle:
-                    pass
-                except _Exit:
+                except _Cycle as e:
+                    if not _mine(e, s):
+                        raise
+                except _Exit as e:
+                    if not _mine(e, s):
+                        raise
                     break
         elif k is Print:
             self.out(" ".join(self.show(self.eval(a, env)) for a in s.args))
@@ -308,9 +323,9 @@ class Interp:
         elif k is Return:
             raise _Return(self.eval(s.value, env) if s.value else None)
         elif k is Exit:
-            raise _Exit()
+            raise _Exit(s.label)
         elif k is Cycle:
-            raise _Cycle()
+            raise _Cycle(s.label)
         elif k is ExprStmt:
             self.eval(s.expr, env)
 
