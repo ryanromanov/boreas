@@ -39,7 +39,11 @@ class NormalizerTests(unittest.TestCase):
     def test_tolerance_and_spelling(self):
         self.assertTrue(verify.same_output(" 1 T 2.0\n", "1, true, 2.0000000001"))
         self.assertTrue(verify.same_output("[1, 2]", "1 2"))
-        self.assertFalse(verify.same_output("0.300000012", "0.30000000000000004"))
+        self.assertFalse(verify.same_output("0.3000001", "0.300000012"))   # more than a single-precision step apart
+        self.assertFalse(verify.same_output("0.300000012", "0.30001"))
+        self.assertTrue(verify.same_output("0.300000012", "0.3"))                # a single, printed in full or short
+        self.assertTrue(verify.same_output("0.100000001", "0.1"))
+        self.assertTrue(verify.same_output("1.19209290E-07", "1.1920929e-07"))
         self.assertFalse(verify.same_output("1 2", "1 2 3"))
 
     def test_locate_difference(self):
@@ -71,12 +75,16 @@ class VerifyTests(unittest.TestCase):
             f = write(tmp, "p.f90", "program p\n  implicit none\n  real :: x\n  x = 0.1\n"
                                     "  print *, x * 3\nend program p\n")
             r = boreas("convert", "--verify", f)
-            self.assertEqual(r.returncode, 1, r.stderr)
-            self.assertIn("MISMATCH", r.stderr)
-            self.assertIn("0.300000012", r.stderr)
-            self.assertIn("0.30000000000000004", r.stderr)
-            self.assertIn("32-bit", r.stderr)
-            self.assertNotIn("not translated", r.stderr)
+            self.assertEqual(r.returncode, 0, r.stderr)       # single precision is reproduced exactly now
+            self.assertIn("verified", r.stderr)
+
+    def test_integer_wrap_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = write(tmp, "w.f90", "program w\n  implicit none\n  integer :: n\n  n = 2147483647\n"
+                                    "  n = n + 1\n  print *, n\nend program w\n")
+            r = boreas("convert", "--verify", f)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("overflow", r.stderr)
 
     def test_todo_makes_mismatch_expected(self):
         with tempfile.TemporaryDirectory() as tmp:

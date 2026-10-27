@@ -160,7 +160,7 @@ class TranslationTests(unittest.TestCase):
         text, findings = conv("integer, parameter :: n = 4, sq(2) = (/ 1, 4 /)\n  real, parameter :: half = 0.5\n"
                               "  integer :: k\n  k = n\n  print *, k, sq, half", "")
         self.assertIn("  const integer :: n = 4\n  const integer :: sq(2) = [1, 4]", text)
-        self.assertIn("const real :: half = 0.5", text)
+        self.assertIn("const real32 :: half = 0.5", text)
         self.assertFalse(any("ordinary variables" in f[2] for f in findings))
         self.assertEqual(run_bor(text), ["4 [1, 4] 0.5"])
 
@@ -176,7 +176,7 @@ class TranslationTests(unittest.TestCase):
 
     def test_d_exponents_and_kinds(self):
         text, _ = conv("print *, 1.5d0, 2.0e3, 3.0_8, 4_8", "")
-        self.assertIn("print 1.5, 2000.0, 3.0, 4", text)
+        self.assertIn("print 1.5, 2000.0, 3.0, int64(4)", text)
 
     def test_continuation_comments_and_semicolons(self):
         text, _ = conv("integer :: a\ninteger :: b\n  a = 1; b = &\n    & 2   ! trailing\n  print *, a, &\n     b", "")
@@ -279,7 +279,7 @@ class TranslationTests(unittest.TestCase):
                "subroutine inner(y)\n  real y\n  y = 2.0\nend subroutine\n"
                "program p\n  real :: z\n  call outer(z)\n  print *, z\nend program\n")
         text, _ = convert(src)
-        self.assertIn("subroutine outer(out real :: x)", text)
+        self.assertIn("subroutine outer(out real32 :: x)", text)
         self.assertEqual(run_bor(text), ["2.0"])
 
     def test_character_length_is_noted(self):
@@ -288,9 +288,11 @@ class TranslationTests(unittest.TestCase):
         _, findings = convert(src)
         self.assertTrue(any("character lengths" in f[2] for f in findings))
 
-    def test_single_precision_real_is_noted(self):
-        _, findings = conv("real :: x\n  x = 1.0", "")
-        self.assertTrue(any("single precision" in f[2] for f in findings))
+    def test_default_real_is_single_precision(self):
+        text, findings = conv("real :: x\n  double precision :: y\n  x = 1.0\n  y = 1.0d0", "")
+        self.assertIn("real32 :: x", text)
+        self.assertIn("real :: y", text)
+        self.assertFalse(any("single precision" in f[2] for f in findings))
 
     def test_unknown_procedures_are_todos_in_the_output(self):
         text, findings = conv("print *, besj0(2.6)\n  call mystery(1)", "")
@@ -301,7 +303,7 @@ class TranslationTests(unittest.TestCase):
 
     def test_dble_and_kind_arguments(self):
         text, _ = conv("print *, dble(3), real(2, kind=8), int(2.7d0)", "")
-        self.assertIn("print real(3), real(2), int(2.7)", text)
+        self.assertIn("print real64(3), real64(2), int(2.7)", text)
 
     def test_array_sections_and_constructors(self):
         text, _ = conv("integer :: v(5)\n  v = [1, 2, 3, 4, 5]\n  v(2:3) = 0\n  print *, v, v(:2), sum(v)", "")

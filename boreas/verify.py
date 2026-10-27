@@ -20,12 +20,25 @@ def words(text):
     return [{"T": "true", "F": "false"}.get(w, w) for w in text.split()]
 
 
+SINGLE_TOLERANCE = 5e-8
+
+
+def significant_digits(text):
+    mantissa = re.split(r"[eEdD]", text)[0].lstrip("+-").replace(".", "").lstrip("0")
+    return len(mantissa)
+
+
 def tokens_equal(x, y):
+    """A single-precision number is printed with nine significant digits
+    (a double with seventeen), and Boreas prints the shortest text that reads back, so those compare
+    to within half a single-precision step."""
     try:
         fx, fy = float(x), float(y)
     except ValueError:
         return x == y
-    return abs(fx - fy) <= TOLERANCE * max(1.0, abs(fx), abs(fy))
+    single = any(significant_digits(t) == 9 and not t.lstrip("+-").isdigit() for t in (x, y))
+    tolerance = SINGLE_TOLERANCE if single else TOLERANCE
+    return abs(fx - fy) <= tolerance * max(1.0, abs(fx), abs(fy))
 
 
 def first_difference(a, b):
@@ -142,7 +155,8 @@ def verify(path, boreas_text, had_todos, timeout=DEFAULT_TIMEOUT, report=None):
     say(describe_difference(orig.stdout, conv.stdout))
     if had_todos:
         say("note: some constructs were not translated (TODO), so a mismatch is expected")
-    say("likely causes: Fortran reals are 32-bit by default but Boreas reals are doubles; "
-        "Fortran integers are 32-bit and wrap on overflow, Python integers do not. "
+    say("likely causes: Fortran integers are 32-bit and wrap on overflow, while Boreas stops with an error "
+        "(use +%, -% and *% where wrapping is intended); single-precision library functions (sin, exp, ...) "
+        "can differ in the last digit; an expression mixing single and double precision. "
         "(Spacing and commas in list-directed output are already ignored.)")
     return 1

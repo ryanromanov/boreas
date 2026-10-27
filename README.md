@@ -41,6 +41,35 @@ it is the subroutine's job, so reading it first, or never assigning it, is an er
 variable can carry its own comment, and a change touches only the line it is
 about. `boreas convert` splits Fortran's `real :: x, y, z` into separate lines.
 
+## Number kinds
+
+Integers and reals come in fixed widths, named by their size:
+
+| type | what it is |
+|---|---|
+| `int8`, `int16`, `integer` (also `int32`), `int64` | signed integers of 8, 16, 32 and 64 bits |
+| `real` (also `real64`), `real32` | double and single precision floating point |
+
+    int64 :: big = 3000000000
+    real32 :: x = 0.1
+    print big * 3, x * 3.0          ! 9000000000 0.3
+
+- **Overflow is an error.** `integer` is 32 bits, so `2147483647 + 1` stops the program ("integer
+  overflow") where Fortran wraps around silently. Integer literals too big for 32 bits are `int64`.
+- **Wrapping is an operator.** `+%`, `-%` and `*%` wrap at the width of their operands, for the
+  hashes and random-number generators that rely on it: `seed = (seed *% 1103515245) +% 12345`.
+  Everything else is checked.
+- **Mixing widths widens** to the bigger one; an integer next to a real gives that real. Assigning to
+  a narrower integer works when the value fits (`int8 :: b = 100`) and is an error when it does not.
+  A real never goes into an integer without `int(x)`, `int64(x)`, ...; a `real` rounds into a
+  `real32` on assignment.
+- **`real32` is real single precision**: every operation is rounded to 24 bits, so the results match
+  Fortran's `real`. A real literal next to a `real32` is a `real32` (`x * 2.0`), as in Fortran.
+  Values print with the shortest text that reads back (`0.1`, not `0.10000000149`).
+- Conversion functions: `int8(x)`, `int16(x)`, `int32(x)` / `int(x)`, `int64(x)` (truncate and check
+  the range), `real32(x)`, `real64(x)` / `real(x)`. `huge`, `epsilon` and `tiny` work for every kind.
+- Single precision is slower than double: each result is rounded and tagged with its width.
+
 ## Constants
 
     const real :: pi = 3.14159
@@ -91,8 +120,7 @@ element of an array:
   `anint`
 - `mod` (sign of the first argument), `modulo` (sign of the second), `sign(a, b)`, `dim(a, b)`
 
-`huge(x)`, `epsilon(x)` and `tiny(x)` give the limits of `x`'s type: an integer is a 32-bit one
-(`2147483647`, like Fortran's default) and a real is a double. A math error such as `asin(2.0)`
+`huge(x)`, `epsilon(x)` and `tiny(x)` give the limits of `x`'s type (see Number kinds). A math error such as `asin(2.0)`
 or `modulo(1, 0)` stops the program with a message, where Fortran would give NaN.
 
 ## Labeled loops
@@ -358,6 +386,13 @@ report on stderr. Translations that change meaning are flagged, never silent:
   initialised in its declaration) becomes a TODO when the procedure changes it and can read the old
   value, because Boreas locals start fresh on every call. Ones that are never changed, or always
   assigned before they are read, convert without a note.
+- Kinds become fixed-width types: `real` and `real(4)` are `real32` (Fortran's default real is single
+  precision), `real(8)`, `real(kind=8)`, `real*8` and `double precision` are `real`, `integer(1/2/4/8)`
+  are `int8`/`int16`/`integer`/`int64`. Kind constants work (`integer, parameter :: dp = kind(1.0d0)`,
+  `selected_real_kind(15)`, `selected_int_kind(9)`, `use iso_fortran_env`), also as literal suffixes
+  (`1.0_dp`, `5_int64`). Single-precision literals that are not exact (`0.1`) become `real32(0.1)`, since
+  Fortran rounds them to single; `real(x)` is `real32(x)` (or the real part, for a complex `x`),
+  `real(x, dp)` is `real64(x)`, `int(x, 8)` is `int64(x)`. `real(16)` and `integer(16)` are TODOs.
 - `complex`, `complex(kind=8)`, `complex*16` and `double complex` become `complex`; a literal
   `(re, im)` becomes `cmplx(re, im)`; `dcmplx`, `dimag`, `dconjg`, `cabs`, `csqrt`, `cexp`, ... map to
   the generic functions.
@@ -390,12 +425,14 @@ report on stderr. Translations that change meaning are flagged, never silent:
 `--verify` converts the file as usual, then compiles the original with gfortran
 (set `FC` to use another compiler), runs it and the converted program with empty
 stdin and a timeout (default 10 s), and compares what they print. Spacing and
-commas are ignored, `T`/`F` equal `true`/`false`, and numbers match within 1e-9.
+commas are ignored, `T`/`F` equal `true`/`false`, and numbers match within 1e-9 (single-precision
+output, which Fortran prints with nine digits, within half a single-precision step).
 
 It prints "verified: ... (N values compared)" and exits 0 on a match. On a
 mismatch it shows the first differing value from each program and exits 1.
-Common causes are Fortran's 32-bit default real and integer versus Boreas's
-doubles and unbounded integers, and constructs reported as TODO. Exit status 2
+Common causes are integer arithmetic that wraps around in Fortran but stops with an error in Boreas
+(use `+%`/`*%`), single-precision library functions that differ in the last digit, an expression
+mixing single and double precision, and constructs reported as TODO. Exit status 2
 means it could not verify (gfortran missing, the original does not compile, or
 it timed out).
 

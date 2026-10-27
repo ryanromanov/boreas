@@ -11,6 +11,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from .lexer import LangError
 from .parser import *
 from .interp import BUILTINS, ELEMENTAL, PURE_BUILTINS
+from .kinds import round32
 from .printer import to_source
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
@@ -190,12 +191,19 @@ def is_case_line(toks):
     return False
 
 
+# Kind numbers (bytes) of the names in iso_fortran_env.
+ISO_KINDS = {"int8": 1, "int16": 2, "int32": 4, "int64": 8, "real32": 4, "real64": 8, "real128": 16}
+INT_KINDS = {1: "int8", 2: "int16", 4: "integer", 8: "int64"}
+REAL_KINDS = {4: "real32", 8: "real"}
+KIND_ARGUMENT = {"real", "int", "cmplx", "dble", "dcmplx", "float", "sngl", "nint", "floor", "ceiling"}
+
+
 # Old type-specific intrinsic names, which Fortran still accepts, and the generic function each one is.
 SPECIFIC_NAMES = {
     "dcmplx": "cmplx", "dimag": "aimag", "dconjg": "conjg", "cdabs": "abs", "cabs": "abs", "zabs": "abs",
     "csqrt": "sqrt", "cdsqrt": "sqrt", "zsqrt": "sqrt", "cexp": "exp", "cdexp": "exp", "zexp": "exp",
     "clog": "log", "cdlog": "log", "zlog": "log", "csin": "sin", "ccos": "cos",
-    "dble": "real", "float": "real", "sngl": "real", "idint": "int", "ifix": "int", "dint": "aint",
+    "dble": "real64", "float": "real32", "sngl": "real32", "idint": "int", "ifix": "int", "dint": "aint",
     "dnint": "anint", "idnint": "nint", "iabs": "abs", "dabs": "abs", "dsqrt": "sqrt", "dexp": "exp",
     "dlog": "log", "alog": "log", "dlog10": "log10", "alog10": "log10", "dsin": "sin", "dcos": "cos",
     "dtan": "tan", "dasin": "asin", "dacos": "acos", "datan": "atan", "datan2": "atan2",
@@ -279,7 +287,7 @@ def iter_nodes(obj):
 
 
 def implicit_type(name):
-    return "integer" if name[0] in "ijklmn" else "real"
+    return "integer" if name[0] in "ijklmn" else "real32"
 
 
 class FParser:
@@ -287,6 +295,8 @@ class FParser:
         self.items = scan_lines(src)
         self.i = 0
         self.findings = []          # (line, "todo" | "note", message)
+        self.kind_names = dict(ISO_KINDS)   # names that stand for a kind number: dp, wp, real64, ...
+        self.double_literals = set()        # ids of the Num nodes written as double precision (1.0d0, 1.0_dp)
         self.raw = []
         self.renames = {}
         self.line = 0
@@ -436,14 +446,31 @@ class FParser:
             e = self.mul()
         while self.at_op("+", "-"):
             op = self.next().text
-            e = Binary(op, e, self.mul())
+            e = self.single_constant(Binary(op, e, self.mul()))
         return e
 
     def mul(self):
         e = self.power()
         while self.at_op("*", "/"):
             op = self.next().text
-            e = Binary(op, e, self.power())
+            e = self.single_constant(Binary(op, e, self.power()))
+        return e
+
+    def is_single_constant(self, e):
+        """A number written in single precision, or arithmetic on such numbers (1.0/3.0)."""
+        if isinstance(e, Num):
+            return isinstance(e.value, float) and id(e) not in self.double_literals
+        if isinstance(e, Apply):
+            return e.name == "real32" and len(e.args) == 1
+        if isinstance(e, Unary):
+            return self.is_single_constant(e.operand)
+        return False
+
+    def single_constant(self, e):
+        """Fortran computes 1.0/3.0 in single precision; so does real32(1.0/3.0) (a double holds a single
+        operation exactly enough that rounding once gives the single result)."""
+        if self.is_single_constant(e.left) and self.is_single_constant(e.right):
+            return Apply("real32", [e], self.line)
         return e
 
     def power(self):
@@ -458,7 +485,16 @@ class FParser:
     def primary(self):
         t = self.next()
         if t.kind == "int" or t.kind == "real":
-            return Num(t.value)
+            lit = Num(t.value)
+            if t.kind == "int":
+                n = self.literal_kind(t.text)
+                if n in (1, 2, 8):                              # 5_int64, 5_8, 5_i2
+                    return Apply(INT_KINDS[n], [lit], self.line)
+            elif self.is_double_literal(t.text):
+                self.double_literals.add(id(lit))
+            elif round32(t.value) != t.value:                   # a single-precision 0.1 is not 0.1
+                return Apply("real32", [lit], self.line)
+            return lit
         if t.kind == "str":
             if '"' in t.value:
                 raise Unsupported("string containing a double quote")
@@ -495,12 +531,7 @@ class FParser:
                 self.k += 1
                 args = self.call_arguments(name)
                 name = SPECIFIC_NAMES.get(name, name)
-                if name == "cmplx" and len(args) > 2:
-                    self.note(self.line, "cmplx(): kind argument dropped")
-                    args = args[:2]
-                if name in ("real", "int", "dble") and len(args) > 1:
-                    self.note(self.line, f"{name}(): kind argument dropped")
-                    args = args[:1]
+                name, args = self.convert_intrinsic(name, args)
                 intrinsic = name in BUILTINS or name in ELEMENTAL
                 e = Apply(name if intrinsic else self.rename(name), args, self.line)
             while self.accept_op("%"):                       # derived-type component: p%x, pts(2)%pos%y
@@ -515,6 +546,97 @@ class FParser:
                 e = FieldAccess(e, field, args, self.line)
             return e
         raise Unsupported(f"unexpected {t.text!r} in expression")
+
+    def literal_kind(self, raw):
+        """The kind number after the underscore in 5_8 or 1.0_dp, or None."""
+        if "_" not in raw:
+            return None
+        suffix = raw.lower().split("_", 1)[1]
+        return int(suffix) if suffix.isdigit() else self.kind_names.get(suffix)
+
+    def is_double_literal(self, raw):
+        """1.0d0 and 1.0_dp are double precision (a name that is not a known kind counts as single)."""
+        kind = self.literal_kind(raw)
+        if kind is not None:
+            return kind >= 8
+        return "d" in raw.lower()
+
+    def kind_number(self, e):
+        """The kind number (bytes) an expression stands for, or None: 8, dp, real64, kind(1.0d0),
+        selected_real_kind(15), selected_int_kind(9), ..."""
+        if isinstance(e, Num) and isinstance(e.value, int):
+            return e.value
+        if isinstance(e, Var):
+            return self.kind_names.get(e.name)
+        if isinstance(e, Apply) and e.name in ("kind", "selected_real_kind", "selected_int_kind") and e.args:
+            a = e.args[0]
+            if e.name == "kind":
+                if isinstance(a, Num):
+                    return 4 if isinstance(a.value, int) else (8 if id(a) in self.double_literals else 4)
+                if isinstance(a, Apply) and a.name in ("real32", "real"):
+                    return 4 if a.name == "real32" else 8
+                return None
+            if not (isinstance(a, Num) and isinstance(a.value, int)):
+                return None
+            if e.name == "selected_real_kind":
+                return 4 if a.value <= 6 else 8 if a.value <= 15 else 16
+            return 1 if a.value <= 2 else 2 if a.value <= 4 else 4 if a.value <= 9 else 8 if a.value <= 18 else 16
+        return None
+
+    def convert_intrinsic(self, name, args):
+        """Kind arguments of the conversion functions, and the kind of a bare real literal that
+        epsilon/huge/tiny look at."""
+        kind_args = [a for a in args if isinstance(a, NamedArg) and a.name == "kind"]
+        args = [a for a in args if not (isinstance(a, NamedArg) and a.name == "kind")]
+        if name in ("epsilon", "tiny", "huge") and args and isinstance(args[0], Num) \
+                and isinstance(args[0].value, float) and id(args[0]) not in self.double_literals:
+            return name, [Apply("real32", [args[0]], self.line)]
+        if name in ("real", "int", "cmplx"):
+            keep = 2 if name == "cmplx" else 1
+            kind = kind_args[0].value if kind_args else args[keep] if len(args) > keep else None
+            args = args[:keep]
+            if kind is not None:
+                n = self.kind_number(kind)
+                if n is None:
+                    self.note(self.line, f"{name}(): kind argument not understood, dropped")
+                elif name == "int":
+                    if n not in INT_KINDS:
+                        raise Unsupported(f"int() of kind {n}")
+                    name = {"int8": "int8", "int16": "int16", "integer": "int", "int64": "int64"}[INT_KINDS[n]]
+                elif name == "real":
+                    if n not in REAL_KINDS:
+                        raise Unsupported(f"real() of kind {n}")
+                    name = "real32" if n == 4 else "real64"
+                else:
+                    self.note(self.line, "cmplx(): kind argument dropped (Boreas complex numbers are double precision)")
+            elif name == "real" and not self.is_complex_expr(args[0] if args else None):
+                name = "real32"                              # real(x) is a default (single) real, unless x is complex
+        return name, args
+
+    def is_complex_expr(self, e):
+        """Is this expression certainly complex? (real(z) is the real part, in z's own kind.)"""
+        if isinstance(e, Apply):
+            if e.name in ("cmplx", "conjg"):
+                return True
+            info = self.lookup_decl(e.name)
+            return info is not None and info.type == "complex"
+        if isinstance(e, Var):
+            info = self.lookup_decl(e.name)
+            return info is not None and info.type == "complex"
+        if isinstance(e, Binary):
+            return self.is_complex_expr(e.left) or self.is_complex_expr(e.right)
+        if isinstance(e, Unary):
+            return self.is_complex_expr(e.operand)
+        return False
+
+    def lookup_decl(self, name):
+        s = self.cur_scope
+        while s is not None:
+            info = s.decls.get(name)
+            if info is not None:
+                return info
+            s = s.host
+        return None
 
     def is_array_name(self, name):
         s = self.cur_scope
@@ -543,8 +665,8 @@ class FParser:
         if t is not None and t.kind == "name" and t2 is not None and t2.kind == "op" and t2.text == "=":
             if t.text == "kind":
                 self.k += 2
-                self.expr()
-                return None
+                value = self.expr()
+                return NamedArg("kind", value) if fname in KIND_ARGUMENT else None
             if self.rename(fname) in self.types:             # a structure constructor: point(x = 1.0)
                 self.k += 2
                 return NamedArg(self.rename(t.text), self.expr())
@@ -847,7 +969,6 @@ class FParser:
             if not self.at_name("precision"):
                 raise Unsupported("expected 'double precision' or 'double complex'")
             self.k += 1
-            self.note(self.line, "double precision became real (Boreas reals are double precision)", once=True)
             return "real"
         if word == "type":
             if not self.accept_op("("):
@@ -863,16 +984,55 @@ class FParser:
         if word == "character":
             self.note(self.line, "character lengths are not tracked: Boreas strings never pad or truncate, "
                                  "so assigning to a shorter variable or comparing padded text can differ", once=True)
+        if word == "character":
+            if self.at_op("("):
+                self.skip_parens()
+            elif self.at_op("*") and self.peek(1) is not None and self.peek(1).kind == "int":
+                self.k += 2
+            return "string"
+        number = None
         if self.at_op("("):
-            self.skip_parens()
-            if word != "character":
-                self.note(self.line, f"{word} kind dropped (Boreas has one integer and one real kind)", once=True)
+            number = self.kind_in_parens(word)
         elif self.at_op("*") and self.peek(1) is not None and self.peek(1).kind == "int":
+            number = self.peek(1).value
             self.k += 2
-        elif word in ("real", "complex"):
-            self.note(self.line, f"default '{word}' is single precision in Fortran but double in Boreas, "
-                                 f"so results can differ in the last digits", once=True)
-        return "string" if word == "character" else word
+            if word == "complex":
+                number //= 2                              # complex*16 is two 8-byte reals
+        elif word == "complex":
+            self.note(self.line, "default 'complex' is single precision in Fortran but double in Boreas, "
+                                 "so results can differ in the last digits", once=True)
+        return self.kinded(word, number)
+
+    def kind_in_parens(self, word):
+        """`(8)`, `(kind=8)`, `(dp)`: the kind number, or None when it cannot be worked out."""
+        self.expect_op("(")
+        if self.at_name("kind") and self.peek(1) is not None and self.peek(1).text == "=":
+            self.k += 2
+        e = self.expr()
+        self.expect_op(")")
+        number = self.kind_number(e)
+        if number is None:
+            self.note(self.line, f"{word} kind could not be worked out and was dropped", once=True)
+        return number
+
+    def kinded(self, word, number):
+        """The Boreas type for a Fortran type word and kind number (None: the default kind)."""
+        if word == "integer":
+            if number is None:
+                return "integer"
+            if number not in INT_KINDS:
+                raise Unsupported(f"integer(kind={number}) is not supported")
+            return INT_KINDS[number]
+        if word == "real":
+            if number is None:
+                return "real32"
+            if number not in REAL_KINDS:
+                raise Unsupported(f"real(kind={number}) is not supported (Boreas has real32 and real64)")
+            return REAL_KINDS[number]
+        if word == "complex" and number is not None:
+            if number not in (4, 8):
+                raise Unsupported(f"complex(kind={number}) is not supported")
+        return word
 
     def dim_specs(self):
         """Parse the inside of (...) after a name: a list of (lower, upper) pairs."""
@@ -982,6 +1142,12 @@ class FParser:
                             dims.append(hi)
                 if attrs.get("parameter") and init is None:
                     raise Unsupported(f"constant '{name}' has no value here (implied-shape or set elsewhere)")
+                if attrs.get("parameter") and typ == "integer" and dims is None:
+                    number = self.kind_number(init)
+                    if number is not None:                     # a kind constant: dp = kind(1.0d0), i8 = 8, ...
+                        self.kind_names[name] = number
+                        if isinstance(init, Apply):
+                            init = Num(number)
                 if not attrs.get("parameter") and scope.kind not in ("program", "module", "type") \
                         and name not in scope.dummies and (init is not None or attrs.get("save")):
                     scope.saved[name] = (line, "declared save" if attrs.get("save")
@@ -1034,11 +1200,14 @@ class FParser:
         raise Unsupported("only 'implicit none' is supported")
 
     def st_use(self, it, scope):
+        if self.accept_op(","):                       # `use, intrinsic :: iso_fortran_env`
+            if not self.at_name("intrinsic", "non_intrinsic"):
+                raise Unsupported("'use' with attributes is not supported")
+            self.k += 1
+            self.accept_op("::")
         if self.at_name("iso_fortran_env", "iso_c_binding", "ieee_arithmetic"):
             self.note(it.line, f"'{it.text}' ignored (intrinsic module)")
             return []
-        if self.accept_op(","):                       # `use, intrinsic :: ...`
-            raise Unsupported("'use' with attributes is not supported")
         name = self.rename(self.expect_name())
         mod = self.modules.get(name)
         if mod is None:
