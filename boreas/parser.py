@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field, fields, is_dataclass
 from .lexer import lex, LangError
+from .kinds import lit_int, SPELLINGS, KIND_TYPES
 
-TYPES = {"integer", "real", "logical", "string", "complex"}
+TYPES = {"integer", "real", "logical", "string", "complex", "int8", "int16", "int32", "int64", "real32", "real64"}
 
 
 # --- AST ---------------------------------------------------------------
@@ -582,7 +583,8 @@ class Parser:
         right after it makes the value optional (`integer?`)."""
         t = self.tok
         if t.kind == "ident" and t.text in TYPES:
-            name = self.next().text
+            name = SPELLINGS.get(t.text, t.text)
+            self.next()
         elif t.kind == "ident" and t.text not in KEYWORDS and (anywhere or self.typed_ahead()):
             name = self.next().text
         else:
@@ -938,14 +940,14 @@ class Parser:
 
     def add(self):
         e = self.mul()
-        while self.at("+", "-"):
+        while self.at("+", "-", "+%", "-%"):
             op = self.next().text
             e = Binary(op, e, self.mul())
         return e
 
     def mul(self):
         e = self.unary()
-        while self.at("*", "/"):
+        while self.at("*", "/", "*%"):
             op = self.next().text
             e = Binary(op, e, self.unary())
         return e
@@ -965,7 +967,7 @@ class Parser:
     def primary(self):
         t = self.tok
         if t.kind == "int":
-            self.next(); return Num(int(t.text))
+            self.next(); return Num(lit_int(int(t.text)))
         if t.kind == "real":
             self.next(); return Num(float(t.text))
         if t.kind == "str":
