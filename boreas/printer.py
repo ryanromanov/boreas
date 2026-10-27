@@ -8,7 +8,7 @@ from .parser import *
 # Higher binds tighter. Mirrors the grammar in parser.py:
 # ?? < or < and < not < compare < add < mul < unary < **
 PREC = {"??": 0, "or": 1, "and": 2, "==": 4, "/=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
-        "+": 5, "-": 5, "*": 6, "/": 6, "**": 8}
+        "+": 5, "-": 5, "*": 6, "/": 6, "+%": 5, "-%": 5, "*%": 6, "**": 8}
 ATOM = 10
 
 

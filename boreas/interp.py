@@ -5,6 +5,7 @@ import sys
 from itertools import product
 from .lexer import LangError
 from .parser import *
+from .kinds import *
 
 
 class _Return(Exception):
@@ -27,6 +28,22 @@ COMPARE = {"==": operator.eq, "/=": operator.ne, "<": operator.lt, "<=": operato
            ">": operator.gt, ">=": operator.ge}
 
 
+FAST_INT = {"+": operator.add, "-": operator.sub, "*": operator.mul, "/": int_div,
+            "==": operator.eq, "/=": operator.ne, "<": operator.lt, "<=": operator.le,
+            ">": operator.gt, ">=": operator.ge}
+FAST_FLOAT = {"+": operator.add, "-": operator.sub, "*": operator.mul, "/": operator.truediv,
+              "==": operator.eq, "/=": operator.ne, "<": operator.lt, "<=": operator.le,
+              ">": operator.gt, ">=": operator.ge}
+
+
+def _is_real32(v):
+    return type(v) is Real32 or (type(v) is Array and bool(v.data) and type(v.data[0]) is Real32)
+
+
+def _is_literal(e):
+    return type(e) is Num or (type(e) is Unary and type(e.operand) is Num)
+
+
 class _Null:
     """The absent value of an optional (`T?`) variable."""
     def __repr__(self): return "null"
@@ -42,11 +59,8 @@ def base_type(t):
 
 
 def type_of(v):
-    if isinstance(v, bool): return "logical"
-    if isinstance(v, int): return "integer"
-    if isinstance(v, float): return "real"
-    if isinstance(v, str): return "string"
-    if isinstance(v, complex): return "complex"
+    name = TYPE_NAMES.get(type(v))
+    if name is not None: return name
     if isinstance(v, Array): return "array"
     if isinstance(v, Record): return v.rdef.name
     if v is NULL: return "null"
@@ -54,15 +68,24 @@ def type_of(v):
 
 
 def coerce(typ, value, what):
-    """Assignment rules: integer -> real is implicit; everything else must match. Only an
-    optional type (`integer?`) can hold null."""
+    """Assignment rules. Integers go into any integer width if the value fits, integers and
+    smaller reals widen to a real, and a real64 rounds into a real32; everything else must match.
+    Only an optional type (`integer?`) can hold null."""
     got = type_of(value)
     if got == typ:
         return value.copy() if isinstance(value, Record) else value
-    if typ == "real" and got == "integer":
-        return float(value)
-    if typ == "complex" and got in ("integer", "real"):
-        return complex(value)
+    if typ in INT_RANGE:
+        if got in INT_RANGE:
+            return make_int(typ, value, what)
+    elif typ == "real":
+        if got in INT_RANGE or got == "real32":
+            return float(value)
+    elif typ == "real32":
+        if got in INT_RANGE or got == "real":
+            return Real32(round32(float(value)))
+    elif typ == "complex":
+        if got in INT_RANGE or got in ("real", "real32"):
+            return complex(value)
     if typ[-1] == "?":                           # an optional type also takes null
         return NULL if value is NULL else coerce(typ[:-1], value, what)
     if value is NULL:
@@ -274,19 +297,24 @@ def _kind_of(x, name):
 def _huge(x):
     """The largest value of x's type: a 32-bit integer (like Fortran's default) or a double."""
     kind = _kind_of(x, "huge")
-    if kind == "integer": return 2 ** 31 - 1
+    if kind in INT_RANGE: return INT_CLASS[kind](INT_RANGE[kind][1])
     if kind == "real": return sys.float_info.max
+    if kind == "real32": return Real32(REAL32_MAX)
     raise LangError(f"huge() needs an integer or a real, got {kind}")
 
 
 def _epsilon(x):
-    if _kind_of(x, "epsilon") != "real":
+    kind = _kind_of(x, "epsilon")
+    if kind == "real32": return Real32(REAL32_EPSILON)
+    if kind != "real":
         raise LangError("epsilon() needs a real")
     return sys.float_info.epsilon
 
 
 def _tiny(x):
-    if _kind_of(x, "tiny") != "real":
+    kind = _kind_of(x, "tiny")
+    if kind == "real32": return Real32(REAL32_TINY)
+    if kind != "real":
         raise LangError("tiny() needs a real")
     return sys.float_info.min
 
@@ -306,6 +334,21 @@ def _complex_aware(real_fn, complex_fn):
 
 def _real(x):
     return x.real if isinstance(x, complex) else float(x)
+
+
+def _to_int(kind):
+    """int8(x), int16(x), int(x), int64(x): truncate a real, check that the value fits."""
+    def convert(x):
+        if isinstance(x, complex) or isinstance(x, (str, bool)):
+            raise TypeError(f"needs a number, got {type_of(x)}")
+        return make_int(kind, math.trunc(x), f"{kind}()" if kind != "integer" else "int()")
+    return convert
+
+
+def _to_real32(x):
+    if isinstance(x, (complex, str, bool)):
+        raise TypeError(f"needs a number, got {type_of(x)}")
+    return Real32(round32(float(x)))
 
 
 def _cmplx(a, b=None):
@@ -334,7 +377,9 @@ BUILTINS = {
 }
 # Elementwise functions: applied to every element when given an array.
 ELEMENTAL = {
-    "abs": abs, "real": _real, "int": int, "atan": _atan, "atan2": math.atan2,
+    "abs": abs, "real": _real, "int": _to_int("integer"), "atan": _atan,
+    "int8": _to_int("int8"), "int16": _to_int("int16"), "int32": _to_int("integer"), "int64": _to_int("int64"),
+    "real32": _to_real32, "real64": _real, "atan2": math.atan2,
     "hypot": math.hypot, "gamma": math.gamma, "log_gamma": math.lgamma, "erf": math.erf, "erfc": math.erfc,
     "floor": math.floor, "ceiling": math.ceil, "nint": lambda x: int(_round_half_away(x)),
     "aint": lambda x: float(math.trunc(x)), "anint": _round_half_away,
@@ -349,12 +394,20 @@ ELEMENTAL.update({name: _complex_aware(getattr(math, name), getattr(cmath, name)
     "exp", "log", "log10")})
 
 
+# Functions whose result has the width of their arguments.
+KEEPS_KIND = {"sqrt", "abs", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
+              "asinh", "acosh", "atanh", "exp", "log", "log10", "gamma", "log_gamma", "erf", "erfc", "hypot",
+              "sign", "modulo", "dim", "mod", "aint", "anint", "sum", "product", "maxval", "minval",
+              "dot_product", "matmul", "max", "min"}
+
+
 # A variable slot is [type, value, is_array, intent]. `value` is None until
 # assigned (scalars) or allocated (allocatable arrays); `intent` is None for
 # ordinary locals, "const" for constants, else "in" / "out" / "inout".
 # An allocatable array's slot has a fifth entry, its rank.
 TYPE, VALUE, IS_ARRAY, INTENT, RANK = range(5)
-DEFAULTS = {"integer": 0, "real": 0.0, "logical": False, "string": "", "complex": 0j}
+DEFAULTS = {"integer": 0, "real": 0.0, "logical": False, "string": "", "complex": 0j,
+            "int8": Int8(0), "int16": Int16(0), "int64": Int64(0), "real32": Real32(0.0)}
 
 # A reference to something assignable is (slot, subs, name). `subs` is None for
 # the whole variable, else one entry per dimension: an int or an inclusive (lo, hi).
@@ -773,6 +826,7 @@ class Interp:
     def show(self, v):
         if isinstance(v, bool): return "true" if v else "false"
         if isinstance(v, complex): return f"({v.real}, {v.imag})"
+        if type(v) is Real32: return shortest32(v)
         if isinstance(v, Record):
             missing = v.first_unassigned()
             if missing:
@@ -939,17 +993,39 @@ class Interp:
                 raise LangError(f"'{e.op}' cannot be used with null; check with present() or use ??")
             if isinstance(v, Record):
                 raise LangError(f"records cannot be used with '{e.op}'; use their fields")
-            f = (lambda x: not self.truth(x)) if e.op == "not" else (lambda x: -x) if e.op == "-" else (lambda x: x)
+            f = (lambda x: not self.truth(x)) if e.op == "not" else self.negate if e.op == "-" else (lambda x: x)
             return Array(v.shape, [f(x) for x in v.data]) if isinstance(v, Array) else f(v)
         if k is Binary:
             if e.op == "??":                          # the right side is only evaluated when needed
                 left = self.eval(e.left, env)
                 return self.eval(e.right, env) if left is NULL else left
-            return self.binary(e.op, self.eval(e.left, env), self.eval(e.right, env))
+            left, right = self.eval(e.left, env), self.eval(e.right, env)
+            if type(left) is not type(right):
+                left, right = self.adapt_literals(e, left, right)
+            return self.binary(e.op, left, right)
         if k is Null: return NULL
         if k is Apply: return self.apply(e, env)
         if k is SelectExpr: return self.select_expr(e, env)
         raise LangError(f"cannot evaluate {k.__name__}")
+
+    def adapt_literals(self, e, left, right):
+        """A real literal next to a real32 value is a real32 (as in Fortran, where `x * 2.0` is single
+        precision when x is), instead of promoting the whole expression to a double."""
+        if type(right) is float and _is_literal(e.right) and _is_real32(left):
+            right = Real32(round32(right))
+        elif type(left) is float and _is_literal(e.left) and _is_real32(right):
+            left = Real32(round32(left))
+        return left, right
+
+    def negate(self, x):
+        t = type(x)
+        if t is float or t is complex:
+            return -x
+        if t is bool:
+            raise LangError("'-' needs a number, got logical")
+        if t is str:
+            raise LangError("'-' needs a number, got string")
+        return tag(TYPE_NAMES[t], -x, f"-{x}")
 
     def field_value(self, e, env):
         ref = self.resolve_field(e, env, e.line, temp_ok=True)
@@ -977,8 +1053,10 @@ class Interp:
         against the subject's type, and must not overlap."""
         v = self.eval(subject, env)
         typ = type_of(v)
-        if typ not in ("integer", "string", "logical"):
+        if typ not in INT_RANGE and typ not in ("string", "logical"):
             raise LangError(f"line {line}: select case needs an integer, string or logical value, got {typ}")
+        if typ in INT_RANGE:
+            typ = "integer"                           # any integer width matches the integer case values
         entries, default = [], None                   # entries: (lo, hi, is_point, group)
         for n, values in enumerate(groups):
             if values is None:
@@ -989,7 +1067,7 @@ class Interp:
                 lo = self.case_value(item if point else item.lo, env, line) if point or item.lo is not None else None
                 hi = lo if point else self.case_value(item.hi, env, line) if item.hi is not None else None
                 for x in (lo, hi):
-                    if x is not None and type_of(x) != typ:
+                    if x is not None and typ != ("integer" if type_of(x) in INT_RANGE else type_of(x)):
                         raise LangError(f"line {line}: case value {show_value(x)} is {type_of(x)}, "
                                         f"but the select value is {typ}")
                 if not point and typ == "logical":
@@ -1022,6 +1100,23 @@ class Interp:
         return shapes.pop()
 
     def binary(self, op, a, b):
+        ta = type(a)
+        if ta is type(b):                              # the common case: two plain integers or two doubles
+            if ta is int:
+                f = FAST_INT.get(op)
+                if f is not None:
+                    r = f(a, b)
+                    if type(r) is int and not LO32 <= r <= HI32:
+                        raise LangError(f"integer overflow: {a} {op} {b} does not fit in 32 bits "
+                                        f"(use int64, or {op}% to wrap)")
+                    return r
+            elif ta is float:
+                f = FAST_FLOAT.get(op)
+                if f is not None:
+                    try:
+                        return f(a, b)
+                    except ZeroDivisionError:
+                        raise LangError("division by zero")
         if a is NULL or b is NULL:
             if op in ("==", "/="):
                 return (a is b) == (op == "==")
@@ -1047,20 +1142,19 @@ class Interp:
                 raise LangError(f"cannot compare {type_of(a)} with {type_of(b)} using '{op}'")
         if isinstance(a, str) and op == "+" and isinstance(b, str):
             return a + b
-        for v in (a, b):
-            if type_of(v) not in ("integer", "real", "complex"):
-                raise LangError(f"operator {op!r} needs numbers, got {type_of(v)}")
-        if op == "+": return a + b
-        if op == "-": return a - b
-        if op == "*": return a * b
-        if op == "**": return a ** b
-        if op == "/":
-            if b == 0 and isinstance(b, int):
-                raise LangError("integer division by zero")
-            if isinstance(a, int) and isinstance(b, int):
-                return int(a / b)  # truncates toward zero, like Fortran
-            return a / b
-        raise LangError(f"unknown operator {op}")
+        ka, kb = type_of(a), type_of(b)
+        for k in (ka, kb):
+            if k not in NUMERIC:
+                raise LangError(f"operator {op!r} needs numbers, got {k}")
+        kind = result_kind(ka, kb)
+        if op[-1] == "%" and len(op) == 2:                 # +% -% *% wrap around instead of failing
+            if kind not in INT_RANGE:
+                raise LangError(f"operator {op!r} works on integers, got {ka} and {kb}")
+            return wrap(kind, raw_arith(op[0], a, b))
+        r = raw_arith(op, a, b)
+        if kind in INT_RANGE and not isinstance(r, int):    # an integer power of an integer stays an integer
+            raise LangError(f"operator {op!r} on {ka} and {kb} did not give an integer")
+        return tag(kind, r, f"{a} {op} {b}")
 
     def apply(self, e, env):
         if e.name == "present" and e.name not in env and "present" not in self.scope.funcs:
@@ -1095,16 +1189,39 @@ class Interp:
             if name in ELEMENTAL:
                 f = ELEMENTAL[name]
                 if not any(isinstance(a, Array) for a in args):
-                    return f(*args)
-                shape = self.common_shape(args)
-                n = math.prod(shape)
-                cols = [a.data if isinstance(a, Array) else [a] * n for a in args]
-                return Array(shape, [f(*xs) for xs in zip(*cols)])
-            return BUILTINS[name](*args)
+                    result = f(*args)
+                else:
+                    shape = self.common_shape(args)
+                    n = math.prod(shape)
+                    cols = [a.data if isinstance(a, Array) else [a] * n for a in args]
+                    result = Array(shape, [f(*xs) for xs in zip(*cols)])
+            else:
+                result = BUILTINS[name](*args)
+            return self.keep_kind(name, result, args) if name in KEEPS_KIND else result
         except LangError:
             raise
         except (ValueError, TypeError, ZeroDivisionError, OverflowError) as err:
             raise LangError(f"line {line}: {name}(): {err}")
+
+    def keep_kind(self, name, result, args):
+        """A function of fixed-width numbers gives a result of the same width (`sqrt` of a real32 is a
+        real32), and a plain integer result must still fit in 32 bits."""
+        ints, single = widest_tag(args)
+
+        def fix(x):
+            t = type(x)
+            if t is int:
+                if ints is not None:
+                    return make_int(ints, x, f"{name}()")
+                if not LO32 <= x <= HI32:
+                    raise LangError(f"{name}(): integer overflow ({x} does not fit in 32 bits)")
+            elif t is float and single:
+                return Real32(round32(x))
+            return x
+
+        if isinstance(result, Array):
+            return Array(result.shape, [fix(x) for x in result.data])
+        return fix(result)
 
     # -- procedures
     def bind(self, f, values, line):
