@@ -79,7 +79,7 @@ class TypeTests(unittest.TestCase):
                "  end type t\n  type(t) :: x\n  print *, x%a\nend program\n")
         text, findings = conv(src)
         self.assertIn("default of component 'b' dropped", messages(todos(findings)))
-        self.assertIn("real :: b\n", text)
+        self.assertIn("real32 :: b\n", text)
         self.assertEqual(run_bor(text), ["1.0"])
 
     def test_keyword_constructors_and_trailing_defaults(self):

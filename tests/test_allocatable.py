@@ -300,7 +300,7 @@ class ConvertTests(unittest.TestCase):
         text, findings = conv("", "  real, allocatable :: a(:)\n  integer, allocatable, dimension(:,:) :: m\n"
                                   "  real, allocatable :: x(:), y(:, :, :)")
         self.assertEqual(todos(findings), [])
-        self.assertIn("allocatable real :: a(:)", text)
+        self.assertIn("allocatable real32 :: a(:)", text)
         self.assertIn("allocatable integer :: m(:, :)", text)
         self.assertIn("x(:)", text)
         self.assertIn("y(:, :, :)", text)
