@@ -210,6 +210,7 @@ SPECIFIC_NAMES = {
     "dsinh": "sinh", "dcosh": "cosh", "dtanh": "tanh", "dmod": "mod", "amod": "mod", "dsign": "sign",
     "isign": "sign", "ddim": "dim", "idim": "dim", "dmax1": "max", "amax1": "max", "max0": "max",
     "dmin1": "min", "amin1": "min", "min0": "min",
+    "char": "achar", "ichar": "iachar", "command_argument_count": "argument_count",
 }
 
 
@@ -1431,7 +1432,25 @@ class FParser:
                         break
             self.expect_op(")")
         self.end_of_statement()
-        return [Call(name, args, it.line)]
+        made = self.intrinsic_call(name, args, it.line, scope)
+        return made if made is not None else [Call(name, args, it.line)]
+
+    def intrinsic_call(self, name, args, line, scope):
+        """Intrinsic subroutines become something else in Boreas: assignments from a function, or nothing."""
+        if name == "random_number" and len(args) == 1 and isinstance(args[0], Var):
+            info = scope.decls.get(args[0].name)
+            if info is not None and info.dims is None:
+                return [Assign(args[0], Apply("random", [], line), line)]
+            raise Unsupported("random_number() of an array")
+        if name in ("random_init", "random_seed"):
+            self.note(line, f"{name}() dropped: Boreas seeds its random numbers itself, so random output differs",
+                      once=True)
+            return []
+        if name == "get_command_argument" and len(args) == 2:
+            return [Assign(args[1], Apply("argument", [args[0]], line), line)]
+        if name == "get_command_argument":
+            raise Unsupported("get_command_argument() with a length or status")
+        return None
 
     def allocation_objects(self, scope, what):
         """The `(a(n), b(m, k), stat=...)` part of allocate / deallocate: [(name, extents)]."""

@@ -15,8 +15,8 @@ USAGE = """usage:
                                      also run the original with gfortran and compare output"""
 
 
-def run_source(src, out=print):
-    Interp(parse(src), out).run()
+def run_source(src, out=print, args=()):
+    Interp(parse(src), out, args).run()
 
 
 def check_source(src):
@@ -118,8 +118,8 @@ def main():
             serve()
         elif args[0] == "convert":
             convert_command(args[1:])
-        elif len(args) == 1:
-            run_source(open(args[0]).read())
+        elif args[0] != "" and not args[0].startswith("-"):      # boreas FILE [ARGUMENT ...]
+            run_source(open(args[0]).read(), args=args)
         else:
             sys.exit(USAGE)
     except LangError as e:

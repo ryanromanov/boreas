@@ -1,6 +1,7 @@
 import math
 import cmath
 import operator
+import random
 import sys
 from itertools import product
 from .lexer import LangError
@@ -367,7 +368,35 @@ def _need_complex(name, f):
     return apply
 
 
+def _need_string(name, x):
+    if not isinstance(x, str):
+        raise TypeError(f"needs a string, got {type_of(x)}")
+    return x
+
+
+def _len(s):
+    return len(_need_string("len", s))
+
+
+def _achar(i):
+    if type_of(i) not in INT_RANGE or not 0 <= i <= 0x10FFFF:
+        raise TypeError(f"needs a character code from 0 to 1114111, got {show_value(i)}")
+    return chr(int(i))
+
+
+def _iachar(c):
+    if not isinstance(c, str) or len(c) != 1:
+        raise TypeError(f"needs a one-character string, got {show_value(c)}")
+    return ord(c)
+
+
+_random = random.Random()
+
+
 BUILTINS = {
+    "len": _len, "achar": _achar, "iachar": _iachar,
+    "random": lambda: _random.random(),
+    "argument": None, "argument_count": None,      # need the interpreter: see call_builtin
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
     "transpose": _transpose, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
     "sum": _reduce("sum", sum), "maxval": _reduce("maxval", max), "minval": _reduce("minval", min),
@@ -452,8 +481,9 @@ class Scope:
 
 
 class Interp:
-    def __init__(self, unit, out=print):
+    def __init__(self, unit, out=print, args=()):
         self.unit, self.out = unit, out
+        self.args = list(args)            # the program's command-line arguments, for argument(n)
         self.scopes = {}                  # id(procedure) -> Scope
         self.exports = {}                 # module name -> {name: Function | const slot}
         self.loading = []
@@ -889,8 +919,26 @@ class Interp:
         if isinstance(t, Var):
             return Ref(slot, None, t.name)
         if not slot[IS_ARRAY]:
+            if slot[TYPE] == "string":
+                return Ref(slot, self.substring_bounds(slot, t.args, env, line, t.name), t.name)
             raise LangError(f"line {line}: '{t.name}' is not an array")
         return Ref(slot, self.subscripts(slot[VALUE], t.args, env, line, t.name), t.name)
+
+    def substring_bounds(self, slot, args, env, line, name):
+        """The (lo, hi) of s(lo:hi), 1-based and inclusive, either end optional, as a one-entry subscript list."""
+        text = slot[VALUE]
+        if text is None:
+            raise LangError(f"line {line}: '{name}' is used before it is assigned")
+        if len(args) != 1 or not isinstance(args[0], Slice):
+            raise LangError(f"line {line}: '{name}' is a string; take part of it with {name}(lo:hi)")
+        lo = 1 if args[0].lo is None else self.eval(args[0].lo, env)
+        hi = len(text) if args[0].hi is None else self.eval(args[0].hi, env)
+        if type_of(lo) not in INT_RANGE or type_of(hi) not in INT_RANGE:
+            raise LangError(f"line {line}: substring bounds of '{name}' must be integers")
+        if lo < 1 or hi > len(text) or lo > hi + 1:
+            raise LangError(f"line {line}: substring {name}({lo}:{hi}) is outside the string "
+                            f"(length {len(text)})")
+        return [(int(lo), int(hi))]
 
     def is_reference(self, e, env):
         """Does this expression name storage (a variable, array element or field)?"""
@@ -934,6 +982,8 @@ class Interp:
         slot, subs, _ = ref
         if subs is None:
             return slot[VALUE]
+        if not slot[IS_ARRAY]:                  # a substring
+            return slot[VALUE][subs[0][0] - 1:subs[0][1]]
         positions, shape = slot[VALUE].section(subs)
         data = slot[VALUE].data
         if not shape:                       # every subscript was a scalar
@@ -949,6 +999,13 @@ class Interp:
             raise LangError(f"line {line}: '{name}' is {part}a constant and cannot be assigned")
         where = f"line {line}"
         if not slot[IS_ARRAY]:
+            if subs is not None:                # a substring keeps the string's length
+                lo, hi = subs[0]
+                if not isinstance(v, str) or len(v) != hi - lo + 1:
+                    raise LangError(f"{where}: {name}({lo}:{hi}) holds {hi - lo + 1} characters; "
+                                    f"got {show_value(v) if isinstance(v, str) else type_of(v)}")
+                slot[VALUE] = slot[VALUE][:lo - 1] + v + slot[VALUE][hi:]
+                return
             slot[VALUE] = coerce(slot[TYPE], v, where)
             return
         arr = slot[VALUE]
@@ -1166,6 +1223,8 @@ class Interp:
                 raise LangError(f"line {e.line}: allocated() needs the name of an allocatable array")
             return self.allocatable(e.args[0].name, env, e.line)[VALUE] is not None
         if e.name in env:  # indexing or slicing
+            if not env[e.name][IS_ARRAY] and env[e.name][TYPE] == "string":
+                return self.read(self.resolve(e, env, e.line))
             if not env[e.name][IS_ARRAY]:
                 raise LangError(f"line {e.line}: '{e.name}' is not an array")
             return self.read(self.resolve(e, env, e.line))
@@ -1186,6 +1245,12 @@ class Interp:
 
     def call_builtin(self, name, args, line):
         try:
+            if name == "argument":              # argument(0) is the program name, "" past the last one
+                if len(args) != 1 or type_of(args[0]) not in INT_RANGE:
+                    raise TypeError("needs one integer")
+                return self.args[args[0]] if 0 <= args[0] < len(self.args) else ""
+            if name == "argument_count":
+                return len(self.args) - 1
             if name in ELEMENTAL:
                 f = ELEMENTAL[name]
                 if not any(isinstance(a, Array) for a in args):
