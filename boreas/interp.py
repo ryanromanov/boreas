@@ -7,6 +7,7 @@ from itertools import product
 from .lexer import LangError
 from .parser import *
 from .kinds import *
+from .kinds import _F32
 
 
 class _Return(Exception):
@@ -35,6 +36,14 @@ FAST_INT = {"+": operator.add, "-": operator.sub, "*": operator.mul, "/": int_di
 FAST_FLOAT = {"+": operator.add, "-": operator.sub, "*": operator.mul, "/": operator.truediv,
               "==": operator.eq, "/=": operator.ne, "<": operator.lt, "<=": operator.le,
               ">": operator.gt, ">=": operator.ge}
+
+
+SINGLE_LITERALS = {}                    # literal value -> the real32 it becomes next to a real32 (a few per program)
+
+
+def single_literal(x):
+    r = SINGLE_LITERALS[x] = Real32(round32(x))
+    return r
 
 
 def _is_real32(v):
@@ -1069,9 +1078,9 @@ class Interp:
         """A real literal next to a real32 value is a real32 (as in Fortran, where `x * 2.0` is single
         precision when x is), instead of promoting the whole expression to a double."""
         if type(right) is float and _is_literal(e.right) and _is_real32(left):
-            right = Real32(round32(right))
+            right = SINGLE_LITERALS.get(right) or single_literal(right)
         elif type(left) is float and _is_literal(e.left) and _is_real32(right):
-            left = Real32(round32(left))
+            left = SINGLE_LITERALS.get(left) or single_literal(left)
         return left, right
 
     def negate(self, x):
@@ -1174,6 +1183,19 @@ class Interp:
                         return f(a, b)
                     except ZeroDivisionError:
                         raise LangError("division by zero")
+            elif ta is Real32:                         # two single-precision values: round each result
+                f = FAST_FLOAT.get(op)
+                if f is not None:
+                    try:
+                        r = f(a, b)
+                    except ZeroDivisionError:
+                        raise LangError("division by zero")
+                    if type(r) is not float:
+                        return r                       # a comparison
+                    try:
+                        return Real32(_F32.unpack(_F32.pack(r))[0])
+                    except OverflowError:
+                        pass                           # too large: the general path reports it
         if a is NULL or b is NULL:
             if op in ("==", "/="):
                 return (a is b) == (op == "==")
