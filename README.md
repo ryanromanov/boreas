@@ -70,6 +70,17 @@ Integers and reals come in fixed widths, named by their size:
   the range), `real32(x)`, `real64(x)` / `real(x)`. `huge`, `epsilon` and `tiny` work for every kind.
 - Single precision is slower than double: each result is rounded and tagged with its width.
 
+## Strings and the system
+
+A `string` is text of any length. Join with `+`. Take part of one with `s(lo:hi)`, counting from 1 and
+including both ends (either end may be left off). Assign to part of a string with `s(lo:hi) = text`; the
+text must have exactly that many characters. `len(s)` is the length, `achar(n)` the character with code
+`n` and `iachar(c)` the code of a one-character string.
+
+`random()` gives a real in `[0, 1)`. `argument_count()` is the number of command-line arguments after the
+program file and `argument(n)` the n-th one (`""` past the end; `argument(0)` is the program file):
+`boreas prog.bor --version`.
+
 ## Constants
 
     const real :: pi = 3.14159
@@ -398,6 +409,9 @@ report on stderr. Translations that change meaning are flagged, never silent:
   the generic functions.
 - Old type-specific intrinsic names (`dsqrt`, `dabs`, `dsin`, `datan2`, `amax1`, `alog10`, `idint`, ...)
   become the generic function. Intrinsics Boreas lacks (Bessel functions, complex numbers, ...) stay TODOs.
+- `random_number(x)` becomes `x = random()` (scalars; an array is a TODO), `get_command_argument(n, s)` becomes
+  `s = argument(n)`, `char`/`ichar` become `achar`/`iachar`, and `random_init`/`random_seed` are dropped with a note
+  (the random numbers differ from the original's).
 - `optional` arguments become `T?` parameters and `present(x)` is kept, so a call that leaves off
   trailing optional arguments works unchanged. An optional argument the procedure modifies
   (`intent(out)`/`inout`) or an optional array becomes a TODO and a required argument.
