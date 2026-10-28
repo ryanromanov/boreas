@@ -296,7 +296,7 @@ class FParser:
         self.i = 0
         self.findings = []          # (line, "todo" | "note", message)
         self.kind_names = dict(ISO_KINDS)   # names that stand for a kind number: dp, wp, real64, ...
-        self.double_literals = set()        # ids of the Num nodes written as double precision (1.0d0, 1.0_dp)
+        self.double_literals = {}           # id -> Num node written as double precision (1.0d0, 1.0_dp); holding the node stops its id being reused
         self.raw = []
         self.renames = {}
         self.line = 0
@@ -491,7 +491,7 @@ class FParser:
                 if n in (1, 2, 8):                              # 5_int64, 5_8, 5_i2
                     return Apply(INT_KINDS[n], [lit], self.line)
             elif self.is_double_literal(t.text):
-                self.double_literals.add(id(lit))
+                self.double_literals[id(lit)] = lit
             elif round32(t.value) != t.value:                   # a single-precision 0.1 is not 0.1
                 return Apply("real32", [lit], self.line)
             return lit
