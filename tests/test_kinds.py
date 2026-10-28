@@ -188,6 +188,9 @@ class Real32Tests(unittest.TestCase):
     def test_overflow_to_real32_is_an_error(self):
         fails(self, "  real32 :: x\n  x = 1.0e39", "too large for real32")
 
+    def test_single_arithmetic_that_overflows_is_an_error(self):
+        fails(self, "  real32 :: x = huge(1.0e0)\n  real32 :: y = 10.0\n  print x * y", "too large for real32")
+
     def test_default_is_zero(self):
         self.assertEqual(run("  real32 :: x\n  print x"), ["0.0"])
 
