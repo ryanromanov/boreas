@@ -188,9 +188,10 @@ class TranslationTests(unittest.TestCase):
         text, _ = conv("""print *, 'it''s ! fine'""", "")
         self.assertIn('print "it\'s ! fine"', text)
 
-    def test_string_with_double_quote_is_a_todo(self):
+    def test_string_with_double_quote_uses_single_quotes(self):
         text, findings = conv("""print *, 'say "hi"'""", "")
-        self.assertEqual(len(todos(findings)), 1)
+        self.assertEqual(todos(findings), [])
+        self.assertIn("print 'say \"hi\"'", text)
 
     def test_precedence_follows_boreas_not_fortran(self):
         text, _ = conv("real :: a\nreal :: b\nreal :: c\n  a = 1.0; b = 2.0\n  c = -a ** 2 + (a - (b - a)) * 3.0 - a / (b * a)", "")
@@ -234,16 +235,19 @@ class TranslationTests(unittest.TestCase):
         self.assertGreaterEqual(len(todos(findings)), 1)
         parse(text)                                            # still valid Boreas
 
-    def test_trailing_stop_is_dropped_but_others_are_counted(self):
+    def test_trailing_plain_stop_is_dropped_others_are_kept(self):
         text, findings = conv("print *, 1\n  stop", "")
         self.assertEqual(todos(findings), [])
         self.assertNotIn("stop", text)
         text, findings = conv("integer :: i\n  i = 1\n  if (i == 1) stop\n  print *, 2", "")
-        self.assertIn("`stop`", text)
-        self.assertEqual(len(todos(findings)), 1)
-        self.assertIn("1 construct(s)", text)                      # the header count includes it
+        self.assertEqual(todos(findings), [])
+        self.assertIn("stop", text)
+        text, _ = conv("print *, 1\n  stop 3", "")
+        self.assertIn("stop 3", text)                            # an exit code is kept
+        text, _ = conv("print *, 1\n  error stop", "")
+        self.assertIn("stop 1", text)
         src = "subroutine quit()\n  stop 1\nend subroutine\nprogram p\n  call quit()\nend program\n"
-        self.assertEqual(len(todos(convert(src)[1])), 1)           # a stop in a procedure is never trailing
+        self.assertEqual(todos(convert(src)[1]), [])
 
     def test_host_variable_used_by_an_internal_procedure_is_flagged(self):
         src = ("program host\n  implicit none\n  integer :: total\n  total = 0\n  call add(5)\n  print *, total\n"

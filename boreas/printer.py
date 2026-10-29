@@ -34,9 +34,9 @@ def _expr(e):
             return repr(e.value)
         return str(e.value)
     if k is Str:
-        if '"' in e.value or "\n" in e.value:
-            raise LangError("a string with a double quote or newline cannot be written")
-        return f'"{e.value}"'
+        if "\n" in e.value or ('"' in e.value and "'" in e.value):
+            raise LangError("a string with a newline, or with both kinds of quote, cannot be written")
+        return f"'{e.value}'" if '"' in e.value else f'"{e.value}"'
     if k is Bool:
         return "true" if e.value else "false"
     if k is Var:
@@ -144,7 +144,12 @@ def stmt(s, depth):
     if k is Print:
         if not s.args:
             raise LangError("print needs at least one value")
-        return [pad + "print " + ", ".join(expr(a) for a in s.args)]
+        return [pad + ("print " if s.newline else "write ") + ", ".join(expr(a) for a in s.args)]
+    if k is Read:
+        tail = f" status {expr(s.status)}" if s.status is not None else ""
+        return [f"{pad}{'update ' if s.update else ''}read " + ", ".join(expr(t) for t in s.targets) + tail]
+    if k is Stop:
+        return [pad + "stop" + (" " + expr(s.code) if s.code is not None else "")]
     if k is Call:
         return [f"{pad}call {s.name}(" + ", ".join(expr(a) for a in s.args) + ")"]
     if k is Return:

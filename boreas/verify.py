@@ -86,10 +86,10 @@ class VerifyError(Exception):
     """Something other than a mismatch went wrong (status 2)."""
 
 
-def run_limited(cmd, timeout, **kw):
-    """Run with empty stdin and a timeout; returns CompletedProcess or None on timeout."""
+def run_limited(cmd, timeout, stdin_text="", **kw):
+    """Run with the given stdin (empty by default) and a timeout; returns CompletedProcess or None on timeout."""
     try:
-        return subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        return subprocess.run(cmd, input=stdin_text, capture_output=True, text=True,
                               errors="replace", timeout=timeout, **kw)
     except subprocess.TimeoutExpired:
         return None
@@ -104,7 +104,7 @@ def compile_original(gfortran, path, exe):
     raise VerifyError("could not compile the original with gfortran:\n" + r.stderr.rstrip())
 
 
-def verify(path, boreas_text, had_todos, timeout=DEFAULT_TIMEOUT, report=None):
+def verify(path, boreas_text, had_todos, timeout=DEFAULT_TIMEOUT, report=None, stdin_text=""):
     """Returns the exit status: 0 verified, 1 mismatch or converted program failed, 2 could not verify."""
     def say(msg):
         print(msg, file=report or sys.stderr)
@@ -120,27 +120,27 @@ def verify(path, boreas_text, had_todos, timeout=DEFAULT_TIMEOUT, report=None):
         except VerifyError as e:
             say(f"error: {e}")
             return 2
-        orig = run_limited([exe], timeout)
+        orig = run_limited([exe], timeout, stdin_text)
         if orig is None:
             say(f"error: the original program did not finish within {timeout:g} s "
-                f"(it may be waiting for input; verify runs it with empty stdin; see --timeout)")
+                f"(it may be waiting for input; verify gives it empty stdin unless you pass --input FILE; see --timeout)")
             return 2
         if orig.returncode != 0:
             err = orig.stderr.strip().splitlines()
             say(f"note: the original exited with status {orig.returncode}"
                 + (f": {err[-1]}" if err else ""))
-            if "end of file" in orig.stderr.lower():
-                say("note: it tried to read input, but verify gives programs empty stdin")
+            if "end of file" in orig.stderr.lower() and not stdin_text:
+                say("note: it tried to read input, but verify gives programs empty stdin (see --input FILE)")
 
         bor = os.path.join(tmp, "converted.bor")
         with open(bor, "w") as f:
             f.write(boreas_text)
         env = dict(os.environ, PYTHONPATH=PACKAGE_PARENT + os.pathsep + os.environ.get("PYTHONPATH", ""))
-        conv = run_limited([sys.executable, "-m", "boreas", bor], timeout, env=env, cwd=tmp)
+        conv = run_limited([sys.executable, "-m", "boreas", bor], timeout, stdin_text, env=env, cwd=tmp)
         if conv is None:
             say(f"error: the converted program did not finish within {timeout:g} s")
             return 1
-        if conv.returncode != 0:
+        if conv.returncode != 0 and conv.returncode != orig.returncode:    # the same `stop 3` is fine
             say("error: the converted program failed: "
                 + (conv.stderr.strip() or f"exit status {conv.returncode}"))
             if had_todos:

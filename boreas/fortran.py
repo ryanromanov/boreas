@@ -18,7 +18,7 @@ from .printer import to_source
 # so a Fortran variable with one of these names is renamed.
 RESERVED = {"const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
-            "else", "do", "while", "print", "call", "return", "exit", "cycle",
+            "else", "do", "while", "print", "write", "read", "stop", "call", "return", "exit", "cycle",
             "select", "case", "default", "fallthrough", "break",
             "allocatable", "allocate", "deallocate", "record"}
 
@@ -271,11 +271,6 @@ class TypeInfo:
         return self.scope if self.scope.kind == "module" else None
 
 
-@dataclass
-class StopMarker(Comment):
-    line: int = 0
-
-
 def iter_nodes(obj):
     """Every dataclass node reachable from `obj` (statements, expressions, lists, tuples)."""
     if isinstance(obj, (list, tuple)):
@@ -497,8 +492,8 @@ class FParser:
                 return Apply("real32", [lit], self.line)
             return lit
         if t.kind == "str":
-            if '"' in t.value:
-                raise Unsupported("string containing a double quote")
+            if '"' in t.value and "'" in t.value:
+                raise Unsupported("string containing both kinds of quote")
             return Str(t.value)
         if t.kind == "dop" and t.text in (".true.", ".false."):
             return Bool(t.text == ".true.")
@@ -918,7 +913,7 @@ class FParser:
             self.k += 1
             return handler(it, scope)
         if name in ("go", "goto", "common", "equivalence", "data", "namelist", "include",
-                    "nullify", "read", "open", "close", "inquire", "rewind",
+                    "nullify", "open", "close", "inquire", "rewind",
                     "backspace", "format", "entry", "pause", "dimension", "parameter", "pointer",
                     "target", "intrinsic", "import", "enum", "sync", "lock", "unlock"):
             raise Unsupported(f"'{name}' is not supported")
@@ -1414,10 +1409,71 @@ class FParser:
         return [Return(None)]
 
     def st_stop(self, it, scope):
-        return [StopMarker("TODO(convert): `stop` exits the program; it was not translated", it.line)]
+        """`stop`, `stop 3`; a message (`stop 'bye'`) goes to stderr in Fortran, so it is dropped with a note."""
+        code = None
+        if self.peek() is not None:
+            t = self.peek()
+            if t.kind == "str":
+                self.k += 1
+                self.note(it.line, f"stop message {t.text} dropped (Fortran prints it on stderr)")
+            else:
+                code = self.expr()
+        self.end_of_statement()
+        return [Stop(code, it.line)]
 
     def st_error(self, it, scope):
-        return self.st_stop(it, scope)
+        if self.peek() is None or self.peek().text != "stop":
+            raise Unsupported("unrecognised statement")
+        self.k += 1
+        stop = self.st_stop(it, scope)[0]
+        if stop.code is None:
+            stop.code = Num(1)                       # `error stop` exits with a non-zero code
+        return [stop]
+
+    def st_read(self, it, scope):
+        """List-directed input from the keyboard: `read(*,*) a, b`, `read(*,*,iostat=ios) a`, `read *, a`."""
+        status = None
+        if self.accept_op("("):
+            parts, depth, cur = [], 1, []
+            while depth:
+                t = self.next()
+                if t.kind == "op" and t.text == "(":
+                    depth += 1
+                elif t.kind == "op" and t.text == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                if depth == 1 and t.kind == "op" and t.text == ",":
+                    parts.append(cur)
+                    cur = []
+                else:
+                    cur.append(t)
+            parts.append(cur)
+            unit = parts[0]
+            if not (len(unit) == 1 and (unit[0].text == "*" or unit[0].value == 5)):
+                raise Unsupported("read from a file unit is not supported")
+            if len(parts) < 2 or not (len(parts[1]) == 1 and parts[1][0].text == "*"):
+                raise Unsupported("formatted read")
+            for opt in parts[2:]:
+                if len(opt) == 3 and opt[0].text == "iostat" and opt[1].text == "=" and opt[2].kind == "name":
+                    status = Var(self.rename(opt[2].text))
+                else:
+                    raise Unsupported("unsupported read options")
+        elif self.at_op("*"):
+            self.k += 1
+            if self.peek() is not None:
+                self.expect_op(",")
+        else:
+            raise Unsupported("formatted read")
+        targets = []
+        if self.peek() is not None:
+            targets.append(self.expr())
+            while self.accept_op(","):
+                targets.append(self.expr())
+        self.end_of_statement()
+        if not targets or not all(isinstance(t, (Var, Apply, FieldAccess)) for t in targets):
+            raise Unsupported("read of something other than variables")
+        return [Read(targets, status, it.line)]
 
     def st_call(self, it, scope):
         name = self.rename(self.expect_name())
@@ -1538,7 +1594,7 @@ class FParser:
         self.end_of_statement()
         stops = {("end", "select"), ("case",)}
         lead = self.parse_body(scope, stops)           # only comments may precede the first case
-        if any(not isinstance(n, Comment) or isinstance(n, StopMarker) for n in lead):
+        if any(not isinstance(n, Comment) for n in lead):
             raise Unsupported("statements before the first 'case'")
         cases, line = [], self.line
         while True:
@@ -1871,13 +1927,9 @@ class FParser:
         self.check_calls(unit)
         for owner in self.all_functions(unit) + ([program] if program else []):
             self.note_auto_allocation(owner.body)
-        if program is not None:
-            while program.body and isinstance(program.body[-1], StopMarker):
+        if program is not None:                          # a final plain `stop` changes nothing
+            while program.body and isinstance(program.body[-1], Stop) and program.body[-1].code is None:
                 program.body.pop()
-        for owner in self.all_functions(unit) + ([program] if program else []):
-            for n in iter_nodes(owner.body):
-                if isinstance(n, StopMarker):
-                    self.todo(n.line, "'stop' ends the program early; it was not translated, so execution continues")
         return unit
 
     def all_functions(self, unit):
@@ -2140,6 +2192,10 @@ class FParser:
             for n in iter_nodes(f.body):
                 if isinstance(n, Assign) and modes.get(root_name(n.target)) in ("out", "inout"):
                     n.update = True
+                elif isinstance(n, Read) and any(
+                        modes.get(root_name(t)) in ("out", "inout")
+                        for t in n.targets + ([n.status] if n.status is not None else [])):
+                    n.update = True
                 elif isinstance(n, Do) and n.var in modes:
                     msg = f"loop variable '{n.var}' is a dummy argument; Boreas loop variables must be locals"
                     f.comments.append("TODO(convert): " + msg)
@@ -2237,6 +2293,13 @@ class FParser:
                     else:
                         read_expr(s.target)
                     read_expr(s.value)
+                elif isinstance(s, Read):
+                    for t in s.targets + ([s.status] if s.status is not None else []):
+                        if ref_name(t) == name:
+                            counts[1] += 1
+                            counts[2] += top and not isinstance(t, FieldAccess)
+                        else:
+                            read_expr(t)
                 elif isinstance(s, If):
                     for cond, b in s.branches:
                         read_expr(cond)

@@ -2,6 +2,7 @@ import math
 import cmath
 import operator
 import random
+import re
 import sys
 from itertools import product
 from .lexer import LangError
@@ -10,6 +11,8 @@ from .kinds import *
 from .kinds import _F32
 
 
+class _Stop(Exception):
+    def __init__(self, code): self.code = code
 class _Return(Exception):
     def __init__(self, value): self.value = value
 class _Exit(Exception):
@@ -405,7 +408,7 @@ _random = random.Random()
 BUILTINS = {
     "len": _len, "achar": _achar, "iachar": _iachar,
     "random": lambda: _random.random(),
-    "argument": None, "argument_count": None,      # need the interpreter: see call_builtin
+    "argument": None, "argument_count": None, "read_line": None,   # need the interpreter: see call_builtin
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
     "transpose": _transpose, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
     "sum": _reduce("sum", sum), "maxval": _reduce("maxval", max), "minval": _reduce("minval", min),
@@ -462,7 +465,8 @@ def overlaps(a, b):
     return all(max(_span(x)[0], _span(y)[0]) <= min(_span(x)[1], _span(y)[1]) for x, y in zip(a, b))
 
 
-PURE_BUILTINS = (set(BUILTINS) | set(ELEMENTAL)) - {"allocated", "present"}
+PURE_BUILTINS = (set(BUILTINS) | set(ELEMENTAL)) - {"allocated", "present", "random", "read_line", "argument",
+                                                    "argument_count"}
 
 
 def iter_apply(e):
@@ -489,9 +493,64 @@ class Scope:
         self.records = {} if records is None else records
 
 
+class LineInput:
+    """The program's standard input, one line at a time. `source` is None (the real stdin), a string, or an
+    iterable of lines."""
+    def __init__(self, source=None):
+        if source is None:
+            self.lines = iter(sys.stdin)
+        elif isinstance(source, str):
+            self.lines = iter(source.splitlines())
+        else:
+            self.lines = iter(source)
+
+    def next_line(self):
+        line = next(self.lines, None)
+        return None if line is None else line.rstrip("\r\n")
+
+
+ITEM_RE = re.compile(r"""'[^']*'|"[^"]*"|[^\s,]+""")
+INT_RE = re.compile(r"[+-]?\d+")
+REAL_RE = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eEdD][+-]?\d+)?")
+TRUE_WORDS, FALSE_WORDS = {"t", ".t.", "true", ".true."}, {"f", ".f.", "false", ".false."}
+READ_NAMES = {"integer": "an integer", "int8": "an integer", "int16": "an integer", "int64": "an integer",
+              "real": "a real number", "real32": "a real number", "logical": "true or false",
+              "string": "text"}
+
+
+def read_value(typ, token):
+    """The value a list-directed `read` makes of one input item, or None if it is not a `typ`."""
+    quoted = token[0] in "'\""
+    if typ == "string":
+        return token[1:-1] if quoted else token
+    if quoted:
+        return None
+    if typ in INT_RANGE:
+        if not INT_RE.fullmatch(token):
+            return None
+        try:
+            return make_int(typ, int(token), "read")
+        except LangError:
+            return None
+    if typ in ("real", "real32"):
+        if not REAL_RE.fullmatch(token):
+            return None
+        x = float(token.lower().replace("d", "e"))
+        try:
+            return x if typ == "real" else Real32(round32(x))
+        except LangError:
+            return None
+    if typ == "logical":
+        word = token.lower()
+        return True if word in TRUE_WORDS else False if word in FALSE_WORDS else None
+    return None
+
+
 class Interp:
-    def __init__(self, unit, out=print, args=()):
+    def __init__(self, unit, out=print, args=(), stdin=None):
         self.unit, self.out = unit, out
+        self.input = LineInput(stdin)
+        self.pending = ""                 # text written with `write` that is waiting for its newline
         self.args = list(args)            # the program's command-line arguments, for argument(n)
         self.scopes = {}                  # id(procedure) -> Scope
         self.exports = {}                 # module name -> {name: Function | const slot}
@@ -620,8 +679,31 @@ class Interp:
         return self.exports[name]
 
     def run(self):
+        """Run the program; returns its exit code (0, or the value given to `stop`)."""
         self.scope = self.program_scope
-        self.exec_block(self.unit.program.body, dict(self.scope.consts))
+        try:
+            self.exec_block(self.unit.program.body, dict(self.scope.consts))
+        except _Stop as stop:
+            self.finish_line()
+            return stop.code
+        self.finish_line()
+        return 0
+
+    def emit(self, text, newline):
+        if self.out is print:                 # the real terminal: show prompts at once
+            sys.stdout.write(text + ("\n" if newline else ""))
+            if not newline:
+                sys.stdout.flush()
+        elif newline:
+            self.out(self.pending + text)
+            self.pending = ""
+        else:
+            self.pending += text
+
+    def finish_line(self):
+        if self.pending:
+            self.out(self.pending)
+            self.pending = ""
 
     def exec_block(self, stmts, env):
         for s in stmts:
@@ -689,7 +771,14 @@ class Interp:
                         raise
                     break
         elif k is Print:
-            self.out(" ".join(self.show(self.eval(a, env)) for a in s.args))
+            self.emit(" ".join(self.show(self.eval(a, env)) for a in s.args), s.newline)
+        elif k is Read:
+            self.read_stmt(s, env)
+        elif k is Stop:
+            code = 0 if s.code is None else self.eval(s.code, env)
+            if type_of(code) not in INT_RANGE:
+                raise LangError(f"line {s.line}: 'stop' takes an integer exit code, got {type_of(code)}")
+            raise _Stop(int(code))
         elif k is Call:
             self.call_subroutine(s, env)
         elif k is Allocate:
@@ -1265,6 +1354,58 @@ class Interp:
             return self.call_builtin(e.name, args, e.line)
         raise LangError(f"line {e.line}: unknown function or array '{e.name}'")
 
+    def read_stmt(self, s, env):
+        """`read a, b [status ios]`: list-directed input. Items are separated by blanks or commas and may
+        continue on following lines; the rest of the last line is discarded."""
+        refs = [self.resolve(t, env, s.line) for t in s.targets]
+        status = self.resolve(s.status, env, s.line) if s.status is not None else None
+        if status is not None and status[0][TYPE] not in ("integer", "integer?"):
+            raise LangError(f"line {s.line}: the status of a read must be an integer variable")
+        escaping = [r for r in refs + ([status] if status is not None else []) if r.root[INTENT] in ("out", "inout")]
+        if bool(escaping) != s.update:
+            raise LangError(f"line {s.line}: 'update' must be used exactly when reading into an "
+                            f"out or inout parameter")
+        items = []                                    # (ref, element position or None, element type)
+        for ref in refs:
+            typ = ref[0][TYPE].rstrip("?")
+            if typ not in READ_NAMES:
+                raise LangError(f"line {s.line}: 'read' cannot read a {typ} ('{ref[2]}')")
+            current = self.read(ref)
+            if isinstance(current, Array):
+                items.extend((ref, n, typ) for n in range(len(current.data)))
+            else:
+                items.append((ref, None, typ))
+        tokens, code, done = [], 0, 0
+        arrays = {}
+        for ref, pos, typ in items:
+            while not tokens:
+                line = self.input.next_line()
+                if line is None:
+                    code = -1
+                    break
+                tokens = ITEM_RE.findall(line)
+            if code:
+                break
+            token = tokens.pop(0)
+            value = read_value(typ, token)
+            if value is None:
+                if status is None:
+                    raise LangError(f"line {s.line}: expected {READ_NAMES[typ]} for '{ref[2]}', "
+                                    f"got {token if token[0] in chr(34) + chr(39) else repr(token)}")
+                code = 1
+                break
+            if pos is None:
+                self.write(ref, value, s.line)
+            else:
+                arrays.setdefault(id(ref), (ref, self.read(ref).copy()))[1].data[pos] = value
+            done += 1
+        for ref, arr in arrays.values():
+            self.write(ref, arr, s.line)
+        if code == -1 and status is None:
+            raise LangError(f"line {s.line}: no more input")
+        if status is not None:
+            self.write(status, code, s.line)
+
     def call_builtin(self, name, args, line):
         try:
             if name == "argument":              # argument(0) is the program name, "" past the last one
@@ -1273,6 +1414,9 @@ class Interp:
                 return self.args[args[0]] if 0 <= args[0] < len(self.args) else ""
             if name == "argument_count":
                 return len(self.args) - 1
+            if name == "read_line":              # the next whole line of input, or null at the end
+                line = self.input.next_line()
+                return NULL if line is None else line
             if name in ELEMENTAL:
                 f = ELEMENTAL[name]
                 if not any(isinstance(a, Array) for a in args):

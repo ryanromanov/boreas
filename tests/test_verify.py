@@ -89,11 +89,25 @@ class VerifyTests(unittest.TestCase):
     def test_todo_makes_mismatch_expected(self):
         with tempfile.TemporaryDirectory() as tmp:
             f = write(tmp, "t.f90", "program t\n  implicit none\n  integer :: n\n  n = 3\n"
-                                    "  print *, n\n  stop\n  print *, n + 1\nend program t\n")
+                                    "  print *, n\n  goto 10\n  print *, n + 1\n10 continue\n  print *, n + 2\nend program t\n")
             r = boreas("convert", "--verify", f)
             self.assertEqual(r.returncode, 1, r.stderr)
             self.assertIn("TODO", r.stderr)
             self.assertIn("not translated", r.stderr)
+
+    def test_input_file_feeds_both_programs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = write(tmp, "t.f90", "program t\n  implicit none\n  integer :: n\n  read(*,*) n\n"
+                                    "  print *, n * 2\n  stop 3\nend program t\n")
+            data = write(tmp, "in.txt", "21\n")
+            r = boreas("convert", "--verify", "--input", data, f)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("verified", r.stderr)
+
+    def test_input_needs_verify(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = write(tmp, "t.f90", "program t\nend program t\n")
+            self.assertNotEqual(boreas("convert", "--input", f, f).returncode, 0)
 
     def test_original_timeout(self):
         with tempfile.TemporaryDirectory() as tmp:
