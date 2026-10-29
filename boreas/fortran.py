@@ -13,6 +13,7 @@ from .parser import *
 from .interp import BUILTINS, ELEMENTAL, PURE_BUILTINS
 from .kinds import round32
 from .printer import to_source
+from .fformat import FormatError, parse_format, render, substitute
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
 # so a Fortran variable with one of these names is renamed.
@@ -22,6 +23,7 @@ RESERVED = {"const", "update", "use", "module", "public", "private", "and", "or"
             "select", "case", "default", "fallthrough", "break",
             "allocatable", "allocate", "deallocate", "record"}
 
+FORMAT_STATEMENT = re.compile(r"(\d+)\s+format\s*\((.*)\)\s*$", re.I | re.S)
 TYPE_WORDS = {"integer", "real", "logical", "character", "double", "complex", "type"}
 FIXED_FORM_EXTENSIONS = (".f", ".for", ".f77", ".ftn")
 BLOCK_KINDS = ("select", "associate", "block", "interface", "where", "forall", "type", "module", "do")
@@ -247,6 +249,7 @@ class Scope:
         self.uses = []                # [(module name, names or None for "all", line)]
         self.access = {}              # module scope: name -> "public" | "private" (explicit ones)
         self.default_public = True
+        self.formats = {}             # label -> the text inside the parentheses of a `format` statement
 
 
 @dataclass
@@ -788,6 +791,7 @@ class FParser:
     def parse_unit(self, kind, scope, it):
         """Parse from just after the header through `end <kind>`, hoisting internal procedures."""
         scope.comments, self.top_comments = self.top_comments, []
+        self.collect_formats(scope, kind)
         body = self.parse_body(scope, {("end", kind), ("contains",)})
         scope.body = body
         toks = self.tokens(self.items[self.i])
@@ -819,6 +823,25 @@ class FParser:
             self.modules[scope.name] = scope
         else:
             self.raw.append(Raw(kind, scope, body, it.line))
+
+    def collect_formats(self, scope, kind):
+        """Labelled `format` statements may come after the write that uses them, so find them first."""
+        j = self.i
+        while j < len(self.items):
+            it = self.items[j]
+            j += 1
+            if it.comment is not None:
+                continue
+            m = FORMAT_STATEMENT.match(it.text)
+            if m:
+                scope.formats[int(m.group(1))] = m.group(2)
+                continue
+            try:
+                lab = classify(self.tokens(it))
+            except Unsupported:
+                continue
+            if lab == ("contains",) or (lab is not None and lab[0] == "end" and lab[1] in (kind, None)):
+                return
 
     def is_stop(self, toks, stops):
         lab = classify(toks)
@@ -893,6 +916,8 @@ class FParser:
         self.toks, self.k = toks, 0
         self.cur_scope = scope
         t0 = toks[0]
+        if FORMAT_STATEMENT.match(it.text):
+            return []                                  # used by the writes that name its label
         if t0.kind != "name":
             raise Unsupported("unrecognised statement (labels are not supported)")
         name = t0.text
@@ -1841,25 +1866,113 @@ class FParser:
         return e
 
     # output
-    def print_items(self):
+    def print_items(self, expand_arrays=False, blank=True):
         items = []
         if not self.at_op(")") and self.peek() is not None:
-            items.append(self.expr())
-            while self.accept_op(","):
-                items.append(self.expr())
+            while True:
+                items.extend(self.output_item(expand_arrays))
+                if not self.accept_op(","):
+                    break
         self.end_of_statement()
-        return items or [Str("")]
+        return items or ([Str("")] if blank else [])
+
+    def output_item(self, expand_arrays):
+        """One item of an output list: an expression, an implied do `(a(i), i = 1, 3)` (unrolled), or,
+        under a format, a whole array (one item per element)."""
+        loop = self.implied_do()
+        if loop is not None:
+            exprs, var, lo, hi, step = loop
+            bounds = [self.constant_int(x) for x in (lo, hi, step)]
+            if None in bounds or bounds[2] == 0:
+                raise Unsupported("implied do loop with bounds that are not literal numbers")
+            lo, hi, step = bounds
+            values = range(lo, hi + (1 if step > 0 else -1), step)
+            if len(values) > 1000:
+                raise Unsupported("implied do loop with more than 1000 steps")
+            return [substitute(e, var, i) for i in values for e in exprs]
+        e = self.expr()
+        if expand_arrays and isinstance(e, Var):
+            info = self.cur_scope.decls.get(e.name)
+            if info is not None and info.dims is not None:
+                sizes = [self.constant_int(d) for d in info.dims]
+                if len(sizes) != 1 or sizes[0] is None or sizes[0] > 1000:
+                    raise Unsupported(f"array '{e.name}' written under a format (only one-dimensional arrays "
+                                      f"with a literal size are unrolled)")
+                return [Apply(e.name, [Num(i)], self.line) for i in range(1, sizes[0] + 1)]
+        return [e]
+
+    def constant_int(self, e):
+        if isinstance(e, Num) and isinstance(e.value, int):
+            return e.value
+        if isinstance(e, Unary) and e.op == "-" and isinstance(e.operand, Num) and isinstance(e.operand.value, int):
+            return -e.operand.value
+        return None
+
+    def implied_do(self):
+        """Parse `(expr, expr, var = lo, hi [, step])` at the current position, or put everything back."""
+        start = self.k
+        if not self.at_op("("):
+            return None
+        self.k += 1
+        exprs = []
+        try:
+            while True:
+                nxt = self.peek(1)
+                if self.peek() is not None and self.peek().kind == "name" and nxt is not None and nxt.text == "=":
+                    break
+                exprs.append(self.expr())
+                if not self.accept_op(","):
+                    self.k = start
+                    return None
+            var = self.rename(self.expect_name())
+            self.expect_op("=")
+            lo = self.expr()
+            self.expect_op(",")
+            hi = self.expr()
+            step = Num(1)
+            if self.accept_op(","):
+                step = self.expr()
+            self.expect_op(")")
+        except Unsupported:
+            self.k = start
+            return None
+        return exprs, var, lo, hi, step
+
+    def format_text(self, toks, scope):
+        """The text inside the parentheses of a format given as a string or as a statement label."""
+        if len(toks) == 1 and toks[0].kind == "str":
+            text = toks[0].value.strip()
+            if not (text.startswith("(") and text.endswith(")")):
+                raise Unsupported("format string without parentheses")
+            return text[1:-1]
+        if len(toks) == 1 and toks[0].kind == "int":
+            if toks[0].value not in scope.formats:
+                raise Unsupported(f"no format statement with label {toks[0].value}")
+            return scope.formats[toks[0].value]
+        raise Unsupported("unsupported write format or option")
+
+    def formatted_output(self, text, line, newline=True):
+        values = self.print_items(expand_arrays=True, blank=False)
+        try:
+            lines, advance = render(parse_format(text)[0], values)
+        except FormatError as e:
+            raise Unsupported(f"unsupported write format: {e}")
+        out = [Print([l]) for l in lines[:-1]]
+        out.append(Print([lines[-1]], newline and advance))
+        return out
 
     def st_print(self, it, scope):
+        fmt = None
         if self.at_op("*"):
             self.k += 1
-        elif self.peek() is not None and self.peek().kind == "str":
-            self.note(it.line, f"print format {self.peek().text} dropped; Boreas uses default formatting")
-            self.k += 1
+        elif self.peek() is not None and self.peek().kind in ("str", "int"):
+            fmt = self.format_text([self.next()], scope)
         else:
             raise Unsupported("unsupported print format")
         if self.peek() is not None:
             self.expect_op(",")
+        if fmt is not None:
+            return self.formatted_output(fmt, it.line)
         return [Print(self.print_items())]
 
     def st_write(self, it, scope):
@@ -1882,17 +1995,20 @@ class FParser:
         unit = parts[0]
         if not (len(unit) == 1 and (unit[0].text == "*" or unit[0].value == 6)):
             raise Unsupported("write to a file unit is not supported")
+        fmt, newline = None, True
         if len(parts) > 1:
-            fmt = parts[1]
-            if len(fmt) == 1 and fmt[0].text == "*":
-                pass
-            elif len(parts) == 2 and len(fmt) == 1 and fmt[0].kind == "str":
-                self.note(it.line, f"write format {fmt[0].text} dropped; Boreas uses default formatting")
+            f = parts[1]
+            if not (len(f) == 1 and f[0].text == "*"):
+                fmt = self.format_text(f, scope)
+        for opt in parts[2:]:
+            if len(opt) == 3 and opt[0].text == "advance" and opt[1].text == "=" and opt[2].kind == "str" \
+                    and opt[2].value.lower() in ("no", "yes"):
+                newline = opt[2].value.lower() == "yes"
             else:
-                raise Unsupported("unsupported write format or option")
-        if len(parts) > 2:
-            raise Unsupported("unsupported write options")
-        return [Print(self.print_items())]
+                raise Unsupported("unsupported write options")
+        if fmt is not None:
+            return self.formatted_output(fmt, it.line, newline)
+        return [Print(self.print_items(), newline)]
 
     # -- finishing: turn raw scopes into Boreas procedures
     def finalize(self):

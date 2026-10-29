@@ -99,6 +99,21 @@ with `update`, as for assignments: `update read n`. `read_line()` returns the ne
 
 `stop` ends the program; `stop 3` ends it with exit code 3.
 
+## Formatting text
+
+Output is built as a string and printed; there is no format mini-language.
+
+    fixed(3.14159, 3)         ! "3.142"    fixed(x, decimals [, width])
+    right(42, 5)              ! "   42"    right(x, width [, padding])
+    left("ab", 5)             ! "ab   "
+    right(42, 5, "0")         ! "00042"    right(-42, 5, "0") is "-0042"
+    repeat("-", 5)            ! "-----"
+
+`right` and `left` take text or a number. Text that is too long is cut to its first characters; a number
+that does not fit shows as stars (`*****`), as in Fortran. A width of 0 gives just the text, which is how a
+number becomes text inside a longer line: `"n = " + right(n, 0)`. `fixed(x, d, w)` right-aligns in `w`
+characters, dropping the leading 0 if that makes it fit (`.500`).
+
 ## Constants
 
     const real :: pi = 3.14159
@@ -427,6 +442,11 @@ report on stderr. Translations that change meaning are flagged, never silent:
   the generic functions.
 - Old type-specific intrinsic names (`dsqrt`, `dabs`, `dsin`, `datan2`, `amax1`, `alog10`, `idint`, ...)
   become the generic function. Intrinsics Boreas lacks (Bessel functions, complex numbers, ...) stay TODOs.
+- Formats become string expressions. `write(*,'(A,I5,F8.3)') s, n, x` (or a labelled `format` statement,
+  before or after the write) turns into `print s + right(n, 5) + fixed(x, 3, 8)`. Translated: `A`, `Aw`,
+  `Iw`, `Iw.m`, `Fw.d`, `nX`, `/`, literal text, repeat counts and groups, `advance='no'`, and implied-do
+  lists with literal bounds (unrolled). More values than descriptors start the format again; a format
+  with groups that would have to repeat, and `E`, `G`, `L`, `T`, `ES`, `P`, are TODOs.
 - `read(*,*) a, b` and `read(*,*,iostat=ios) a` become `read a, b` and `read a status ios`; `stop`,
   `stop 3` and `error stop` become `stop`, `stop 3` and `stop 1` (a final plain `stop` is dropped; a stop
   message goes to stderr in Fortran, so it is dropped with a note). Formatted `read` is a TODO.
