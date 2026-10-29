@@ -454,7 +454,12 @@ def _repeat(text, n):
     return text * _count("repeat", "the count", n)
 
 
+def _trim(s):
+    return _need_string("trim", s).rstrip(" ")
+
+
 BUILTINS = {
+    "trim": _trim, "len_trim": lambda s: len(_trim(s)),
     "fixed": _fixed, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
     "len": _len, "achar": _achar, "iachar": _iachar,
     "random": lambda: _random.random(),

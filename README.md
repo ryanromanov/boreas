@@ -74,7 +74,7 @@ Integers and reals come in fixed widths, named by their size:
 
 A `string` is text of any length. Join with `+`. Take part of one with `s(lo:hi)`, counting from 1 and
 including both ends (either end may be left off). Assign to part of a string with `s(lo:hi) = text`; the
-text must have exactly that many characters. `len(s)` is the length, `achar(n)` the character with code
+text must have exactly that many characters. `len(s)` is the length, `trim(s)` removes trailing blanks (`len_trim(s)` is the length without them), `achar(n)` the character with code
 `n` and `iachar(c)` the code of a one-character string.
 
 `random()` gives a real in `[0, 1)`. `argument_count()` is the number of command-line arguments after the
@@ -442,6 +442,10 @@ report on stderr. Translations that change meaning are flagged, never silent:
   the generic functions.
 - Old type-specific intrinsic names (`dsqrt`, `dabs`, `dsin`, `datan2`, `amax1`, `alog10`, `idint`, ...)
   become the generic function. Intrinsics Boreas lacks (Bessel functions, complex numbers, ...) stay TODOs.
+- `character(len=n)` variables: assigning to one pads with blanks or cuts to `n` (`a = left(x, n)`; literals are
+  padded in the converted source), comparisons and `select case` ignore trailing blanks (`trim(a) == "abc"`),
+  and `len(a)` becomes `n`. Lengths that are not known numbers (`len=*`), record fields and function results
+  keep Boreas's variable-length strings, with a note.
 - Formats become string expressions. `write(*,'(A,I5,F8.3)') s, n, x` (or a labelled `format` statement,
   before or after the write) turns into `print s + right(n, 5) + fixed(x, 3, 8)`. Translated: `A`, `Aw`,
   `Iw`, `Iw.m`, `Fw.d`, `nX`, `/`, literal text, repeat counts and groups, `advance='no'`, and implied-do
