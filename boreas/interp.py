@@ -405,7 +405,57 @@ def _iachar(c):
 _random = random.Random()
 
 
+def _count(name, what, n):
+    if type_of(n) not in INT_RANGE or n < 0:
+        raise TypeError(f"{what} must be a whole number of 0 or more, got {n!r}")
+    return int(n)
+
+
+def _fixed(x, decimals, width=None):
+    """x with exactly `decimals` digits after the point; with a width, right-aligned like Fortran's Fw.d
+    (stars if it does not fit; a leading 0 is dropped before giving up)."""
+    if type_of(x) not in NUMERIC or isinstance(x, complex):
+        raise TypeError(f"needs a real or integer number, got {type_of(x)}")
+    text = f"{float(x):.{_count('fixed', 'the number of decimals', decimals)}f}"
+    if decimals == 0:
+        text += "."                                        # Fortran's F4.0 shows the point: "2."
+    if width is None or width == 0:
+        return text
+    width = _count("fixed", "the width", width)
+    if len(text) > width:
+        text = text.replace("0.", ".", 1) if text.lstrip("-").startswith("0.") else text
+    return text.rjust(width) if len(text) <= width else "*" * width
+
+
+def _pad(side):
+    def pad(x, width, fill=" "):
+        """Align x in `width` characters (left or right). Text that is too long is cut to its first
+        characters, a number that does not fit is shown as stars (as Fortran does)."""
+        width = _count(side, "the width", width)
+        if not isinstance(fill, str) or len(fill) != 1:
+            raise TypeError("the padding must be a one-character string")
+        if isinstance(x, (Array, Record)) or x is NULL or isinstance(x, complex):
+            raise TypeError(f"needs text or a number, got {type_of(x) if x is not NULL else 'null'}")
+        text = x if isinstance(x, str) else ("true" if x is True else "false" if x is False else
+                                           shortest32(x) if type(x) is Real32 else str(x))
+        if width == 0:                                               # width 0: just the text (Fortran's I0)
+            return text
+        if len(text) > width:
+            return text[:width] if isinstance(x, str) else "*" * width
+        if side == "right" and fill == "0" and text[:1] in "-+" and not isinstance(x, str):
+            return text[0] + text[1:].rjust(width - 1, "0")           # the sign stays in front: -0042
+        return text.rjust(width, fill) if side == "right" else text.ljust(width, fill)
+    return pad
+
+
+def _repeat(text, n):
+    if not isinstance(text, str):
+        raise TypeError(f"needs a string, got {type_of(text)}")
+    return text * _count("repeat", "the count", n)
+
+
 BUILTINS = {
+    "fixed": _fixed, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
     "len": _len, "achar": _achar, "iachar": _iachar,
     "random": lambda: _random.random(),
     "argument": None, "argument_count": None, "read_line": None,   # need the interpreter: see call_builtin

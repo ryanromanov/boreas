@@ -178,10 +178,14 @@ class ConvertComplexTests(unittest.TestCase):
         self.assertTrue(any("single precision" in f[2] and "complex" in f[2] for f in findings))
 
     def test_implied_do_is_not_mistaken_for_a_complex_literal(self):
-        _, findings = convert("program p\n  integer :: i\n  integer :: a(3)\n"
-                              "  print *, (a(i), i = 1, 3)\nend program\n")
+        text, findings = convert("program p\n  integer :: i\n  integer :: a(3)\n"
+                                 "  print *, (a(i), i = 1, 3)\nend program\n")
+        self.assertEqual(todos(findings), [])
+        self.assertIn("print a(1), a(2), a(3)", text)             # unrolled, not read as a complex literal
+        _, findings = convert("program p\n  integer :: i, n\n  integer :: a(3)\n  n = 3\n"
+                              "  print *, (a(i), i = 1, n)\nend program\n")
         self.assertEqual(len(todos(findings)), 1)
-        self.assertIn("implied-do", todos(findings)[0][2])
+        self.assertIn("implied do", todos(findings)[0][2])
 
     def test_complex_literal_in_an_expression(self):
         text, _ = convert("program p\n  double complex :: z\n  z = 2.0d0 * (1.0d0, 1.0d0) + (0.0d0, 1.0d0)\n"
