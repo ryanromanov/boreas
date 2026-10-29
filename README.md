@@ -81,6 +81,24 @@ text must have exactly that many characters. `len(s)` is the length, `achar(n)` 
 program file and `argument(n)` the n-th one (`""` past the end; `argument(0)` is the program file):
 `boreas prog.bor --version`.
 
+## Input, output and stopping
+
+`print a, b` writes a line. `write a, b` is the same without the final newline, for prompts.
+Strings can use `"` or `'` quotes, so `'say "hi"'` works.
+
+`read a, b` reads list-directed input from the keyboard: values are separated by blanks or commas,
+may continue on following lines, and the rest of the last line is discarded. Each value must suit
+its variable (integer, real, logical, or string; a string with spaces needs quotes). Bad input or the
+end of input stops the program with an error. To handle that yourself, add a status variable:
+
+    read n status ios        ! ios is 0 for success, -1 at the end of input, 1 for a bad value
+
+Values before a bad one are kept. When a target is an `out` or `inout` parameter the statement starts
+with `update`, as for assignments: `update read n`. `read_line()` returns the next whole line as a
+`string?` (`null` at the end of input).
+
+`stop` ends the program; `stop 3` ends it with exit code 3.
+
 ## Constants
 
     const real :: pi = 3.14159
@@ -409,6 +427,9 @@ report on stderr. Translations that change meaning are flagged, never silent:
   the generic functions.
 - Old type-specific intrinsic names (`dsqrt`, `dabs`, `dsin`, `datan2`, `amax1`, `alog10`, `idint`, ...)
   become the generic function. Intrinsics Boreas lacks (Bessel functions, complex numbers, ...) stay TODOs.
+- `read(*,*) a, b` and `read(*,*,iostat=ios) a` become `read a, b` and `read a status ios`; `stop`,
+  `stop 3` and `error stop` become `stop`, `stop 3` and `stop 1` (a final plain `stop` is dropped; a stop
+  message goes to stderr in Fortran, so it is dropped with a note). Formatted `read` is a TODO.
 - `random_number(x)` becomes `x = random()` (scalars; an array is a TODO), `get_command_argument(n, s)` becomes
   `s = argument(n)`, `char`/`ichar` become `achar`/`iachar`, and `random_init`/`random_seed` are dropped with a note
   (the random numbers differ from the original's).
@@ -434,11 +455,11 @@ report on stderr. Translations that change meaning are flagged, never silent:
 
 ### Checking a conversion
 
-    boreas convert --verify [--timeout SECONDS] FILE.f90 [-o OUT]
+    boreas convert --verify [--timeout SECONDS] [--input FILE] FILE.f90 [-o OUT]
 
 `--verify` converts the file as usual, then compiles the original with gfortran
 (set `FC` to use another compiler), runs it and the converted program with empty
-stdin and a timeout (default 10 s), and compares what they print. Spacing and
+stdin (empty, or the contents of `--input FILE`) and a timeout (default 10 s), and compares what they print. Spacing and
 commas are ignored, `T`/`F` equal `true`/`false`, and numbers match within 1e-9 (single-precision
 output, which Fortran prints with nine digits, within half a single-precision step).
 

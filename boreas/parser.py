@@ -71,7 +71,11 @@ class Select:
 @dataclass
 class Break: pass       # leaves the nearest enclosing select statement
 @dataclass
-class Print: args: list
+class Print: args: list; newline: bool = True       # `write` is a print without the newline
+@dataclass
+class Read: targets: list; status: object; line: int; update: bool = False
+@dataclass
+class Stop: code: object; line: int
 @dataclass
 class Return: value: object
 @dataclass
@@ -133,7 +137,7 @@ def root_name(target):
 
 
 KEYWORDS = {"if", "then", "else", "do", "while", "end", "program", "function", "subroutine", "module",
-            "record", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print",
+            "record", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print", "write", "read", "stop",
             "select", "case", "default", "fallthrough", "break", "update", "allocate", "deallocate",
             "allocatable", "in", "out", "inout", "true", "false", "null", "and", "or", "not"}
 
@@ -183,6 +187,15 @@ def check_writes(body, params):
                 what = "an 'in' parameter" if params.get(name) == "in" else "a local variable"
                 raise LangError(f"line {s.line}: 'update' is for out and inout parameters, but "
                                 f"'{name}' is {what}")
+        elif isinstance(s, Read):
+            names = {root_name(t) for t in s.targets + ([s.status] if s.status is not None else [])}
+            escapes = sorted(n for n in names if params.get(n) in ("out", "inout"))
+            if escapes and not s.update:
+                raise LangError(f"line {s.line}: '{escapes[0]}' is an {params[escapes[0]]} parameter, so the "
+                                f"caller sees this read; write 'update read ...'")
+            if s.update and not escapes:
+                raise LangError(f"line {s.line}: 'update' is for out and inout parameters, but this 'read' "
+                                f"writes none")
         elif isinstance(s, If):
             for _, b in s.branches:
                 check_writes(b, params)
@@ -644,13 +657,20 @@ class Parser:
             return Break()
         if self.at("case"):
             self.error("'case' outside a select")
-        if self.at("print"):
-            self.next()
+        if self.at("print", "write"):
+            word = self.next().text
             args = [self.expr()]
             while self.accept(","):
                 args.append(self.expr())
             self.newline()
-            return Print(args)
+            return Print(args, word == "print")
+        if self.at("read") or (self.at("update") and self.toks[self.i + 1].text == "read"):
+            return self.read_stmt()
+        if self.at("stop"):
+            self.next()
+            code = None if self.tok.kind == "nl" else self.expr()
+            self.newline()
+            return Stop(code, t.line)
         if self.at("call"):
             self.next()
             name = self.ident()
@@ -688,6 +708,27 @@ class Parser:
             return Assign(e, v, t.line, update)
         self.newline()
         return ExprStmt(e)
+
+    def read_stmt(self):
+        """`read a, b` or `read a, b status ios`; `update read ...` when a target is an out/inout parameter."""
+        line = self.tok.line
+        update = bool(self.accept("update"))
+        self.next()
+        targets = [self.read_target()]
+        while self.accept(","):
+            targets.append(self.read_target())
+        status = None
+        if self.tok.kind == "ident" and self.tok.text == "status":
+            self.next()
+            status = self.read_target()
+        self.newline()
+        return Read(targets, status, line, update)
+
+    def read_target(self):
+        e = self.expr()
+        if not isinstance(e, (Var, Apply, FieldAccess)):
+            self.error("'read' needs variables to read into")
+        return e
 
     def allocation(self):
         """`allocate a(n, m)` or `deallocate a`: one array per statement."""
