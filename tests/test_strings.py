@@ -1,6 +1,7 @@
-import os, sys, unittest
+import os, subprocess, sys, tempfile, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from test_fortran import run_bor, todos
+from test_fortran import GFORTRAN, check_syntax, conv, fixture, read, run_bor, todos
+from boreas.verify import same_output
 from boreas.fortran import convert
 from boreas.interp import Interp
 from boreas.lexer import LangError
@@ -75,6 +76,82 @@ class ConvertTests(unittest.TestCase):
     def test_random_number_of_an_array_is_a_todo(self):
         _, findings = convert("program p\n  real :: a(3)\n  call random_number(a)\nend program\n")
         self.assertEqual(len(todos(findings)), 1)
+
+
+class TrimTests(unittest.TestCase):
+    def test_trim_and_len_trim(self):
+        self.assertEqual(out('  print "[" + trim("ab  ") + "]", len_trim("ab  "), len_trim("")'), ["[ab] 2 0"])
+        fails(self, "  print trim(3)", "needs a string")
+
+
+class FixedLengthCharacterTests(unittest.TestCase):
+    def text(self, decls, body):
+        text, findings = conv(body, decls)
+        return text, findings
+
+    def test_assignment_pads_and_cuts_literals_at_conversion_time(self):
+        text, findings = self.text("  character(len=5) :: a\n  character(len=2) :: b", "  a = 'ab'\n  b = 'wxyz'")
+        self.assertEqual(todos(findings), [])
+        self.assertIn('a = "ab   "', text)
+        self.assertIn('b = "wx"', text)
+
+    def test_other_values_are_fitted_with_left(self):
+        text, _ = self.text("  character(len=4) :: a\n  character(len=9) :: s", "  a = s")
+        self.assertIn("a = left(s, 4)", text)
+
+    def test_declaration_initialiser_and_named_length(self):
+        text, _ = self.text("  integer, parameter :: n = 3\n  character(len=n) :: a = 'x'", "")
+        self.assertIn('string :: a = "x  "', text)
+
+    def test_array_elements_but_not_substrings(self):
+        text, _ = self.text("  character(len=3) :: names(2)\n  character(len=9) :: s", "  names(1) = s\n  s(1:1) = 'x'")
+        self.assertIn("names(1) = left(s, 3)", text)
+        self.assertIn('s(1:1) = "x"', text)
+
+    def test_comparisons_and_select_ignore_trailing_blanks(self):
+        text, _ = self.text("  character(len=5) :: a", "  if (a == 'abc  ') print *, 1\n  select case (a)\n"
+                            "  case ('x')\n    print *, 2\n  end select")
+        self.assertIn('if trim(a) == "abc" then', text)
+        self.assertIn("select case trim(a)", text)
+
+    def test_len_is_the_declared_length(self):
+        text, _ = self.text("  character(len=5) :: a\n  integer :: n", "  n = len(a)")
+        self.assertIn("n = 5", text)
+
+    def test_read_into_a_fixed_length_variable_fits_it(self):
+        text, _ = self.text("  character(len=3) :: a", "  read(*,*) a")
+        self.assertIn("a = left(a, 3)", text)
+
+    def test_length_forms(self):
+        for decl in ("character(3)", "character(len=3)", "character(3, 1)", "character(kind=1, len=3)"):
+            with self.subTest(decl=decl):
+                text, _ = self.text(f"  {decl} :: a\n  character(len=9) :: s", "  a = s")
+                self.assertIn("a = left(s, 3)", text)
+        text, _ = self.text("  character :: a*4\n  character(len=9) :: s", "  a = s")
+        self.assertIn("a = left(s, 4)", text)
+        text, _ = self.text("  character :: a\n  character(len=9) :: s", "  a = s")
+        self.assertIn("a = left(s, 1)", text)               # no length means 1
+
+    def test_assumed_length_is_not_tracked(self):
+        _, findings = convert("subroutine s(c)\n  character(len=*) :: c\n  c = 'x'\nend subroutine\n")
+        self.assertTrue(any("length not tracked" in f[2] for f in findings))
+
+
+@unittest.skipUnless(GFORTRAN, "gfortran not installed")
+class CharsFixtureTests(unittest.TestCase):
+    def test_chars_fixture_matches_gfortran(self):
+        path, stdin = fixture("chars.f90"), read(fixture("chars.in"))
+        check_syntax(path)
+        text, findings = convert(read(path), "chars.f90")
+        self.assertEqual(todos(findings), [])
+        out_lines = []
+        Interp(parse(text), out_lines.append, stdin=stdin).run()
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = os.path.join(tmp, "a.out")
+            subprocess.run([GFORTRAN, os.path.abspath(path), "-o", exe], check=True, capture_output=True, cwd=tmp)
+            want = subprocess.run([exe], input=stdin, capture_output=True, text=True).stdout
+        self.assertTrue(same_output("\n".join(out_lines), want), f"\nBoreas:\n{chr(10).join(out_lines)}\n\ngfortran:\n{want}")
+        self.assertIn("abc  |", out_lines)                    # padded exactly, not just up to spacing
 
 
 if __name__ == "__main__":

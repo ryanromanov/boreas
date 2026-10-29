@@ -227,6 +227,7 @@ class Info:
     line: int
     allocatable: bool = False
     optional: bool = False
+    length: int | None = None     # declared character length, when it is a known number
 
 
 class Scope:
@@ -427,7 +428,12 @@ class FParser:
         t = self.peek()
         if t is not None and t.kind in ("op", "dop") and t.text in self.REL:
             self.k += 1
-            e = Binary(self.REL[t.text], e, self.concat())
+            right = self.concat()
+            padded = self.char_info(e) is not None or self.char_info(right) is not None
+            if padded:                                       # Fortran ignores trailing blanks when comparing
+                e, right = [Apply("trim", [x], self.line) if self.char_info(x) is not None
+                            else Str(x.value.rstrip(" ")) if isinstance(x, Str) else x for x in (e, right)]
+            e = Binary(self.REL[t.text], e, right)
         return e
 
     def concat(self):
@@ -533,6 +539,9 @@ class FParser:
                 name, args = self.convert_intrinsic(name, args)
                 intrinsic = name in BUILTINS or name in ELEMENTAL
                 e = Apply(name if intrinsic else self.rename(name), args, self.line)
+                if name == "len" and len(args) == 1 and self.char_info(args[0]) is not None \
+                        and name not in self.cur_scope.decls:
+                    e = Num(self.char_info(args[0]).length)          # the declared length, not the text's
             while self.accept_op("%"):                       # derived-type component: p%x, pts(2)%pos%y
                 if isinstance(e, Apply) and any(isinstance(a, Slice) for a in e.args):
                     raise Unsupported("a component of an array section (pts(1:3)%x)")
@@ -978,7 +987,67 @@ class FParser:
         self.expect_op("=")
         value = self.expr()
         self.end_of_statement()
+        info = self.char_info(target)
+        if info is not None:
+            value = self.fit_to_length(value, info.length)
         return Assign(target, value, it.line)
+
+    def character_length(self):
+        """The length in `character(len=5)`, `character(5)`, `character*5`; None when it is `*`, a name we
+        cannot resolve, or missing (length 1 is then the Fortran default)."""
+        if self.at_op("*") and self.peek(1) is not None and self.peek(1).kind == "int":
+            self.k += 1
+            return self.next().value
+        if not self.at_op("("):
+            return 1
+        self.k += 1
+        length, positional = None, 0
+        while not self.at_op(")"):
+            keyword = self.peek().text if self.peek() is not None and self.peek(1) is not None \
+                and self.peek(1).text == "=" else None
+            if keyword is not None:
+                self.k += 2
+            else:
+                keyword = ("len", "kind")[positional] if positional < 2 else "kind"
+                positional += 1
+            if keyword == "len" and self.accept_op("*"):
+                length = None
+            elif keyword == "len":
+                length = self.constant_length(self.expr())
+            else:
+                self.expr()                                     # kind
+            if not self.accept_op(","):
+                break
+        self.expect_op(")")
+        return length
+
+    def constant_length(self, e):
+        if isinstance(e, Num) and isinstance(e.value, int):
+            return e.value
+        info = getattr(self, "cur_scope", None) and self.cur_scope.decls.get(e.name) if isinstance(e, Var) else None
+        if info is not None and info.parameter and isinstance(info.init, Num) and isinstance(info.init.value, int):
+            return info.init.value
+        return None
+
+    def char_info(self, e):
+        """The declared Info of a fixed-length character variable or array element named by `e`, or None."""
+        scope = getattr(self, "cur_scope", None)
+        if scope is None or not isinstance(e, (Var, Apply)):
+            return None
+        info = scope.decls.get(e.name)
+        if info is None or info.type != "string" or info.length is None:
+            return None
+        if isinstance(e, Apply) and info.dims is None:
+            return None                                  # a substring, not an element
+        if isinstance(e, Var) and info.dims is not None:
+            return None                                  # a whole array
+        return info
+
+    def fit_to_length(self, value, n):
+        """Fortran stores text in a character(len=n) variable padded with blanks or cut to n."""
+        if isinstance(value, Str):
+            return Str(value.value[:n].ljust(n))
+        return Apply("left", [value, Num(n)], self.line)
 
     # declarations
     def type_spec(self):
@@ -1003,13 +1072,7 @@ class FParser:
                 raise Unsupported(f"derived type '{name}' was not translated")
             return name
         if word == "character":
-            self.note(self.line, "character lengths are not tracked: Boreas strings never pad or truncate, "
-                                 "so assigning to a shorter variable or comparing padded text can differ", once=True)
-        if word == "character":
-            if self.at_op("("):
-                self.skip_parens()
-            elif self.at_op("*") and self.peek(1) is not None and self.peek(1).kind == "int":
-                self.k += 2
+            self.char_len = self.character_length()
             return "string"
         number = None
         if self.at_op("("):
@@ -1108,7 +1171,9 @@ class FParser:
             raise
 
     def declaration_inner(self, it, scope):
+        self.char_len = None
         typ = self.type_spec()
+        char_len = self.char_len
         attrs = {}
         while self.accept_op(","):
             word = self.expect_name()
@@ -1137,7 +1202,9 @@ class FParser:
             try:
                 name = self.rename(self.expect_name())
                 specs = self.dim_specs() if self.at_op("(") else attrs.get("dimension")
+                length = char_len
                 if self.at_op("*") and self.peek(1) is not None and self.peek(1).kind == "int":
+                    length = self.peek(1).value                  # character :: name*20
                     self.k += 2
                 init = None
                 if self.at_op("=>"):
@@ -1173,9 +1240,17 @@ class FParser:
                         and name not in scope.dummies and (init is not None or attrs.get("save")):
                     scope.saved[name] = (line, "declared save" if attrs.get("save")
                                          else "initialised in its declaration, which implies save")
+                if typ == "string":
+                    if length is None or scope.kind == "type":
+                        self.note(line, "character length not tracked here: Boreas strings never pad or truncate, "
+                                        "so assigning to a shorter variable or comparing padded text can differ",
+                                  once=True)
+                        length = None
+                    elif isinstance(init, Str):
+                        init = self.fit_to_length(init, length)
                 scope.decls[name] = Info(typ, dims, dropped, attrs.get("intent"), init,
                                          bool(attrs.get("parameter")), line, bool(attrs.get("allocatable")),
-                                         bool(attrs.get("optional")))
+                                         bool(attrs.get("optional")), length)
                 if attrs.get("external"):
                     scope.externals.add(name)
                 if scope.kind == "module":
@@ -1498,7 +1573,12 @@ class FParser:
         self.end_of_statement()
         if not targets or not all(isinstance(t, (Var, Apply, FieldAccess)) for t in targets):
             raise Unsupported("read of something other than variables")
-        return [Read(targets, status, it.line)]
+        stmts = [Read(targets, status, it.line)]
+        for t in targets:                                   # text read into a character(len=n) variable fits n
+            info = self.char_info(t)
+            if info is not None:
+                stmts.append(Assign(t, self.fit_to_length(t, info.length), it.line))
+        return stmts
 
     def st_call(self, it, scope):
         name = self.rename(self.expect_name())
@@ -1615,6 +1695,8 @@ class FParser:
         self.k += 1
         self.expect_op("(")
         subject = self.expr()
+        if self.char_info(subject) is not None:           # Fortran ignores trailing blanks here too
+            subject = Apply("trim", [subject], self.line)
         self.expect_op(")")
         self.end_of_statement()
         stops = {("end", "select"), ("case",)}

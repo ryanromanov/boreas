@@ -286,11 +286,13 @@ class TranslationTests(unittest.TestCase):
         self.assertIn("subroutine outer(out real32 :: x)", text)
         self.assertEqual(run_bor(text), ["2.0"])
 
-    def test_character_length_is_noted(self):
-        src = ("subroutine s()\n  character(len=3) :: c\n  c = 'abcdef'\nend subroutine\n"
-               "program p\n  call s()\nend program\n")
+    def test_unknown_character_length_is_noted(self):
+        src = ("subroutine s(c)\n  character(len=*) :: c\nend subroutine\n"
+               "program p\n  call s('x')\nend program\n")
         _, findings = convert(src)
-        self.assertTrue(any("character lengths" in f[2] for f in findings))
+        self.assertTrue(any("length not tracked" in f[2] for f in findings))
+        _, findings = convert("program p\n  character(len=3) :: c\n  c = 'a'\nend program\n")
+        self.assertFalse(any("length not tracked" in f[2] for f in findings))
 
     def test_default_real_is_single_precision(self):
         text, findings = conv("real :: x\n  double precision :: y\n  x = 1.0\n  y = 1.0d0", "")
