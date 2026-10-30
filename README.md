@@ -477,9 +477,12 @@ report on stderr. Translations that change meaning are flagged, never silent:
   or array sizes that aren't constants become a TODO for the whole type, and code that uses it
   becomes TODOs too.
 - A local that Fortran keeps between calls (declared `save`, named in a `save` statement, or
-  initialised in its declaration) becomes a TODO when the procedure changes it and can read the old
-  value, because Boreas locals start fresh on every call. Ones that are never changed, or always
-  assigned before they are read, convert without a note.
+  initialised in its declaration) matters only when the procedure changes it and can read the old value.
+  If the procedure is called from just one place that runs once, a fresh start each call behaves the same,
+  so it stays a local (with a note). Otherwise the variable moves to a module of its own
+  (`<procedure>_state`) as a public module variable, and writes to it are marked `update`. A declaration
+  that uses other names (so it cannot move) stays a TODO. Ones that are never changed, or always assigned
+  before they are read, convert without a note.
 - Kinds become fixed-width types: `real` and `real(4)` are `real32` (Fortran's default real is single
   precision), `real(8)`, `real(kind=8)`, `real*8` and `double precision` are `real`, `integer(1/2/4/8)`
   are `int8`/`int16`/`integer`/`int64`. Kind constants work (`integer, parameter :: dp = kind(1.0d0)`,
