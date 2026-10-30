@@ -460,7 +460,14 @@ report on stderr. Translations that change meaning are flagged, never silent:
   with groups that would have to repeat, and `E`, `G`, `L`, `T`, `ES`, `P`, are TODOs.
 - `read(*,*) a, b` and `read(*,*,iostat=ios) a` become `read a, b` and `read a status ios`; `stop`,
   `stop 3` and `error stop` become `stop`, `stop 3` and `stop 1` (a final plain `stop` is dropped; a stop
-  message goes to stderr in Fortran, so it is dropped with a note). Formatted `read` is a TODO.
+  message goes to stderr in Fortran, so it is dropped with a note). `read(*,'(A)') text` reads a whole line into
+  one character variable; other formatted reads are TODOs.
+- Fixed-form source (`.f`, `.for`, `.f77`, `.ftn`) is read as such: labels in columns 1-5, continuation marks in
+  column 6, statements in columns 7-72. Boreas has no `goto`, so the converter rewrites jumps: a test at the top
+  with a jump back becomes `do while`, a jump back becomes a loop with `cycle`, a jump forward becomes a
+  one-pass loop with `exit`, and jumps that cross each other become a small state machine (`select case
+  fallthrough` in a loop). Computed `goto`, the arithmetic `if`, labelled `do` loops (a shared last statement
+  too) and the `parameter` statement are translated; `common` and `block data` are TODOs.
 - `random_number(x)` becomes `x = random()` (scalars; an array is a TODO), `get_command_argument(n, s)` becomes
   `s = argument(n)`, `char`/`ichar` become `achar`/`iachar`, and `random_init`/`random_seed` are dropped with a note
   (the random numbers differ from the original's).
