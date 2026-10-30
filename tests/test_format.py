@@ -1,6 +1,6 @@
 import os, sys, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from test_fortran import FixtureTests, conv, todos
+from test_fortran import FixtureTests, conv, run_bor, todos
 from boreas.fortran import convert
 from boreas.lexer import LangError
 from boreas.parser import parse
@@ -62,6 +62,15 @@ class ConvertFormatTests(unittest.TestCase):
         text, findings = self.text("  write(*,'(A,I5,F8.3,A5,I3.3)') 'n=', n, x, s, n")
         self.assertEqual(todos(findings), [])
         self.assertIn('print "n=" + right(n, 5) + fixed(x, 3, 8) + right(s, 5) + right(n, 3, "0")', text)
+
+    def test_tab_descriptor_pads_to_a_column(self):
+        text, findings = self.text("  write(*,'(\" \",T3,A,T10,A,T14,I3)') 'ab', 'cd', 7\n  write(*,'(T5,A)') 'x'", "")
+        self.assertEqual(todos(findings), [])
+        self.assertEqual(run_bor(text), ["  ab     cd    7", "    x"])
+
+    def test_tab_that_goes_back_over_known_text_is_a_todo(self):
+        _, findings = self.text("  write(*,'(\"abcdef\",T3,A)') 'x'", "")
+        self.assertEqual(len(todos(findings)), 1)
 
     def test_f0_and_i0_width(self):
         text, _ = self.text("  write(*,'(F0.2)') x")

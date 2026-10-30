@@ -218,8 +218,13 @@ class TranslationTests(unittest.TestCase):
         self.assertIn('print "a", 1', text)
         self.assertIn('print "b"', text)
 
-    def test_write_to_a_file_unit_is_a_todo(self):
-        _, findings = conv("write(10, *) 1", "")
+    def test_write_to_a_file_unit_becomes_a_file_variable(self):
+        text, findings = conv("write(10, *) 1", "")
+        self.assertEqual(todos(findings), [])
+        self.assertIn("print to unit_10, 1", text)
+
+    def test_write_to_a_unit_that_is_not_a_constant_is_a_todo(self):
+        _, findings = conv("integer :: u\n  u = 10\n  write(u, *) 1", "")
         self.assertEqual(len(todos(findings)), 1)
 
     def test_exit_and_cycle_and_infinite_do(self):

@@ -41,8 +41,8 @@ def fixed_to_free(src):
             if continuation:
                 if last is None:
                     raise LangError(f"line {number}: a continuation line with nothing to continue")
-                out[last] = _drop_comment(out[last]) + " &"
-                out.append("& " + text.strip())
+                out[last] = _drop_comment(out[last]) + "&"          # fixed form ignores blanks, so glue exactly
+                out.append("&" + text.rstrip())
             else:
                 out.append(f"{label} {text}" if label else text)
             last = len(out) - 1

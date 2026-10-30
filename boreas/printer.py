@@ -144,10 +144,14 @@ def stmt(s, depth):
     if k is Print:
         if not s.args:
             raise LangError("print needs at least one value")
-        return [pad + ("print " if s.newline else "write ") + ", ".join(expr(a) for a in s.args)]
+        where = f"to {expr(s.to)}, " if s.to is not None else ""
+        return [pad + ("print " if s.newline else "write ") + where + ", ".join(expr(a) for a in s.args)]
     if k is Read:
         tail = f" status {expr(s.status)}" if s.status is not None else ""
-        return [f"{pad}{'update ' if s.update else ''}read " + ", ".join(expr(t) for t in s.targets) + tail]
+        where = f"from {expr(s.source)}, " if s.source is not None else ""
+        return [f"{pad}{'update ' if s.update else ''}read " + where + ", ".join(expr(t) for t in s.targets) + tail]
+    if k is Close:
+        return [pad + "close " + expr(s.file)]
     if k is Stop:
         return [pad + "stop" + (" " + expr(s.code) if s.code is not None else "")]
     if k is Call:

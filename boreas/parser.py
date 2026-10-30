@@ -2,7 +2,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from .lexer import lex, LangError
 from .kinds import lit_int, SPELLINGS, KIND_TYPES
 
-TYPES = {"integer", "real", "logical", "string", "complex", "int8", "int16", "int32", "int64", "real32", "real64"}
+TYPES = {"integer", "real", "logical", "string", "file", "complex", "int8", "int16", "int32", "int64", "real32", "real64"}
 
 
 # --- AST ---------------------------------------------------------------
@@ -71,9 +71,12 @@ class Select:
 @dataclass
 class Break: pass       # leaves the nearest enclosing select statement
 @dataclass
-class Print: args: list; newline: bool = True       # `write` is a print without the newline
+class Print:   # `write` is a print without the newline; `to` is the file for `print to log, ...`
+    args: list; newline: bool = True; to: object = None; line: int = 0
 @dataclass
-class Read: targets: list; status: object; line: int; update: bool = False
+class Read: targets: list; status: object; line: int; update: bool = False; source: object = None   # `read from f, ...`
+@dataclass
+class Close: file: object; line: int
 @dataclass
 class Stop: code: object; line: int
 @dataclass
@@ -137,7 +140,7 @@ def root_name(target):
 
 
 KEYWORDS = {"if", "then", "else", "do", "while", "end", "program", "function", "subroutine", "module",
-            "record", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print", "write", "read", "stop",
+            "record", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print", "write", "read", "close", "stop",
             "select", "case", "default", "fallthrough", "break", "update", "allocate", "deallocate",
             "allocatable", "in", "out", "inout", "true", "false", "null", "and", "or", "not"}
 
@@ -697,11 +700,17 @@ class Parser:
             self.error("'case' outside a select")
         if self.at("print", "write"):
             word = self.next().text
+            to = self.file_clause("to")
             args = [self.expr()]
             while self.accept(","):
                 args.append(self.expr())
             self.newline()
-            return Print(args, word == "print")
+            return Print(args, word == "print", to, t.line)
+        if self.at("close"):
+            self.next()
+            f = self.expr()
+            self.newline()
+            return Close(f, t.line)
         if self.at("read") or (self.at("update") and self.toks[self.i + 1].text == "read"):
             return self.read_stmt()
         if self.at("stop"):
@@ -752,6 +761,7 @@ class Parser:
         line = self.tok.line
         update = bool(self.accept("update"))
         self.next()
+        source = self.file_clause("from")
         targets = [self.read_target()]
         while self.accept(","):
             targets.append(self.read_target())
@@ -760,7 +770,17 @@ class Parser:
             self.next()
             status = self.read_target()
         self.newline()
-        return Read(targets, status, line, update)
+        return Read(targets, status, line, update, source)
+
+    def file_clause(self, word):
+        """`to log,` after print/write, `from data,` after read: which file. `to` and `from` stay usable
+        as variable names, because a file name directly after them cannot be anything else."""
+        if not (self.tok.kind == "ident" and self.tok.text == word and self.toks[self.i + 1].kind == "ident"):
+            return None
+        self.next()
+        f = self.expr()
+        self.expect(",")
+        return f
 
     def read_target(self):
         e = self.expr()

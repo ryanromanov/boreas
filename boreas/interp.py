@@ -1,4 +1,5 @@
 import math
+import os
 import cmath
 import operator
 import random
@@ -71,9 +72,36 @@ def base_type(t):
     return t[:-1] if t.endswith("?") else t
 
 
+class FileHandle:
+    """An open (or never opened, or closed) text file. Reading goes through a LineInput."""
+    def __init__(self, name=None, mode=None, fh=None):
+        self.name, self.mode, self.fh = name, mode, fh
+        self.lines = LineInput(fh) if mode == "read" else None
+
+    @property
+    def is_open(self):
+        return self.fh is not None
+
+    def copy(self):
+        return self                                   # a file value is a handle: copies share the file
+
+    def close(self):
+        if self.fh is not None:
+            self.fh.close()
+            self.fh = None
+
+    def __str__(self):
+        return f"file({self.name})" if self.name else "file(unopened)"
+
+
+UNOPENED = FileHandle()
+OPEN_MODES = {"read": "r", "write": "w", "append": "a"}
+
+
 def type_of(v):
     name = TYPE_NAMES.get(type(v))
     if name is not None: return name
+    if isinstance(v, FileHandle): return "file"
     if isinstance(v, Array): return "array"
     if isinstance(v, Record): return v.rdef.name
     if v is NULL: return "null"
@@ -469,6 +497,7 @@ BUILTINS = {
     "len": _len, "achar": _achar, "iachar": _iachar,
     "random": lambda: _random.random(),
     "argument": None, "argument_count": None, "read_line": None,   # need the interpreter: see call_builtin
+    "open": None, "try_open": None, "exists": lambda name: os.path.exists(_need_string("exists", name)),
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
     "transpose": _transpose, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
     "sum": _reduce("sum", sum), "maxval": _reduce("maxval", max), "minval": _reduce("minval", min),
@@ -507,7 +536,7 @@ KEEPS_KIND = {"sqrt", "abs", "sin", "cos", "tan", "asin", "acos", "atan", "atan2
 # ordinary locals, "const" for constants, else "in" / "out" / "inout".
 # An allocatable array's slot has a fifth entry, its rank.
 TYPE, VALUE, IS_ARRAY, INTENT, RANK = range(5)
-DEFAULTS = {"integer": 0, "real": 0.0, "logical": False, "string": "", "complex": 0j,
+DEFAULTS = {"integer": 0, "real": 0.0, "logical": False, "string": "", "complex": 0j, "file": UNOPENED,
             "int8": Int8(0), "int16": Int16(0), "int64": Int64(0), "real32": Real32(0.0)}
 
 # A reference to something assignable is (slot, subs, name). `subs` is None for
@@ -525,7 +554,7 @@ def overlaps(a, b):
     return all(max(_span(x)[0], _span(y)[0]) <= min(_span(x)[1], _span(y)[1]) for x, y in zip(a, b))
 
 
-PURE_BUILTINS = (set(BUILTINS) | set(ELEMENTAL)) - {"allocated", "present", "random", "read_line", "argument",
+PURE_BUILTINS = (set(BUILTINS) | set(ELEMENTAL)) - {"allocated", "present", "random", "read_line", "argument", "open", "try_open", "exists",
                                                     "argument_count"}
 
 
@@ -611,6 +640,7 @@ class Interp:
         self.unit, self.out = unit, out
         self.input = LineInput(stdin)
         self.pending = ""                 # text written with `write` that is waiting for its newline
+        self.open_files = []              # every file the program opened; closed when it ends
         self.args = list(args)            # the program's command-line arguments, for argument(n)
         self.scopes = {}                  # id(procedure) -> Scope
         self.exports = {}                 # module name -> {name: Function | const slot}
@@ -748,6 +778,9 @@ class Interp:
         except _Stop as stop:
             self.finish_line()
             return stop.code
+        finally:
+            for f in self.open_files:
+                f.close()
         self.finish_line()
         return 0
 
@@ -833,7 +866,15 @@ class Interp:
                         raise
                     break
         elif k is Print:
-            self.emit(" ".join(self.show(self.eval(a, env)) for a in s.args), s.newline)
+            text = " ".join(self.show(self.eval(a, env)) for a in s.args)
+            if s.to is None:
+                self.emit(text, s.newline)
+            else:
+                f = self.file_value(s.to, env, s.line, "write")
+                f.fh.write(text + ("\n" if s.newline else ""))
+        elif k is Close:
+            f = self.file_value(s.file, env, s.line)
+            f.close()
         elif k is Read:
             self.read_stmt(s, env)
         elif k is Stop:
@@ -1416,6 +1457,33 @@ class Interp:
             return self.call_builtin(e.name, args, e.line)
         raise LangError(f"line {e.line}: unknown function or array '{e.name}'")
 
+    def file_value(self, e, env, line, want=None):
+        """The open file an expression names; `want` is "read" or "write" when the use needs that mode."""
+        f = self.eval(e, env)
+        if not isinstance(f, FileHandle):
+            raise LangError(f"line {line}: expected a file, got {type_of(f)}")
+        if not f.is_open:
+            raise LangError(f"line {line}: the file {'is closed' if f.name else 'was never opened'}"
+                            + (f" ('{f.name}')" if f.name else ""))
+        if want and f.mode != want and not (want == "write" and f.mode == "append"):
+            raise LangError(f"line {line}: '{f.name}' was opened for {f.mode}, so it cannot be used for {want}ing")
+        return f
+
+    def open_file(self, args, line, must):
+        if len(args) != 2 or not all(isinstance(a, str) for a in args):
+            raise LangError(f"line {line}: open needs a file name and a mode, as in open(\"data.txt\", \"read\")")
+        name, mode = args
+        if mode not in OPEN_MODES:
+            raise LangError(f"line {line}: open mode must be \"read\", \"write\" or \"append\", got \"{mode}\"")
+        try:
+            handle = FileHandle(name, mode, open(name, OPEN_MODES[mode]))
+        except OSError as e:
+            if must:
+                raise LangError(f"line {line}: cannot open '{name}' for {mode}: {e.strerror}")
+            return NULL
+        self.open_files.append(handle)
+        return handle
+
     def read_stmt(self, s, env):
         """`read a, b [status ios]`: list-directed input. Items are separated by blanks or commas and may
         continue on following lines; the rest of the last line is discarded."""
@@ -1439,9 +1507,10 @@ class Interp:
                 items.append((ref, None, typ))
         tokens, code, done = [], 0, 0
         arrays = {}
+        source = self.input if s.source is None else self.file_value(s.source, env, s.line, "read").lines
         for ref, pos, typ in items:
             while not tokens:
-                line = self.input.next_line()
+                line = source.next_line()
                 if line is None:
                     code = -1
                     break
@@ -1464,7 +1533,8 @@ class Interp:
         for ref, arr in arrays.values():
             self.write(ref, arr, s.line)
         if code == -1 and status is None:
-            raise LangError(f"line {s.line}: no more input")
+            raise LangError(f"line {s.line}: no more input" if s.source is None else
+                            f"line {s.line}: end of file reached in '{self.file_value(s.source, env, s.line).name}'")
         if status is not None:
             self.write(status, code, s.line)
 
@@ -1476,9 +1546,13 @@ class Interp:
                 return self.args[args[0]] if 0 <= args[0] < len(self.args) else ""
             if name == "argument_count":
                 return len(self.args) - 1
-            if name == "read_line":              # the next whole line of input, or null at the end
-                line = self.input.next_line()
-                return NULL if line is None else line
+            if name == "read_line":              # the next whole line of input (or of a file), or null at the end
+                if args and not (isinstance(args[0], FileHandle) and args[0].is_open and args[0].mode == "read"):
+                    raise TypeError("needs a file that is open for reading")
+                text = (args[0].lines if args else self.input).next_line()
+                return NULL if text is None else text
+            if name in ("open", "try_open"):
+                return self.open_file(args, line, name == "open")
             if name in ELEMENTAL:
                 f = ELEMENTAL[name]
                 if not any(isinstance(a, Array) for a in args):
