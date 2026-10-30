@@ -946,7 +946,7 @@ class FParser:
         if handler is not None:
             self.k += 1
             return handler(it, scope)
-        if name in ("go", "goto", "common", "equivalence", "data", "namelist", "include",
+        if name in ("go", "goto", "common", "equivalence", "namelist", "include",
                     "nullify", "open", "close", "inquire", "rewind",
                     "backspace", "format", "entry", "pause", "dimension", "parameter", "pointer",
                     "target", "intrinsic", "import", "enum", "sync", "lock", "unlock"):
@@ -1579,6 +1579,69 @@ class FParser:
             if info is not None:
                 stmts.append(Assign(t, self.fit_to_length(t, info.length), it.line))
         return stmts
+
+    def st_data(self, it, scope):
+        """`data a, b /1, 2/, c(1:3) /3*0/`: initial values, which become declaration initialisers."""
+        while True:
+            names = []
+            while True:
+                t = self.next()
+                if t.kind != "name" or self.at_op("("):
+                    raise Unsupported("data with array elements, sections or implied-do loops")
+                names.append(self.rename(t.text))
+                if not self.accept_op(","):
+                    break
+            self.expect_op("/")
+            values = []
+            while not self.at_op("/"):
+                values.extend(self.data_value())
+                if not self.accept_op(","):
+                    break
+            self.expect_op("/")
+            for name in names:
+                info = scope.decls.get(name)
+                if info is None or name in scope.dummies:
+                    raise Unsupported(f"data for '{name}', which is not a declared local variable")
+                count = 1
+                if info.dims is not None:
+                    sizes = [self.constant_int(d) for d in info.dims]
+                    if None in sizes:
+                        raise Unsupported(f"data for '{name}', whose size is not a literal number")
+                    count = 1
+                    for n in sizes:
+                        count *= n
+                if len(values) < count:
+                    raise Unsupported(f"data for '{name}' has too few values")
+                mine, values = values[:count], values[count:]
+                if info.type == "string" and info.length is not None:
+                    mine = [self.fit_to_length(v, info.length) if isinstance(v, Str) else v for v in mine]
+                if info.dims is None:
+                    info.init = mine[0]
+                else:
+                    items = ArrayLit(mine)
+                    info.init = items if len(sizes) == 1 else Apply("reshape", [items, ArrayLit(
+                        [Num(n) for n in sizes])], self.line)
+                if scope.kind not in ("program", "module", "type"):
+                    scope.saved[name] = (it.line, "initialised by a data statement, which implies save")
+            if values:
+                raise Unsupported("data has more values than objects")
+            if not self.accept_op(","):
+                break
+        self.end_of_statement()
+        return []
+
+    def data_value(self):
+        """One value of a data list: a constant, or `n*constant` (n copies)."""
+        repeat = 1
+        t, nxt = self.peek(), self.peek(1)
+        if t is not None and t.kind == "int" and nxt is not None and nxt.text == "*":
+            repeat = t.value
+            self.k += 2
+        sign = self.next().text if self.at_op("+", "-") else None
+        value = self.primary()
+        if sign == "-":
+            value = Unary("-", value)
+        return [value] * repeat
 
     def st_call(self, it, scope):
         name = self.rename(self.expect_name())
