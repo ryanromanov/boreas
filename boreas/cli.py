@@ -10,8 +10,9 @@ USAGE = """usage:
   boreas FILE.bor                    run a program
   boreas check FILE.bor [--json]     parse and check without running; exit 1 on errors
   boreas lsp                         language server on stdin/stdout (errors as diagnostics)
-  boreas convert FILE.f90 [-o OUT]   convert free-form Fortran to Boreas source
-  boreas convert --verify [--timeout SECONDS] [--input FILE] FILE.f90 [-o OUT]
+  boreas convert FILE.f90 [FILE...] [-o OUT]
+                                     convert Fortran (free or fixed form; several files make one program)
+  boreas convert --verify [--timeout SECONDS] [--input FILE] FILE.f90 [FILE...] [-o OUT]
                                      also run the original with gfortran and compare output"""
 
 
@@ -53,8 +54,8 @@ def check_command(args):
 
 
 def convert_command(args):
-    from .fortran import convert
-    path, out_path, do_verify, timeout, input_path = None, None, False, None, None
+    from .fortran import convert_files
+    paths, out_path, do_verify, timeout, input_path = [], None, False, None, None
     it = iter(args)
     for a in it:
         if a == "--verify":
@@ -76,18 +77,19 @@ def convert_command(args):
                 sys.exit("error: -o needs a file name")
         elif a.startswith("-") and len(a) > 1:
             sys.exit(USAGE)
-        elif path is None:
-            path = a
         else:
-            sys.exit(USAGE)
-    if path is None or ((timeout is not None or input_path is not None) and not do_verify):
+            paths.append(a)
+    if not paths or ((timeout is not None or input_path is not None) and not do_verify):
         sys.exit(USAGE)
-    try:
-        with open(path) as f:
-            src = f.read()
-    except OSError as e:
-        sys.exit(f"error: {e}")
-    text, findings = convert(src, os.path.basename(path))
+    sources = []
+    for path in paths:
+        try:
+            with open(path) as f:
+                sources.append((os.path.basename(path), f.read()))
+        except OSError as e:
+            sys.exit(f"error: {e}")
+    text, findings, where = convert_files(sources)
+    path = paths[0] if len(paths) == 1 else ", ".join(paths)
     if out_path:
         with open(out_path, "w") as f:
             f.write(text)
@@ -98,8 +100,9 @@ def convert_command(args):
     notes = [f for f in findings if f[1] == "note"]
     report = sys.stderr
     for line, kind, msg in sorted(findings, key=lambda f: (f[0], f[1] != "todo")):
-        where = f"{path}:{line}" if line else path
-        print(f"{where}: {'TODO' if kind == 'todo' else 'note'}: {msg}", file=report)
+        which, local = where(line) if line else (0, 0)
+        place = f"{paths[which]}:{local}" if line else path
+        print(f"{place}: {'TODO' if kind == 'todo' else 'note'}: {msg}", file=report)
     print(f"converted {path}: {len(todos)} TODO(s), {len(notes)} note(s)"
           + (f" -> {out_path}" if out_path else ""), file=report)
     if do_verify:
@@ -112,7 +115,7 @@ def convert_command(args):
                     stdin_text = f.read()
             except OSError as e:
                 sys.exit(f"error: {e}")
-        sys.exit(verify(path, text, bool(todos), timeout or DEFAULT_TIMEOUT, stdin_text=stdin_text))
+        sys.exit(verify(paths[0] if len(paths) == 1 else paths, text, bool(todos), timeout or DEFAULT_TIMEOUT, stdin_text=stdin_text))
 
 
 def main():

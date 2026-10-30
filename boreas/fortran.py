@@ -3036,9 +3036,33 @@ def convert(src, filename="input"):
     A fixed-form file (by its extension: .f, .for, ...) is read as such."""
     if is_fixed_form(filename):
         src = fixed_to_free(src)
+    return convert_free(src, filename)
+
+
+def convert_files(sources):
+    """Several source files that make up one program -> (Boreas source, findings, where). `sources` is a
+    list of (filename, text). The files are joined in order, so a finding's line number counts through
+    all of them; `where(line)` turns it back into (index of the file, line in that file)."""
+    parts, starts = [], []
+    for name, text in sources:
+        free = fixed_to_free(text) if is_fixed_form(name) else text
+        starts.append(sum(p.count("\n") for p in parts))
+        parts.append(free if free.endswith("\n") else free + "\n")
+
+    def where(line):
+        for n in range(len(sources) - 1, -1, -1):
+            if line > starts[n]:
+                return n, line - starts[n]
+        return 0, line
+
+    text, findings = convert_free("".join(parts), ", ".join(n for n, _ in sources))
+    return text, findings, where
+
+
+def convert_free(src, label):
     unit, trailing, findings = parse_fortran(src)
     todos = sum(1 for f in findings if f[1] == "todo")
-    header = [f"Converted from {filename} by `boreas convert`."]
+    header = [f"Converted from {label} by `boreas convert`."]
     if todos:
         header.append(f"{todos} construct(s) could not be translated: search for TODO(convert).")
     header.extend(trailing)
