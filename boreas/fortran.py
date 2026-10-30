@@ -6,7 +6,7 @@ array expressions, print/write to the terminal). Anything else becomes a
 whole file. Every translation that is not a 1:1 rename is recorded as a
 finding, returned alongside the AST."""
 import re
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 
 from .lexer import LangError
 from .parser import *
@@ -1037,9 +1037,10 @@ class FParser:
         info = scope.decls.get(e.name)
         if info is None or info.type != "string" or info.length is None:
             return None
-        if isinstance(e, Apply) and info.dims is None:
+        is_array = info.dims is not None or info.shape_dropped
+        if isinstance(e, Apply) and not is_array:
             return None                                  # a substring, not an element
-        if isinstance(e, Var) and info.dims is not None:
+        if isinstance(e, Var) and is_array:
             return None                                  # a whole array
         return info
 
@@ -2184,6 +2185,7 @@ class FParser:
         unit = Unit(functions, program, modules, records)
         self.link_uses(unit, built)
         self.infer_intents(unit)
+        self.hoist_calls(unit)
         self.check_saved(unit, built)
         self.check_calls(unit)
         for owner in self.all_functions(unit) + ([program] if program else []):
@@ -2423,11 +2425,7 @@ class FParser:
                     f.comments.append(f"note: argument '{p[1]}' has no intent in the Fortran; "
                                       f"'{p[2]}' was inferred from how the body uses it")
                     self.note(line, f"{f.name}: argument '{p[1]}' had no intent; inferred '{p[2]}'")
-                if not f.is_sub and p[2] != "in":
-                    f.comments.append(f"TODO(convert): this function modifies argument '{p[1]}'; Boreas "
-                                      f"functions only take 'in' arguments, so make it a subroutine")
-                    self.todo(line, f"function '{f.name}' modifies argument '{p[1]}'")
-                    p[2] = "in"
+        self.converted = self.functions_to_subroutines(funcs)
         for f in funcs:                            # Boreas optional arguments are read-only
             for p in f.params:
                 if p[0].endswith("?") and p[2] != "in":
@@ -2461,6 +2459,150 @@ class FParser:
                     msg = f"loop variable '{n.var}' is a dummy argument; Boreas loop variables must be locals"
                     f.comments.append("TODO(convert): " + msg)
                     self.todo(n.line, msg)
+
+    def functions_to_subroutines(self, funcs):
+        """A Fortran function that changes its arguments becomes a subroutine whose last parameter is
+        the result (`out`); its calls are rewritten later by hoist_calls. Returns {name: (function, type)}."""
+        converted = {}
+        for f in funcs:
+            if f.is_sub or all(p[2] == "in" for p in f.params):
+                continue
+            last = f.body[-1] if f.body else None
+            if not (isinstance(last, Return) and isinstance(last.value, Var)):
+                continue
+            result, ret = last.value.name, f.ret
+            f.body = [d for d in f.body[:-1] if not (isinstance(d, Decl) and d.name == result)]
+            for n in iter_nodes(f.body):
+                if isinstance(n, Return) and isinstance(n.value, Var) and n.value.name == result:
+                    n.value = None
+            f.params.append([ret, result, "out"])
+            f.is_sub, f.ret = True, None
+            f.comments.append(f"note: this Fortran function changes its arguments, so it is a subroutine here; "
+                              f"its result is the out parameter '{result}'")
+            self.note(self.fn_lines.get(id(f), 0), f"function '{f.name}' changes its arguments: it became a "
+                      f"subroutine with the result as the out parameter '{result}', and its calls were rewritten")
+            converted[f.name] = (f, ret)
+        return converted
+
+    def hoist_calls(self, unit):
+        """Calls of the converted functions sit inside expressions; a subroutine call is a statement, so each
+        call moves in front of its statement and leaves a variable behind."""
+        if not self.converted:
+            return
+        for owner in self.all_functions(unit) + ([unit.program] if unit.program else []):
+            self.hoist_in(owner)
+
+    def hoist_in(self, owner):
+        types = {d.name: d.type for d in owner.body if isinstance(d, Decl)}
+        arrays = {d.name for d in owner.body if isinstance(d, Decl) and d.dims is not None}
+        params = getattr(owner, "params", [])
+        types.update({p[1]: p[0].rstrip("?") for p in params})
+        used = {n.name for n in iter_nodes(owner.body) if isinstance(n, (Var, Apply, Decl))}
+        used |= {p[1] for p in params}
+        temps = []
+
+        def new_temp(base, typ, line):
+            name = base + "_value"
+            while name in used:
+                name += "_"
+            used.add(name)
+            types[name] = typ
+            temps.append(Decl(typ, name, None, None, line))
+            return name
+
+        class Unhoistable(Exception):
+            pass
+
+        def effectful(e):
+            return any(isinstance(n, Apply) and n.name in self.converted and n.name not in arrays
+                       for n in iter_nodes(e))
+
+        def take(e, pre, line, guarded=False):
+            if isinstance(e, list):
+                return [take(x, pre, line, guarded) for x in e]
+            if isinstance(e, tuple):
+                return tuple(take(x, pre, line, guarded) for x in e)
+            if not is_dataclass(e) or isinstance(e, type):
+                return e
+            if isinstance(e, Apply) and e.name in self.converted and e.name not in arrays:
+                args = take(e.args, pre, line, guarded)
+                if guarded:
+                    raise Unhoistable("it is evaluated only conditionally (after and/or/??, or in a select arm)")
+                tmp = new_temp(e.name, self.converted[e.name][1], line)
+                pre.append(Call(e.name, args + [Var(tmp)], line))
+                return Var(tmp)
+            if isinstance(e, Binary) and e.op in ("and", "or", "??"):
+                return Binary(e.op, take(e.left, pre, line, guarded), take(e.right, pre, line, True))
+            if isinstance(e, SelectExpr):
+                arms = [replace(a, value=take(a.value, pre, line, True)) for a in e.arms]
+                return replace(e, subject=take(e.subject, pre, line, guarded), arms=arms)
+            return replace(e, **{f.name: take(getattr(e, f.name), pre, line, guarded) for f in fields(e)})
+
+        def todo(s, why):
+            msg = f"a call of '{[n.name for n in iter_nodes(s) if isinstance(n, Apply) and n.name in self.converted][0]}' " \
+                  f"cannot be moved in front of its statement: {why}"
+            self.todo(getattr(s, "line", 0) or 0, msg)
+            return Comment("TODO(convert): " + msg)
+
+        def stmt_list(body):
+            out = []
+            for s in body:
+                if isinstance(s, list):
+                    out.append(stmt_list(s))
+                else:
+                    out.extend(one(s))
+            return out
+
+        def one(s):
+            pre, line = [], getattr(s, "line", 0) or 0
+            try:
+                if isinstance(s, Assign):
+                    v = s.value
+                    if isinstance(v, Apply) and v.name in self.converted and v.name not in arrays \
+                            and isinstance(s.target, Var) and types.get(s.target.name) == self.converted[v.name][1] \
+                            and not any(isinstance(n, Var) and n.name == s.target.name for n in iter_nodes(v.args)) \
+                            and not effectful(v.args):
+                        return [Call(v.name, v.args + [s.target], s.line)]
+                    target = take(s.target, pre, line)
+                    return pre + [replace(s, target=target, value=take(s.value, pre, line))]
+                if isinstance(s, Print):
+                    args = take(s.args, pre, line)
+                    return pre + [replace(s, args=args)]
+                if isinstance(s, Call):
+                    args = take(s.args, pre, line)
+                    return pre + [replace(s, args=args)]
+                if isinstance(s, Return) and s.value is not None:
+                    return pre + [replace(s, value=take(s.value, pre, line))]
+                if isinstance(s, ExprStmt):
+                    return pre + [replace(s, expr=take(s.expr, pre, line))]
+                if isinstance(s, If):
+                    (first, body), rest = s.branches[0], s.branches[1:]
+                    cond = take(first, pre, line)
+                    notes = [todo(c, "it sits in an 'else if' condition") for c, _ in rest if effectful(c)]
+                    branches = [(cond, stmt_list(body))] + [(c, stmt_list(b)) for c, b in rest]
+                    return notes + pre + [replace(s, branches=branches, orelse=stmt_list(s.orelse))]
+                if isinstance(s, Do):
+                    lo, hi, step = (take(x, pre, line) for x in (s.lo, s.hi, s.step))
+                    return pre + [replace(s, lo=lo, hi=hi, step=step, body=stmt_list(s.body))]
+                if isinstance(s, DoWhile):
+                    if effectful(s.cond):
+                        return [todo(s.cond, "it is the condition of a 'do while', which is evaluated again each time"),
+                                replace(s, body=stmt_list(s.body))]
+                    return [replace(s, body=stmt_list(s.body))]
+                if isinstance(s, Select):
+                    subject = take(s.subject, pre, line)
+                    cases = [replace(c, body=stmt_list(c.body)) for c in s.cases]
+                    return pre + [replace(s, subject=subject, cases=cases)]
+                if effectful(s):
+                    return [todo(s, "this kind of statement is not handled"), s]
+            except Unhoistable as why:
+                return [todo(s, str(why)), s]
+            return [s]
+
+        owner.body = stmt_list(owner.body)
+        if temps:
+            at = max((n for n, d in enumerate(owner.body) if isinstance(d, Decl)), default=-1) + 1
+            owner.body[at:at] = temps
 
     def check_saved(self, unit, built):
         """Fortran keeps `save`d locals (and ones initialised in their declaration) between calls;
@@ -2532,6 +2674,11 @@ class FParser:
             for n in iter_nodes(e):
                 if isinstance(n, (Var, Apply)) and n.name == name:
                     counts[0] += 1
+                callee = procs.get(n.name) if isinstance(n, Apply) else None
+                if callee is not None and not callee.is_sub:       # a function that changes its arguments
+                    for i, a in enumerate(n.args):
+                        if ref_name(a) == name and i < len(callee.params) and callee.params[i][2] in ("out", "inout"):
+                            counts[1] += 1
 
         def ref_name(e):
             while isinstance(e, FieldAccess):

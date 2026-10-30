@@ -442,6 +442,11 @@ report on stderr. Translations that change meaning are flagged, never silent:
   the generic functions.
 - Old type-specific intrinsic names (`dsqrt`, `dabs`, `dsin`, `datan2`, `amax1`, `alog10`, `idint`, ...)
   become the generic function. Intrinsics Boreas lacks (Bessel functions, complex numbers, ...) stay TODOs.
+- A function that changes its arguments (`integer function f(n)` with `intent(inout) :: n`) becomes a
+  subroutine whose last parameter is the result (`out`), because Boreas functions only take `in` arguments.
+  Its calls move in front of their statement: `r = 10 * f(k) + 1` becomes `call f(k, f_value)` then
+  `r = 10 * f_value + 1`, and a plain `r = f(k)` becomes `call f(k, r)`. Calls that Fortran evaluates only
+  conditionally (after `.and.`/`.or.`, in an `else if` or `do while` condition) are TODOs.
 - `data a, b /1, 2/, c /3*0/` becomes initialisers on the declarations (arrays fill in column order, `n*value` repeats
   a value; a 2-D array uses `reshape`). Elements, sections and implied-do loops in a `data` list are TODOs.
 - `character(len=n)` variables: assigning to one pads with blanks or cuts to `n` (`a = left(x, n)`; literals are
