@@ -1,7 +1,7 @@
 {
   "keywords": [
     {
-      "begin": "\\b(program|module|function|subroutine|record|const|use|call|return|exit|cycle|print|if|then|else|do|while|end|select|case|default|fallthrough|break|update|allocate|deallocate|allocatable|public|private|and|or|not)\\b",
+      "begin": "\\b(program|module|function|subroutine|record|const|use|call|return|exit|cycle|print|if|then|else|do|while|end|select|case|default|fallthrough|break|update|allocate|deallocate|allocatable|public|private|and|or|not|read|write|stop|close)\\b",
       "ignoreCase": true,
       "regularExpression": true
     },
@@ -13,7 +13,7 @@
   ],
   "types": [
     {
-      "begin": "\\b(integer|real|complex|logical|string|int8|int16|int32|int64|real32|real64)\\b",
+      "begin": "\\b(integer|real|complex|logical|string|int8|int16|int32|int64|real32|real64|file)\\b",
       "ignoreCase": true,
       "regularExpression": true
     },
@@ -25,7 +25,7 @@
   ],
   "commands": [
     {
-      "begin": "\\b(size|shape|reshape|matmul|transpose|dot_product|allocated|present|sum|product|maxval|minval|any|all|max|min|huge|epsilon|tiny|sqrt|abs|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|log|log10|gamma|log_gamma|erf|erfc|hypot|real|int|floor|ceiling|nint|aint|anint|mod|modulo|sign|dim|cmplx|aimag|conjg|int8|int16|int32|int64|real32|real64)(?=\\s*\\()",
+      "begin": "\\b(size|shape|reshape|matmul|transpose|dot_product|allocated|present|sum|product|maxval|minval|any|all|max|min|huge|epsilon|tiny|sqrt|abs|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|log|log10|gamma|log_gamma|erf|erfc|hypot|real|int|floor|ceiling|nint|aint|anint|mod|modulo|sign|dim|cmplx|aimag|conjg|int8|int16|int32|int64|real32|real64|trim|len_trim|len|index|achar|iachar|fixed|right|left|repeat|random|argument|argument_count|read_line|open|try_open|exists)(?=\\s*\\()",
       "ignoreCase": true,
       "regularExpression": true
     }
