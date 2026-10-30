@@ -8,6 +8,8 @@ finding, returned alongside the AST."""
 import re
 from dataclasses import dataclass, fields, is_dataclass, replace
 
+from .fixedform import fixed_to_free, is_fixed_form
+from .gotos import Goto, LabelMark, Structurer
 from .lexer import LangError
 from .parser import *
 from .interp import BUILTINS, ELEMENTAL, PURE_BUILTINS
@@ -25,7 +27,6 @@ RESERVED = {"const", "update", "use", "module", "public", "private", "and", "or"
 
 FORMAT_STATEMENT = re.compile(r"(\d+)\s+format\s*\((.*)\)\s*$", re.I | re.S)
 TYPE_WORDS = {"integer", "real", "logical", "character", "double", "complex", "type"}
-FIXED_FORM_EXTENSIONS = (".f", ".for", ".f77", ".ftn")
 BLOCK_KINDS = ("select", "associate", "block", "interface", "where", "forall", "type", "module", "do")
 
 
@@ -40,6 +41,7 @@ class Item:
     text: str                    # one statement, comments removed
     comment: str | None = None   # set for a full-line comment
     toks: list | None = None
+    label: int | None = None     # the statement label in front of the text (`10 continue`)
 
 
 @dataclass
@@ -113,13 +115,25 @@ def scan_lines(src):
         pending = (pending + " " + stripped).strip()
         if cont:
             continue
-        for part in split_semicolons(pending):
-            if part.strip():
-                items.append(Item(pending_line, part.strip()))
+        items.extend(statements(pending, pending_line))
         pending, pending_line = "", None
-    for part in split_semicolons(pending):
-        if part.strip():
-            items.append(Item(pending_line, part.strip()))
+    items.extend(statements(pending, pending_line))
+    return items
+
+
+LABELLED = re.compile(r"(\d+)\s+(?!format\b)(\S.*)$", re.I | re.S)
+
+
+def statements(text, line):
+    """The Items in one logical line; a leading statement label is split off (a `format` keeps it)."""
+    items = []
+    for part in split_semicolons(text):
+        part = part.strip()
+        m = LABELLED.match(part)
+        if m:
+            items.append(Item(line, m.group(2), label=int(m.group(1))))
+        elif part:
+            items.append(Item(line, part))
     return items
 
 
@@ -307,6 +321,8 @@ class FParser:
         self.fn_lines = {}          # id(Function) -> line of its header
         self.types = {}             # derived type name -> TypeInfo, in source order
         self.cur_scope = None       # the scope of the statement being parsed
+        self.ended = None           # the label whose `do` loop just ended on its last statement
+        self.do_labels = []         # terminating labels of the enclosing `do 10 ...` loops, innermost last
         self.loops = []             # enclosing named do loops: (Fortran name, Boreas label), innermost last
         self.construct = None       # the name in front of the statement being read: `outer: do`
 
@@ -860,7 +876,8 @@ class FParser:
             return any(s[0] == "end" and (lab[1] == s[1] or lab[1] is None) for s in stops)
         return lab in stops
 
-    def parse_body(self, scope, stops):
+    def parse_body(self, scope, stops, until=None):
+        """Statements up to one of `stops`, or (for `do 10 ...`) through the statement labelled `until`."""
         body = []
         while self.i < len(self.items):
             it = self.items[self.i]
@@ -870,6 +887,10 @@ class FParser:
                 self.i += 1
                 continue
             self.line = it.line
+            if until is not None and self.ended == until:
+                return body                                   # an inner loop already took the shared last statement
+            self.ended = None
+            ends = until is not None and it.label == until
             try:
                 toks = self.tokens(it)
                 if self.is_stop(toks, stops):
@@ -879,11 +900,16 @@ class FParser:
                 bad = self.uses_skipped(nodes, scope)
                 if bad:
                     raise Unsupported(f"uses '{bad}', whose declaration could not be translated")
+                if it.label is not None:
+                    body.append(LabelMark(it.label))
                 body.extend(nodes)
             except Unsupported as e:
                 if self.i == start:
                     self.i += 1
                 body.append(self.todo_comment(it, str(e)))
+            if ends:
+                self.ended = until
+                return body
         raise LangError("unexpected end of file: a block is missing its 'end' statement")
 
     def uses_skipped(self, nodes, scope):
@@ -946,9 +972,9 @@ class FParser:
         if handler is not None:
             self.k += 1
             return handler(it, scope)
-        if name in ("go", "goto", "common", "equivalence", "namelist", "include",
+        if name in ("common", "equivalence", "namelist", "include",
                     "nullify", "open", "close", "inquire", "rewind",
-                    "backspace", "format", "entry", "pause", "dimension", "parameter", "pointer",
+                    "backspace", "format", "entry", "pause", "dimension", "pointer",
                     "target", "intrinsic", "import", "enum", "sync", "lock", "unlock"):
             raise Unsupported(f"'{name}' is not supported")
         if name in BLOCK_KINDS or name in ("endselect",):
@@ -998,6 +1024,11 @@ class FParser:
         if self.at_op("*") and self.peek(1) is not None and self.peek(1).kind == "int":
             self.k += 1
             return self.next().value
+        if self.at_op("*") and self.peek(1) is not None and self.peek(1).text == "(":      # character*(*), character*(n)
+            self.k += 2
+            length = None if self.accept_op("*") else self.constant_length(self.expr())
+            self.expect_op(")")
+            return length
         if not self.at_op("("):
             return 1
         self.k += 1
@@ -1412,6 +1443,53 @@ class FParser:
     def st_continue(self, it, scope):
         return []
 
+    def st_go(self, it, scope):
+        if not self.at_name("to"):
+            raise Unsupported("unrecognised statement")
+        self.k += 1
+        return self.st_goto(it, scope)
+
+    def st_goto(self, it, scope):
+        """`goto 10`, and the computed `goto (10, 20, 30), i`."""
+        if self.peek() is not None and self.peek().kind == "int":
+            label = self.next().value
+            self.end_of_statement()
+            return [Goto(label, it.line)]
+        if not self.accept_op("("):
+            raise Unsupported("assigned goto")
+        labels = []
+        while True:
+            if self.peek() is None or self.peek().kind != "int":
+                raise Unsupported("unrecognised goto")
+            labels.append(self.next().value)
+            if not self.accept_op(","):
+                break
+        self.expect_op(")")
+        self.accept_op(",")
+        index = self.expr()
+        self.end_of_statement()
+        cases = [Case([Num(n)], [Goto(label, it.line)], it.line) for n, label in enumerate(labels, 1)]
+        return [Select(index, cases, it.line)]
+
+    def st_parameter(self, it, scope):
+        """The F77 `parameter (n = 3, m = 2 * n)` statement: names declared earlier become constants."""
+        self.expect_op("(")
+        while True:
+            name = self.expect_name()
+            self.expect_op("=")
+            value = self.expr()
+            info = scope.decls.get(name)
+            if info is None:
+                info = scope.decls[name] = Info(implicit_type(name), None, False, None, None, False, it.line)
+            info.parameter, info.init = True, value
+            if info.type == "string" and info.length is None and isinstance(value, Str):
+                info.length = len(value.value)
+            if not self.accept_op(","):
+                break
+        self.expect_op(")")
+        self.end_of_statement()
+        return []
+
     def st_contains(self, it, scope):
         raise Unsupported("unexpected 'contains'")
 
@@ -1420,6 +1498,17 @@ class FParser:
         self.expect_op("(")
         cond = self.expr()
         self.expect_op(")")
+        if self.peek() is not None and self.peek().kind == "int":          # the arithmetic if
+            labels = []
+            while True:
+                labels.append(self.next().value)
+                if not self.accept_op(","):
+                    break
+            self.end_of_statement()
+            if len(labels) != 3:
+                raise Unsupported("arithmetic if needs three labels")
+            below, zero, above = (Goto(n, it.line) for n in labels)
+            return [If([(Binary("<", cond, Num(0)), [below]), (Binary("==", cond, Num(0)), [zero])], [above])]
         if self.at_name("then") and self.peek(1) is None:
             branches, orelse = [], []
             stops = {("end", "if"), ("else",), ("elseif",)}
@@ -1462,17 +1551,19 @@ class FParser:
         if self.at_name("concurrent"):
             self.skip_block("do")
             raise Unsupported("'do concurrent' is not supported; skipped")
+        end_label = None
         if self.peek() is not None and self.peek().kind == "int":
-            raise Unsupported("labelled do loops are not supported")
+            end_label = self.next().value
+            self.accept_op(",")
         if self.at_name("while"):
             self.k += 1
             self.expect_op("(")
             cond = self.expr()
             self.expect_op(")")
             self.end_of_statement()
-            return [DoWhile(cond, self.block_until(scope, "do"), label, it.line)]
+            return [DoWhile(cond, self.loop_body(scope, end_label), label, it.line)]
         if self.peek() is None:
-            return [DoWhile(Bool(True), self.block_until(scope, "do"), label, it.line)]
+            return [DoWhile(Bool(True), self.loop_body(scope, end_label), label, it.line)]
         var = self.rename(self.expect_name())
         self.expect_op("=")
         lo = self.expr()
@@ -1480,7 +1571,17 @@ class FParser:
         hi = self.expr()
         step = self.expr() if self.accept_op(",") else None
         self.end_of_statement()
-        return [Do(var, lo, hi, step, self.block_until(scope, "do"), it.line, label)]
+        return [Do(var, lo, hi, step, self.loop_body(scope, end_label), it.line, label)]
+
+    def loop_body(self, scope, end_label):
+        """The body of a do loop: up to `end do`, or through the statement labelled `end_label`."""
+        if end_label is None:
+            return self.block_until(scope, "do")
+        self.do_labels.append(end_label)
+        try:
+            return self.parse_body(scope, set(), until=end_label)
+        finally:
+            self.do_labels.pop()
 
     def block_until(self, scope, kind):
         body = self.parse_body(scope, {("end", kind)})
@@ -1533,7 +1634,7 @@ class FParser:
 
     def st_read(self, it, scope):
         """List-directed input from the keyboard: `read(*,*) a, b`, `read(*,*,iostat=ios) a`, `read *, a`."""
-        status = None
+        status, whole_line = None, False
         if self.accept_op("("):
             parts, depth, cur = [], 1, []
             while depth:
@@ -1553,7 +1654,9 @@ class FParser:
             unit = parts[0]
             if not (len(unit) == 1 and (unit[0].text == "*" or unit[0].value == 5)):
                 raise Unsupported("read from a file unit is not supported")
-            if len(parts) < 2 or not (len(parts[1]) == 1 and parts[1][0].text == "*"):
+            whole_line = len(parts) > 1 and len(parts[1]) == 1 and parts[1][0].kind == "str" \
+                and parts[1][0].value.replace(" ", "").lower() == "(a)"
+            if len(parts) < 2 or not (whole_line or (len(parts[1]) == 1 and parts[1][0].text == "*")):
                 raise Unsupported("formatted read")
             for opt in parts[2:]:
                 if len(opt) == 3 and opt[0].text == "iostat" and opt[1].text == "=" and opt[2].kind == "name":
@@ -1574,12 +1677,31 @@ class FParser:
         self.end_of_statement()
         if not targets or not all(isinstance(t, (Var, Apply, FieldAccess)) for t in targets):
             raise Unsupported("read of something other than variables")
+        if whole_line:
+            return self.read_whole_line(it, scope, targets, status)
         stmts = [Read(targets, status, it.line)]
         for t in targets:                                   # text read into a character(len=n) variable fits n
             info = self.char_info(t)
             if info is not None:
                 stmts.append(Assign(t, self.fit_to_length(t, info.length), it.line))
         return stmts
+
+    def read_whole_line(self, it, scope, targets, status):
+        """`read (*, '(A)', iostat=ios) text`: the next line of input goes into one character variable."""
+        target = targets[0]
+        declared = scope.decls.get(target.name) if len(targets) == 1 and isinstance(target, (Var, Apply)) else None
+        if declared is None or declared.type != "string":
+            raise Unsupported("a '(A)' read of anything but one character variable")
+        info = self.char_info(target)
+        fit = (lambda e: self.fit_to_length(e, info.length)) if info is not None else (lambda e: e)
+        if status is None:
+            return [Assign(target, fit(Binary("??", Apply("read_line", [], it.line), Str(""))), it.line)]
+        line = self.unique("line_read", scope, [])
+        scope.decls[line] = Info("string?", None, False, None, None, False, it.line)
+        return [Assign(Var(line), Apply("read_line", [], it.line), it.line),
+                If([(Apply("present", [Var(line)], it.line),
+                     [Assign(target, fit(Var(line)), it.line), Assign(status, Num(0), it.line)])],
+                   [Assign(status, Num(-1), it.line)])]
 
     def st_data(self, it, scope):
         """`data a, b /1, 2/, c(1:3) /3*0/`: initial values, which become declaration initialisers."""
@@ -2157,7 +2279,16 @@ class FParser:
         return [Print(self.print_items(), newline)]
 
     # -- finishing: turn raw scopes into Boreas procedures
+    def structure_gotos(self, r):
+        s = r.scope
+        pending = Structurer(lambda base: self.unique(base, s, r.body), self.todo)
+        r.body = pending.run(r.body)
+        for name in pending.new_vars:
+            s.decls[name] = Info("integer", None, False, None, None, False, r.line)
+
     def finalize(self):
+        for r in self.raw:
+            self.structure_gotos(r)
         proc_names = {r.scope.name for r in self.raw if r.kind != "program"}
         functions, program = {}, None
         modules = {name: self.build_module(ms) for name, ms in self.modules.items()}
@@ -2787,7 +2918,10 @@ def parse_fortran(src):
 
 
 def convert(src, filename="input"):
-    """Fortran source -> (Boreas source, findings). Each finding is (line, kind, message)."""
+    """Fortran source -> (Boreas source, findings). Each finding is (line, kind, message).
+    A fixed-form file (by its extension: .f, .for, ...) is read as such."""
+    if is_fixed_form(filename):
+        src = fixed_to_free(src)
     unit, trailing, findings = parse_fortran(src)
     todos = sum(1 for f in findings if f[1] == "todo")
     header = [f"Converted from {filename} by `boreas convert`."]

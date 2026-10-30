@@ -53,7 +53,7 @@ def check_command(args):
 
 
 def convert_command(args):
-    from .fortran import convert, FIXED_FORM_EXTENSIONS
+    from .fortran import convert
     path, out_path, do_verify, timeout, input_path = None, None, False, None, None
     it = iter(args)
     for a in it:
@@ -82,9 +82,6 @@ def convert_command(args):
             sys.exit(USAGE)
     if path is None or ((timeout is not None or input_path is not None) and not do_verify):
         sys.exit(USAGE)
-    if path.lower().endswith(FIXED_FORM_EXTENSIONS):
-        sys.exit(f"error: {path} looks like fixed-form Fortran, which is not supported yet "
-                 f"(free-form .f90 and later only)")
     try:
         with open(path) as f:
             src = f.read()

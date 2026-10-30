@@ -230,8 +230,8 @@ class TranslationTests(unittest.TestCase):
         text, _ = conv("integer :: i\n  i = 2\n  if (i == 1) then\n    print *, 'one'\n  elseif (i == 2) then\n    print *, 'two'\n  endif\n  do i = 1, 2\n  enddo", "")
         self.assertEqual(run_bor(text), ["two"])
 
-    def test_labelled_do_is_a_todo_not_a_crash(self):
-        text, findings = conv("integer :: i\n  do 10 i = 1, 3\n    print *, i\n10 continue", "")
+    def test_unsupported_statement_is_a_todo_not_a_crash(self):
+        text, findings = conv("integer :: a, b\n  equivalence (a, b)", "")
         self.assertGreaterEqual(len(todos(findings)), 1)
         parse(text)                                            # still valid Boreas
 
@@ -412,14 +412,14 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("total: 55", r.stdout)
 
-    def test_fixed_form_is_refused(self):
+    def test_fixed_form_is_converted(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "old.f")
             with open(path, "w") as f:
-                f.write("      PROGRAM X\n      END\n")
+                f.write("      PROGRAM X\n      PRINT *, 'hi'\n      END\n")
             r = self.boreas("convert", path)
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn("fixed-form", r.stderr)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('print "hi"', r.stdout)
 
 
 if __name__ == "__main__":

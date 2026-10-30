@@ -88,8 +88,8 @@ class VerifyTests(unittest.TestCase):
 
     def test_todo_makes_mismatch_expected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            f = write(tmp, "t.f90", "program t\n  implicit none\n  integer :: n\n  n = 3\n"
-                                    "  print *, n\n  goto 10\n  print *, n + 1\n10 continue\n  print *, n + 2\nend program t\n")
+            f = write(tmp, "t.f90", "program t\n  implicit none\n  integer :: a, b\n  equivalence (a, b)\n"
+                                    "  a = 3\n  print *, b\nend program t\n")
             r = boreas("convert", "--verify", f)
             self.assertEqual(r.returncode, 1, r.stderr)
             self.assertIn("TODO", r.stderr)

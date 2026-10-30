@@ -458,8 +458,13 @@ def _trim(s):
     return _need_string("trim", s).rstrip(" ")
 
 
+def _index(s, sub):
+    """Where `sub` first occurs in `s`, counting from 1; 0 when it does not occur."""
+    return _need_string("index", s).find(_need_string("index", sub)) + 1
+
+
 BUILTINS = {
-    "trim": _trim, "len_trim": lambda s: len(_trim(s)),
+    "trim": _trim, "len_trim": lambda s: len(_trim(s)), "index": _index,
     "fixed": _fixed, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
     "len": _len, "achar": _achar, "iachar": _iachar,
     "random": lambda: _random.random(),
