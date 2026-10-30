@@ -265,6 +265,7 @@ class Scope:
         self.access = {}              # module scope: name -> "public" | "private" (explicit ones)
         self.default_public = True
         self.formats = {}             # label -> the text inside the parentheses of a `format` statement
+        self.commons = {}             # common block name ('' for blank common) -> [(variable, line)], in order
 
 
 @dataclass
@@ -322,6 +323,8 @@ class FParser:
         self.types = {}             # derived type name -> TypeInfo, in source order
         self.cur_scope = None       # the scope of the statement being parsed
         self.ended = None           # the label whose `do` loop just ended on its last statement
+        self.block_data = []        # the scopes of `block data` units: they only give common variables their first values
+        self.module_writers = set()  # ids of functions that change a module variable
         self.do_labels = []         # terminating labels of the enclosing `do 10 ...` loops, innermost last
         self.loops = []             # enclosing named do loops: (Fortran name, Boreas label), innermost last
         self.construct = None       # the name in front of the statement being read: `outer: do`
@@ -754,6 +757,9 @@ class FParser:
                     self.i += 1
                     name = self.rename(toks[1].text) if len(toks) > 1 else "module"
                     self.parse_unit("module", Scope("module", name), it)
+                elif kind == "block" and len(toks) > 1 and toks[1].text == "data":
+                    self.i += 1
+                    self.parse_unit("block", Scope("blockdata", "block_data"), it)
                 elif kind == "submodule":
                     self.i += 1
                     self.skip_block("module")
@@ -841,7 +847,9 @@ class FParser:
                 else:
                     self.todo(cur.line, f"unsupported statement after contains: {cur.text}")
         self.i += 1                        # the `end` statement
-        if kind == "module":
+        if kind == "block":
+            self.block_data.append(scope)
+        elif kind == "module":
             scope.line = it.line
             if scope.name in self.modules:
                 self.todo(it.line, f"module '{scope.name}' is defined more than once")
@@ -972,7 +980,7 @@ class FParser:
         if handler is not None:
             self.k += 1
             return handler(it, scope)
-        if name in ("common", "equivalence", "namelist", "include",
+        if name in ("equivalence", "namelist", "include",
                     "nullify", "open", "close", "inquire", "rewind",
                     "backspace", "format", "entry", "pause", "dimension", "pointer",
                     "target", "intrinsic", "import", "enum", "sync", "lock", "unlock"):
@@ -1268,7 +1276,7 @@ class FParser:
                         self.kind_names[name] = number
                         if isinstance(init, Apply):
                             init = Num(number)
-                if not attrs.get("parameter") and scope.kind not in ("program", "module", "type") \
+                if not attrs.get("parameter") and scope.kind not in ("program", "module", "type", "blockdata") \
                         and name not in scope.dummies and (init is not None or attrs.get("save")):
                     scope.saved[name] = (line, "declared save" if attrs.get("save")
                                          else "initialised in its declaration, which implies save")
@@ -1289,8 +1297,6 @@ class FParser:
                     for word in ("public", "private"):
                         if attrs.get(word):
                             scope.access[name] = word
-                    if not attrs.get("parameter") and not attrs.get("external"):
-                        scope.skipped.add(name)          # mutable module state is not translated
             except Unsupported as e:
                 out.append(self.todo_comment(it, f"declaration of an entity skipped ({e})"))
                 if self.toks[self.k - 1:self.k] and self.toks[self.k - 1].kind == "name":
@@ -1313,8 +1319,8 @@ class FParser:
                               f"allocatable, and a callee cannot allocate its caller's array")
         if scope.kind == "module":
             scope.skipped.add(name)
-            raise Unsupported(f"allocatable module variable '{name}': Boreas modules hold constants "
-                              f"and procedures only")
+            raise Unsupported(f"allocatable module variable '{name}': a Boreas module cannot hold "
+                              f"allocatable arrays")
         if specs is None or not all(sp == "deferred" for sp in specs):
             raise Unsupported(f"allocatable '{name}' needs a deferred shape such as '(:)'")
         if init is not None:
@@ -1402,7 +1408,7 @@ class FParser:
         """Public names defined in a module that Boreas can export, in source order."""
         names = [t.name for t in self.types.values() if t.ok and t.scope is mod]
         names += [r.scope.name for r in self.raw if r.scope.module is mod and r.scope.host is mod]
-        names += [n for n, info in mod.decls.items() if info.parameter]
+        names += [n for n, info in mod.decls.items() if n not in mod.externals and n not in mod.skipped]
         return [n for n in names if self.is_public(mod, n)]
 
     def visible(self, mod, seen=()):
@@ -1441,6 +1447,29 @@ class FParser:
         return []
 
     def st_continue(self, it, scope):
+        return []
+
+    def st_common(self, it, scope):
+        """`common /block/ a, b(10), c`: shared storage, which becomes a module of variables (merge_commons)."""
+        block = ""
+        if self.accept_op("//"):
+            pass
+        while self.peek() is not None:
+            if self.accept_op("/"):
+                block = "" if self.accept_op("/") else self.rename(self.expect_name())
+                if block:
+                    self.expect_op("/")
+            name = self.rename(self.expect_name())
+            info = scope.decls.get(name)
+            if info is None:
+                info = scope.decls[name] = Info(implicit_type(name), None, False, None, None, False, it.line)
+            if self.accept_op("("):
+                specs = self.dim_specs()
+                if not all(isinstance(sp, tuple) for sp in specs):
+                    raise Unsupported("common variable with a deferred or assumed shape")
+                info.dims = [hi for _, hi in specs]
+            scope.commons.setdefault(block, []).append((name, it.line))
+            self.accept_op(",")
         return []
 
     def st_go(self, it, scope):
@@ -1744,7 +1773,7 @@ class FParser:
                     items = ArrayLit(mine)
                     info.init = items if len(sizes) == 1 else Apply("reshape", [items, ArrayLit(
                         [Num(n) for n in sizes])], self.line)
-                if scope.kind not in ("program", "module", "type"):
+                if scope.kind not in ("program", "module", "type", "blockdata"):
                     scope.saved[name] = (it.line, "initialised by a data statement, which implies save")
             if values:
                 raise Unsupported("data has more values than objects")
@@ -2279,6 +2308,61 @@ class FParser:
         return [Print(self.print_items(), newline)]
 
     # -- finishing: turn raw scopes into Boreas procedures
+    def merge_commons(self):
+        """Each common block becomes a module of variables named `common_<block>`. The names come from
+        the first unit that mentions the block (a `block data` unit first of all); other units refer
+        to the same variables by position, so their own names are renamed to match."""
+        blocks = {}                                      # block -> (module scope, canonical names, Infos)
+        units = list(self.block_data) + [r.scope for r in self.raw]
+        by_scope = {id(r.scope): r for r in self.raw}
+        for sc in units:
+            for block, entries in sc.commons.items():
+                names = [n for n, _ in entries]
+                line = entries[0][1]
+                label = f"common block /{block}/" if block else "blank common"
+                if block not in blocks:
+                    modname = self.unique_module_name("common_" + (block or "blank"))
+                    ms = Scope("module", modname)
+                    ms.line = line
+                    ms.comments.append(f"{label}, as a module of variables")
+                    members = []
+                    for n in names:
+                        info = sc.decls[n]
+                        members.append(n)
+                        ms.decls[n] = replace(info, init=None, parameter=False, intent=None)
+                    self.modules[modname] = ms
+                    blocks[block] = (ms, members)
+                    self.note(line, f"{label} became module {modname}")
+                ms, members = blocks[block]
+                if len(names) != len(members):
+                    self.todo(line, f"{label} has {len(members)} variables in one place and {len(names)} in another")
+                    continue
+                bad = [n for n, m in zip(names, members)
+                       if sc.decls[n].type != ms.decls[m].type or len(sc.decls[n].dims or []) != len(ms.decls[m].dims or [])]
+                if bad:
+                    self.todo(line, f"{label}: '{bad[0]}' has a different type or rank than in the unit that "
+                                    f"first names the block")
+                    continue
+                r = by_scope.get(id(sc))
+                for n, m in zip(names, members):
+                    info = sc.decls.pop(n)
+                    if info.init is not None:               # `data` in a block data unit
+                        ms.decls[m].init = info.init
+                    if n != m:
+                        if r is not None:
+                            if m in sc.decls or m in sc.dummies:
+                                self.todo(line, f"{label}: '{n}' would be renamed to '{m}', which is already "
+                                                f"used in this procedure")
+                            self.rename_in(sc, r.body, n, m)
+                if r is not None:
+                    sc.uses.append((ms.name, members, line))
+
+    def unique_module_name(self, base):
+        taken = set(self.modules) | {r.scope.name for r in self.raw}
+        while base in taken:
+            base += "_"
+        return base
+
     def structure_gotos(self, r):
         s = r.scope
         pending = Structurer(lambda base: self.unique(base, s, r.body), self.todo)
@@ -2287,6 +2371,7 @@ class FParser:
             s.decls[name] = Info("integer", None, False, None, None, False, r.line)
 
     def finalize(self):
+        self.merge_commons()
         for r in self.raw:
             self.structure_gotos(r)
         proc_names = {r.scope.name for r in self.raw if r.kind != "program"}
@@ -2316,6 +2401,7 @@ class FParser:
         unit = Unit(functions, program, modules, records)
         self.link_uses(unit, built)
         self.infer_intents(unit)
+        self.mark_module_writes(unit)
         self.hoist_calls(unit)
         self.check_saved(unit, built)
         self.check_calls(unit)
@@ -2336,14 +2422,10 @@ class FParser:
         for name, info in ms.decls.items():
             if name in ms.externals:
                 continue
-            if info.parameter:
-                consts.append(Decl(info.type, name, info.dims, info.init, info.line, True,
-                                   self.is_public(ms, name)))
-            else:
-                msg = (f"module variable '{name}' is not translated: Boreas modules hold constants "
-                       f"and procedures only, and code that uses '{name}' became a TODO")
-                self.todo(info.line, msg)
-                mod.comments.append("TODO(convert): " + msg)
+            if name in ms.skipped:
+                continue
+            consts.append(Decl(info.type, name, info.dims, info.init, info.line, info.parameter,
+                               self.is_public(ms, name)))
         return mod
 
     def references(self, nodes):
@@ -2381,7 +2463,7 @@ class FParser:
                     by_module.setdefault(scope.module.name, []).append(owner)
         for name, ms in self.modules.items():
             mod = unit.modules[name]
-            refs = self.references([d.init for d in mod.consts]) | {d.type for d in mod.consts}
+            refs = self.references([d.init for d in mod.decls]) | {d.type for d in mod.decls}
             for r in mod.records.values():
                 refs |= self.references([fl.init for fl in r.fields]) | {fl.type for fl in r.fields}
             for f in by_module.get(name, []):
@@ -2530,9 +2612,40 @@ class FParser:
                     self.fix_returns(c.body, result)
 
     # -- parameter modes
+    def module_variables_seen_by(self, unit, owner):
+        """Names of the module variables (not constants) that `owner` can see: its module's own, and the
+        ones it imports."""
+        mod = next((m for m in unit.modules.values() if m.functions.get(getattr(owner, "name", None)) is owner), None)
+        names = {d.name for d in mod.decls if not d.const} if mod else set()
+        for use in owner.uses + (mod.uses if mod else []):
+            src = unit.modules[use.module]
+            names |= {d.name for d in src.decls if not d.const and d.name in use.names}
+        own = {d.name for d in owner.body if isinstance(d, Decl)} | {p[1] for p in getattr(owner, "params", [])}
+        return names - own
+
+    def module_variable_writes(self, owner, names):
+        """The assignments and reads in `owner` that change one of the module variables `names`."""
+        found = []
+        for n in iter_nodes(owner.body):
+            if isinstance(n, Assign) and root_name(n.target) in names:
+                found.append(n)
+            elif isinstance(n, Read) and any(root_name(t) in names for t in n.targets
+                                             + ([n.status] if n.status is not None else [])):
+                found.append(n)
+        return found
+
+    def mark_module_writes(self, unit):
+        for owner in self.all_functions(unit) + ([unit.program] if unit.program else []):
+            names = self.module_variables_seen_by(unit, owner)
+            if names:
+                for n in self.module_variable_writes(owner, names):
+                    n.update = True
+
     def infer_intents(self, unit):
         """Dummy arguments without `intent` get one from how the body uses them."""
         funcs = self.all_functions(unit)
+        self.module_writers = {id(f) for f in funcs
+                               if self.module_variable_writes(f, self.module_variables_seen_by(unit, f))}
         visible = {id(f): self.visible_procs(unit, f) for f in funcs}
         inferred = {(id(f), p[1]) for f in funcs for p in f.params if p[2] is None}
         for _ in range(10):                        # callers depend on callees: iterate to a fixed point
@@ -2596,7 +2709,7 @@ class FParser:
         the result (`out`); its calls are rewritten later by hoist_calls. Returns {name: (function, type)}."""
         converted = {}
         for f in funcs:
-            if f.is_sub or all(p[2] == "in" for p in f.params):
+            if f.is_sub or (all(p[2] == "in" for p in f.params) and id(f) not in self.module_writers):
                 continue
             last = f.body[-1] if f.body else None
             if not (isinstance(last, Return) and isinstance(last.value, Var)):
@@ -2608,9 +2721,10 @@ class FParser:
                     n.value = None
             f.params.append([ret, result, "out"])
             f.is_sub, f.ret = True, None
-            f.comments.append(f"note: this Fortran function changes its arguments, so it is a subroutine here; "
+            what = "its arguments" if any(p[2] != "in" for p in f.params[:-1]) else "module variables"
+            f.comments.append(f"note: this Fortran function changes {what}, so it is a subroutine here; "
                               f"its result is the out parameter '{result}'")
-            self.note(self.fn_lines.get(id(f), 0), f"function '{f.name}' changes its arguments: it became a "
+            self.note(self.fn_lines.get(id(f), 0), f"function '{f.name}' changes {what}: it became a "
                       f"subroutine with the result as the out parameter '{result}', and its calls were rewritten")
             converted[f.name] = (f, ret)
         return converted
@@ -2892,7 +3006,7 @@ class FParser:
             mod = next((m for m in unit.modules.values() if m.functions.get(node.name) is node), None)
             imported = {n for u in uses + (mod.uses if mod else []) for n in u.names}
             declared = {d.name for d in iter_nodes(node.body) if isinstance(d, Decl)} | imported
-            declared |= {d.name for d in mod.consts} if mod else set()
+            declared |= {d.name for d in mod.decls} if mod else set()
             declared |= {p[1] for p in getattr(node, "params", [])}
             known = set(procs) | set(BUILTINS) | set(ELEMENTAL) | set(self.types)
             seen = set()

@@ -687,7 +687,7 @@ class Interp:
         for u in uses:
             exports = self.load_module(u.module, u.line)
             mod = self.unit.modules[u.module]
-            known = set(mod.functions) | {d.name for d in mod.consts} | set(mod.records)
+            known = set(mod.functions) | {d.name for d in mod.decls} | set(mod.records)
             for name in u.names:
                 if name not in known:
                     raise LangError(f"line {u.line}: module '{u.module}' has no '{name}'")
@@ -726,8 +726,10 @@ class Interp:
             self.scopes[id(f)] = scope
         saved, self.scope = self.scope, scope          # initializers may call the module's functions
         env = dict(scope.consts)
-        for d in mod.consts:
+        for d in mod.decls:
             self.declare(d, env)
+            if not d.const:
+                env[d.name][INTENT] = "module"            # shared and changeable, but only with `update`
             scope.consts[d.name] = env[d.name]
         self.scope = saved
         self.check_defaults(mod.records, scope)         # defaults may use the constants above
@@ -735,7 +737,7 @@ class Interp:
         self.exports[name] = {
             **{f.name: f for f in mod.functions.values() if f.public},
             **{r.name: r for r in mod.records.values() if r.public},
-            **{d.name: env[d.name] for d in mod.consts if d.public}}
+            **{d.name: env[d.name] for d in mod.decls if d.public}}
         return self.exports[name]
 
     def run(self):
@@ -777,9 +779,9 @@ class Interp:
             self.declare(s, env)
         elif k is Assign:
             ref = self.resolve(s.target, env, s.line)
-            if (ref.root[INTENT] in ("out", "inout")) != s.update:
+            if (ref.root[INTENT] in ("out", "inout", "module")) != s.update:
                 raise LangError(f"line {s.line}: 'update' must be used exactly when assigning to an "
-                                f"out or inout parameter ('{ref[2]}')")
+                                f"out or inout parameter or a module variable ('{ref[2]}')")
             self.write(ref, self.eval(s.value, env), s.line)
         elif k is If:
             for cond, body in s.branches:
@@ -1421,10 +1423,10 @@ class Interp:
         status = self.resolve(s.status, env, s.line) if s.status is not None else None
         if status is not None and status[0][TYPE] not in ("integer", "integer?"):
             raise LangError(f"line {s.line}: the status of a read must be an integer variable")
-        escaping = [r for r in refs + ([status] if status is not None else []) if r.root[INTENT] in ("out", "inout")]
+        escaping = [r for r in refs + ([status] if status is not None else []) if r.root[INTENT] in ("out", "inout", "module")]
         if bool(escaping) != s.update:
             raise LangError(f"line {s.line}: 'update' must be used exactly when reading into an "
-                            f"out or inout parameter")
+                            f"out or inout parameter or a module variable")
         items = []                                    # (ref, element position or None, element type)
         for ref in refs:
             typ = ref[0][TYPE].rstrip("?")

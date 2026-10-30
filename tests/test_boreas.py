@@ -451,10 +451,6 @@ end module"""
         src = GEO + "\nmodule more\n use geometry: pi\n public const real :: tau = 2.0 * pi\nend module"
         self.assertEqual(run("use more: tau\nprint tau", src), ["6.0"])
 
-    def test_module_holds_only_constants_and_procedures(self):
-        with self.assertRaisesRegex(LangError, "declare this with 'const'"):
-            run("print 1", "module m\n integer :: counter = 0\nend module")
-
     def test_private_keyword_rejected(self):
         with self.assertRaisesRegex(LangError, "private unless marked 'public'"):
             run("print 1", "module m\n private function f() -> integer\n  return 1\n end function\nend module")

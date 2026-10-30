@@ -18,11 +18,11 @@ class SurveyTests(unittest.TestCase):
         out = self.run_survey({
             "ok.f90": "program p\n  print *, 1\nend program\n",
             "lib.f90": "subroutine s(a)\n  integer, intent(in) :: a\n  print *, a\nend subroutine\n",
-            "bad.f90": "module m\n  integer :: counter\nend module\n",
+            "bad.f90": "program p\n  integer :: a, b\n  equivalence (a, b)\nend program\n",
             "notes.txt": "not fortran",
         })
         self.assertIn("3 files, 2 converted with no TODOs", out)
-        self.assertIn("module variable 'X' is not translated", out)
+        self.assertIn("'X' is not supported: equivalence (a, b)", out)
 
 
 if __name__ == "__main__":
