@@ -442,6 +442,8 @@ report on stderr. Translations that change meaning are flagged, never silent:
   the generic functions.
 - Old type-specific intrinsic names (`dsqrt`, `dabs`, `dsin`, `datan2`, `amax1`, `alog10`, `idint`, ...)
   become the generic function. Intrinsics Boreas lacks (Bessel functions, complex numbers, ...) stay TODOs.
+- `data a, b /1, 2/, c /3*0/` becomes initialisers on the declarations (arrays fill in column order, `n*value` repeats
+  a value; a 2-D array uses `reshape`). Elements, sections and implied-do loops in a `data` list are TODOs.
 - `character(len=n)` variables: assigning to one pads with blanks or cuts to `n` (`a = left(x, n)`; literals are
   padded in the converted source), comparisons and `select case` ignore trailing blanks (`trim(a) == "abc"`),
   and `len(a)` becomes `n`. Lengths that are not known numbers (`len=*`), record fields and function results
