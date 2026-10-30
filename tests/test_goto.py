@@ -30,7 +30,7 @@ class FixedFormTests(unittest.TestCase):
 
     def test_tab_form(self):
         free = fixed_to_free("10\tX = 1\n\tY = 2\n\t1Z = 3\n")
-        self.assertEqual([l.strip() for l in free.splitlines()], ["10 X = 1", "Y = 2 &", "& Z = 3"])
+        self.assertEqual([l.strip() for l in free.splitlines()], ["10 X = 1", "Y = 2&", "&Z = 3"])
 
     def test_continuation_with_nothing_before_it(self):
         with self.assertRaises(LangError):

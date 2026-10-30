@@ -12,6 +12,13 @@ class _Space(Str):
     """Blanks from an X descriptor: they move the position, so they are not written at the end of a line."""
 
 
+class _Tab(Str):
+    """A T descriptor: the next text starts at this column (counting from 1)."""
+    def __init__(self, column):
+        super().__init__("")
+        self.column = column
+
+
 class FormatError(Exception):
     """A format we cannot translate (the converter turns it into a TODO)."""
 
@@ -129,6 +136,11 @@ class _Parser:
         self.i += 1
         if v == "x":
             return [("space", repeat or 1)]
+        if v == "t":
+            column = self.number()
+            if not column:
+                raise FormatError("T needs a column number")
+            return [("tab", column)]
         if v not in ("a", "i", "f"):
             raise FormatError(f"the {v.upper()} edit descriptor is not translated")
         width = self.number()
@@ -182,22 +194,28 @@ def _data(desc, value):
 
 
 def _join(parts):
-    """A string expression from literal text and calls; neighbouring text is merged."""
+    """A string expression from literal text and calls; neighbouring text is merged. A tab pads what
+    came before it with blanks up to its column (text already past that column would be cut, which
+    Fortran would instead overwrite, so a tab that goes backwards over known text is refused)."""
     parts = list(parts)
-    while parts and isinstance(parts[-1], _Space):
+    while parts and isinstance(parts[-1], (_Space, _Tab)):
         parts.pop()
     merged = []
     for p in parts:
-        if isinstance(p, Str) and merged and isinstance(merged[-1], Str):
+        if isinstance(p, Str) and merged and isinstance(merged[-1], Str) and not isinstance(p, _Tab) \
+                and not isinstance(merged[-1], _Tab):
             merged[-1] = Str(merged[-1].value + p.value)
         else:
             merged.append(p)
-    if not merged:
-        return Str("")
-    expr = merged[0]
-    for p in merged[1:]:
-        expr = Binary("+", expr, p)
-    return expr
+    expr = None
+    for p in merged:
+        if isinstance(p, _Tab):
+            if isinstance(expr, Str) and len(expr.value) > p.column - 1:
+                raise FormatError("a T descriptor that moves back over text is not translated")
+            expr = Apply("left", [expr if expr is not None else Str(""), Num(p.column - 1)], 0)
+        else:
+            expr = p if expr is None else Binary("+", expr, p)
+    return expr if expr is not None else Str("")
 
 
 def render(items, values):
@@ -216,6 +234,8 @@ def render(items, values):
                 current.append(Str(it[1]))
             elif kind == "space":
                 current.append(_Space(" " * it[1]))
+            elif kind == "tab":
+                current.append(_Tab(it[1]))
             elif kind == "slash":
                 for _ in range(it[1]):
                     lines.append(current)

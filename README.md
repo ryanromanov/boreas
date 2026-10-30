@@ -114,6 +114,34 @@ that does not fit shows as stars (`*****`), as in Fortran. A width of 0 gives ju
 number becomes text inside a longer line: `"n = " + right(n, 0)`. `fixed(x, d, w)` right-aligns in `w`
 characters, dropping the leading 0 if that makes it fit (`.500`).
 
+## Files
+
+A `file` value stands for a text file. `open` gives you one, and `print to`, `write to`, `read from`
+and `close` use it:
+
+    file :: log = open("report.txt", "write")      ! "read", "write" (create or replace) or "append"
+    print to log, "Range:", fixed(r, 1)            ! ends the line
+    write to log, "no newline"
+    close log
+
+    file :: data = open("numbers.txt", "read")
+    integer :: a
+    real :: b
+    integer :: ios
+    read from data, a, b status ios                ! 0 = ok, -1 = end of file, 1 = bad value
+    print read_line(data)                          ! the next whole line, or null at the end
+    close data
+
+- `read from` follows the same rules as `read` (blanks or commas separate values, items continue onto
+  the next line, the rest of the last line is dropped).
+- A failed `open`, a bad value or the end of the file stops the program with a message, as `read` does.
+  `try_open(name, mode)` returns a `file?` that is `null` when the file cannot be opened, and
+  `exists("name")` says whether a file is there.
+- A file value is a handle, not a number: it cannot be mixed up with an integer, it can be passed to
+  a procedure or kept in a module variable, and using it after `close` (or before `open`) is an error.
+  Files still open when the program ends are closed for you.
+- Text files read or written one line at a time only; there is no binary or direct access yet.
+
 ## Constants
 
     const real :: pi = 3.14159
@@ -479,7 +507,8 @@ report on stderr. Translations that change meaning are flagged, never silent:
   before or after the write) turns into `print s + right(n, 5) + fixed(x, 3, 8)`. Translated: `A`, `Aw`,
   `Iw`, `Iw.m`, `Fw.d`, `nX`, `/`, literal text, repeat counts and groups, `advance='no'`, and implied-do
   lists with literal bounds (unrolled). More values than descriptors start the format again; a format
-  with groups that would have to repeat, and `E`, `G`, `L`, `T`, `ES`, `P`, are TODOs.
+  with groups that would have to repeat, and `E`, `G`, `L`, `ES`, `P`, are TODOs. `Tn` pads with blanks up
+  to column `n` (moving back over text already written is a TODO).
 - `read(*,*) a, b` and `read(*,*,iostat=ios) a` become `read a, b` and `read a status ios`; `stop`,
   `stop 3` and `error stop` become `stop`, `stop 3` and `stop 1` (a final plain `stop` is dropped; a stop
   message goes to stderr in Fortran, so it is dropped with a note). `read(*,'(A)') text` reads a whole line into
@@ -490,6 +519,14 @@ report on stderr. Translations that change meaning are flagged, never silent:
   one-pass loop with `exit`, and jumps that cross each other become a small state machine (`select case
   fallthrough` in a loop). Computed `goto`, the arithmetic `if`, labelled `do` loops (a shared last statement
   too) and the `parameter` statement are translated; `common` and `block data` are TODOs.
+- File input and output: `open(unit=9, file=name, status='replace')` becomes `unit_9 = open(name, "write")`,
+  `write(9,*)` / `write(9,fmt)` become `print to unit_9, ...`, `read(9,*)` becomes `read from unit_9, ...`,
+  `read(9,'(A)')` reads a whole line, `close(9)` becomes `close unit_9`, and `inquire(file=f, exist=e)`
+  becomes `e = exists(f)`. Each unit number gets a file variable in one generated module `file_units`, so
+  every procedure sees the same open file. The mode comes from how the program uses the unit (only
+  written: `"write"`, only read: `"read"`, `position='append'`: `"append"`); a unit used both ways, a
+  unit number that is not a constant, `scratch` files, direct access, `rewind`, `backspace` and the
+  other `inquire` forms are TODOs. `iostat=` on `open` uses `try_open`.
 - `random_number(x)` becomes `x = random()` (scalars; an array is a TODO), `get_command_argument(n, s)` becomes
   `s = argument(n)`, `char`/`ichar` become `achar`/`iachar`, and `random_init`/`random_seed` are dropped with a note
   (the random numbers differ from the original's).

@@ -19,7 +19,7 @@ from .fformat import FormatError, parse_format, render, substitute
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
 # so a Fortran variable with one of these names is renamed.
-RESERVED = {"const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
+RESERVED = {"close", "file", "const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "write", "read", "stop", "call", "return", "exit", "cycle",
             "select", "case", "default", "fallthrough", "break",
@@ -105,14 +105,15 @@ def scan_lines(src):
             continue
         if not stripped:
             continue
+        glue = " "
         if pending and stripped.startswith("&"):
-            stripped = stripped[1:].lstrip()
+            stripped, glue = stripped[1:], ""                 # the text carries on exactly where the & was
         cont = stripped.endswith("&")
         if cont:
-            stripped = stripped[:-1].rstrip()
+            stripped = stripped[:-1]
         if pending_line is None:
             pending_line = lineno
-        pending = (pending + " " + stripped).strip()
+        pending = (pending + glue + stripped).strip() if glue else pending + stripped
         if cont:
             continue
         items.extend(statements(pending, pending_line))
@@ -265,6 +266,7 @@ class Scope:
         self.access = {}              # module scope: name -> "public" | "private" (explicit ones)
         self.default_public = True
         self.formats = {}             # label -> the text inside the parentheses of a `format` statement
+        self.units = set()            # unit numbers of the files this procedure uses
         self.commons = {}             # common block name ('' for blank common) -> [(variable, line)], in order
 
 
@@ -323,6 +325,8 @@ class FParser:
         self.types = {}             # derived type name -> TypeInfo, in source order
         self.cur_scope = None       # the scope of the statement being parsed
         self.ended = None           # the label whose `do` loop just ended on its last statement
+        self.unit_use = {}          # unit number -> {"read", "write"}: which way the program uses the file
+        self.opens = []             # (unit number, the Str node holding the mode, status, action, position, line)
         self.block_data = []        # the scopes of `block data` units: they only give common variables their first values
         self.module_writers = set()  # ids of functions that change a module variable
         self.do_labels = []         # terminating labels of the enclosing `do 10 ...` loops, innermost last
@@ -981,7 +985,7 @@ class FParser:
             self.k += 1
             return handler(it, scope)
         if name in ("equivalence", "namelist", "include",
-                    "nullify", "open", "close", "inquire", "rewind",
+                    "nullify", "rewind",
                     "backspace", "format", "entry", "pause", "dimension", "pointer",
                     "target", "intrinsic", "import", "enum", "sync", "lock", "unlock"):
             raise Unsupported(f"'{name}' is not supported")
@@ -1663,7 +1667,7 @@ class FParser:
 
     def st_read(self, it, scope):
         """List-directed input from the keyboard: `read(*,*) a, b`, `read(*,*,iostat=ios) a`, `read *, a`."""
-        status, whole_line = None, False
+        status, whole_line, source = None, False, None
         if self.accept_op("("):
             parts, depth, cur = [], 1, []
             while depth:
@@ -1680,9 +1684,7 @@ class FParser:
                 else:
                     cur.append(t)
             parts.append(cur)
-            unit = parts[0]
-            if not (len(unit) == 1 and (unit[0].text == "*" or unit[0].value == 5)):
-                raise Unsupported("read from a file unit is not supported")
+            source = self.unit_target(parts[0], scope, "read", terminal=5)
             whole_line = len(parts) > 1 and len(parts[1]) == 1 and parts[1][0].kind == "str" \
                 and parts[1][0].value.replace(" ", "").lower() == "(a)"
             if len(parts) < 2 or not (whole_line or (len(parts[1]) == 1 and parts[1][0].text == "*")):
@@ -1707,15 +1709,15 @@ class FParser:
         if not targets or not all(isinstance(t, (Var, Apply, FieldAccess)) for t in targets):
             raise Unsupported("read of something other than variables")
         if whole_line:
-            return self.read_whole_line(it, scope, targets, status)
-        stmts = [Read(targets, status, it.line)]
+            return self.read_whole_line(it, scope, targets, status, source)
+        stmts = [Read(targets, status, it.line, False, source)]
         for t in targets:                                   # text read into a character(len=n) variable fits n
             info = self.char_info(t)
             if info is not None:
                 stmts.append(Assign(t, self.fit_to_length(t, info.length), it.line))
         return stmts
 
-    def read_whole_line(self, it, scope, targets, status):
+    def read_whole_line(self, it, scope, targets, status, source=None):
         """`read (*, '(A)', iostat=ios) text`: the next line of input goes into one character variable."""
         target = targets[0]
         declared = scope.decls.get(target.name) if len(targets) == 1 and isinstance(target, (Var, Apply)) else None
@@ -1724,10 +1726,10 @@ class FParser:
         info = self.char_info(target)
         fit = (lambda e: self.fit_to_length(e, info.length)) if info is not None else (lambda e: e)
         if status is None:
-            return [Assign(target, fit(Binary("??", Apply("read_line", [], it.line), Str(""))), it.line)]
+            return [Assign(target, fit(Binary("??", Apply("read_line", [] if source is None else [source], it.line), Str(""))), it.line)]
         line = self.unique("line_read", scope, [])
         scope.decls[line] = Info("string?", None, False, None, None, False, it.line)
-        return [Assign(Var(line), Apply("read_line", [], it.line), it.line),
+        return [Assign(Var(line), Apply("read_line", [] if source is None else [source], it.line), it.line),
                 If([(Apply("present", [Var(line)], it.line),
                      [Assign(target, fit(Var(line)), it.line), Assign(status, Num(0), it.line)])],
                    [Assign(status, Num(-1), it.line)])]
@@ -2105,6 +2107,11 @@ class FParser:
                 info = s.decls.get(e.name)
                 if info is not None:
                     return self.const_int(info.init, s, depth + 1) if info.parameter and info.init is not None else None
+                for modname, names, _ in s.uses:                      # a constant brought in by `use`
+                    other = self.modules.get(modname)
+                    info = other.decls.get(e.name) if other is not None and (names is None or e.name in names) else None
+                    if info is not None and info.parameter and info.init is not None:
+                        return self.const_int(info.init, other, depth + 1)
                 s = s.host
             return None
         if isinstance(e, Unary) and e.op == "-":
@@ -2248,14 +2255,14 @@ class FParser:
             return scope.formats[toks[0].value]
         raise Unsupported("unsupported write format or option")
 
-    def formatted_output(self, text, line, newline=True):
+    def formatted_output(self, text, line, newline=True, to=None):
         values = self.print_items(expand_arrays=True, blank=False)
         try:
             lines, advance = render(parse_format(text)[0], values)
         except FormatError as e:
             raise Unsupported(f"unsupported write format: {e}")
-        out = [Print([l]) for l in lines[:-1]]
-        out.append(Print([lines[-1]], newline and advance))
+        out = [Print([l], True, to) for l in lines[:-1]]
+        out.append(Print([lines[-1]], newline and advance, to))
         return out
 
     def st_print(self, it, scope):
@@ -2289,9 +2296,7 @@ class FParser:
             else:
                 cur.append(t)
         parts.append(cur)
-        unit = parts[0]
-        if not (len(unit) == 1 and (unit[0].text == "*" or unit[0].value == 6)):
-            raise Unsupported("write to a file unit is not supported")
+        to = self.unit_target(parts[0], scope, "write", terminal=6)
         fmt, newline = None, True
         if len(parts) > 1:
             f = parts[1]
@@ -2304,8 +2309,157 @@ class FParser:
             else:
                 raise Unsupported("unsupported write options")
         if fmt is not None:
-            return self.formatted_output(fmt, it.line, newline)
-        return [Print(self.print_items(), newline)]
+            return self.formatted_output(fmt, it.line, newline, to)
+        return [Print(self.print_items(), newline, to)]
+
+    def unit_target(self, tokens, scope, way, terminal):
+        """The Boreas file variable for the unit of a read/write, or None for the terminal (`*` or the
+        usual unit number)."""
+        if len(tokens) == 1 and tokens[0].text == "*":
+            return None
+        if len(tokens) == 1 and tokens[0].kind == "int" and tokens[0].value == terminal:
+            return None
+        if len(tokens) == 1 and tokens[0].kind == "int":
+            e = Num(tokens[0].value)
+        elif len(tokens) == 1 and tokens[0].kind == "name":
+            e = Var(self.rename(tokens[0].text))
+        else:
+            raise Unsupported("a unit number that is not a plain number or name")
+        return self.unit_var(e, scope, way)
+
+    def unit_var(self, e, scope, way=None):
+        """The file variable (`unit_9`) standing for the constant unit number `e`."""
+        n = self.const_int(e, scope)
+        if n is None:
+            raise Unsupported("the unit number is not a constant, so there is no file variable for it")
+        if n in (0, 5, 6):
+            raise Unsupported(f"unit {n} (a standard stream) used as a file")
+        scope.units.add(n)
+        if way:
+            self.unit_use.setdefault(n, set()).add(way)
+        return Var(f"unit_{n}")
+
+    def keyword_args(self):
+        """The `(unit=9, file=name, ...)` of open / close / inquire: [(keyword or None, expression)]."""
+        self.expect_op("(")
+        out = []
+        while True:
+            key = None
+            if self.peek() is not None and self.peek().kind == "name" and self.peek(1) is not None \
+                    and self.peek(1).kind == "op" and self.peek(1).text == "=":
+                key = self.peek().text
+                self.k += 2
+            out.append((key, self.expr()))
+            if not self.accept_op(","):
+                break
+        self.expect_op(")")
+        self.end_of_statement()
+        return out
+
+    @staticmethod
+    def sorted_args(args, positional):
+        """Split keyword_args into a dict, giving the leading positional ones the names in `positional`."""
+        found = {}
+        for n, (key, e) in enumerate(args):
+            if key is None:
+                if n >= len(positional):
+                    raise Unsupported("too many positional arguments")
+                key = positional[n]
+            found[key] = e
+        return found
+
+    @staticmethod
+    def required(args, key, statement):
+        if key not in args:
+            raise Unsupported(f"{statement} without a {key}")
+        return args.pop(key)
+
+    def word(self, e, what):
+        if not isinstance(e, Str):
+            raise Unsupported(f"{what} that is not a literal word")
+        return e.value.strip().lower()
+
+    def st_open(self, it, scope):
+        """`open(unit=9, file=name, status='replace', iostat=ios)` -> `unit_9 = open(name, "write")`."""
+        args = self.sorted_args(self.keyword_args(), ["unit", "file"])
+        unit = self.unit_var(self.required(args, "unit", "open"), scope)
+        n = int(unit.name[5:])
+        name = args.pop("file", None)
+        if name is None:
+            raise Unsupported("open without a file name")
+        status = self.word(args.pop("status", Str("unknown")), "a status")
+        action = self.word(args.pop("action", Str("")), "an action")
+        position = self.word(args.pop("position", Str("asis")), "a position")
+        iostat = args.pop("iostat", None)
+        for key, expected in (("form", "formatted"), ("access", "sequential"), ("blank", "null")):
+            if key in args and self.word(args.pop(key), key) != expected:
+                raise Unsupported(f"open with {key} other than '{expected}'")
+        if args:
+            raise Unsupported(f"open option '{sorted(args)[0]}'")
+        if status == "scratch":
+            raise Unsupported("a scratch file")
+        if not isinstance(name, Str):
+            name = Apply("trim", [name], it.line)               # Fortran ignores trailing blanks in a file name
+        mode = Str("read")
+        self.opens.append((n, mode, status, action, position, it.line))
+        if iostat is None:
+            return [Assign(unit, Apply("open", [name, mode], it.line), it.line)]
+        if not isinstance(iostat, Var):
+            raise Unsupported("iostat that is not a plain variable")
+        tmp = self.unique("opened", scope, [])
+        scope.decls[tmp] = Info("file?", None, False, None, None, False, it.line)
+        return [Assign(Var(tmp), Apply("try_open", [name, mode], it.line), it.line),
+                If([(Apply("present", [Var(tmp)], it.line),
+                     [Assign(unit, Var(tmp), it.line), Assign(iostat, Num(0), it.line)])],
+                   [Assign(iostat, Num(1), it.line)])]
+
+    def st_close(self, it, scope):
+        args = self.sorted_args(self.keyword_args(), ["unit"])
+        unit = self.unit_var(self.required(args, "unit", "close"), scope)
+        if "status" in args and self.word(args.pop("status"), "a status") != "keep":
+            raise Unsupported("close with status 'delete'")
+        if args:
+            raise Unsupported(f"close option '{sorted(args)[0]}'")
+        return [Close(unit, it.line)]
+
+    def st_inquire(self, it, scope):
+        """Only `inquire(file=name, exist=flag)`: becomes `flag = exists(name)`."""
+        args = self.sorted_args(self.keyword_args(), [])
+        name, flag = args.pop("file", None), args.pop("exist", None)
+        if name is None or flag is None or args:
+            raise Unsupported("inquire other than file=, exist=")
+        if not isinstance(name, Str):
+            name = Apply("trim", [name], it.line)
+        return [Assign(flag, Apply("exists", [name], it.line), it.line)]
+
+    def merge_units(self):
+        """The file variables for unit numbers live in one module, so every procedure sees the same
+        open file; their modes come from how the program uses each unit."""
+        used = {n for r in self.raw for n in r.scope.units}
+        if not used:
+            return
+        modname = self.unique_module_name("file_units")
+        ms = Scope("module", modname)
+        ms.comments.append("one file variable for each Fortran unit number")
+        for n in sorted(used):
+            ms.decls[f"unit_{n}"] = Info("file", None, False, None, None, False, 0)
+        self.modules[modname] = ms
+        for r in self.raw:
+            if r.scope.units:
+                self.add_use(r.scope, modname, [f"unit_{n}" for n in sorted(r.scope.units)], r.line)
+        for n, node, status, action, position, line in self.opens:
+            ways = self.unit_use.get(n, set())
+            if action == "read" or (not action and "write" not in ways and (status == "old" or "read" in ways)):
+                node.value = "read"
+            elif position == "append":
+                node.value = "append"
+            else:
+                node.value = "write"
+            if "read" in ways and "write" in ways:
+                self.todo(line, f"unit {n} is used for both reading and writing; a Boreas file is one or the other")
+            if action in ("", "read", "write") and status == "old" and node.value == "write":
+                self.note(line, f"unit {n} is opened with status 'old' but written: the Boreas \"write\" mode "
+                                f"replaces the file's contents, as Fortran's sequential write does")
 
     # -- finishing: turn raw scopes into Boreas procedures
     def merge_commons(self):
@@ -2355,7 +2509,11 @@ class FParser:
                                                 f"used in this procedure")
                             self.rename_in(sc, r.body, n, m)
                 if r is not None:
-                    sc.uses.append((ms.name, members, line))
+                    self.add_use(sc, ms.name, members, line)
+
+    def add_use(self, scope, modname, names, line):
+        """A procedure inside a module imports through its module (Boreas modules import for their procedures)."""
+        (scope.module or scope).uses.append((modname, names, line))
 
     def unique_module_name(self, base):
         taken = set(self.modules) | {r.scope.name for r in self.raw}
@@ -2372,6 +2530,7 @@ class FParser:
 
     def finalize(self):
         self.merge_commons()
+        self.merge_units()
         for r in self.raw:
             self.structure_gotos(r)
         proc_names = {r.scope.name for r in self.raw if r.kind != "program"}
