@@ -19,7 +19,8 @@ from .fformat import FormatError, parse_format, render, substitute
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
 # so a Fortran variable with one of these names is renamed.
-RESERVED = {"close", "file", "const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
+RESERVED = {"left", "right", "fixed", "exists", "open", "try_open", "read_line",     # built-ins the converter writes itself
+            "close", "file", "const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "write", "read", "stop", "call", "return", "exit", "cycle",
             "select", "case", "default", "fallthrough", "break",
@@ -2559,10 +2560,10 @@ class FParser:
             (modules[t.module.name].records if t.module is not None else records)[t.name] = rd
         unit = Unit(functions, program, modules, records)
         self.link_uses(unit, built)
+        self.check_saved(unit, built)
         self.infer_intents(unit)
         self.mark_module_writes(unit)
         self.hoist_calls(unit)
-        self.check_saved(unit, built)
         self.check_calls(unit)
         for owner in self.all_functions(unit) + ([program] if program else []):
             self.note_auto_allocation(owner.body)
@@ -3010,8 +3011,9 @@ class FParser:
 
     def check_saved(self, unit, built):
         """Fortran keeps `save`d locals (and ones initialised in their declaration) between calls;
-        Boreas locals start fresh. That only matters if the procedure changes the variable and
-        could read the old value, so only then is it a TODO."""
+        Boreas locals start fresh. That only matters if the procedure changes the variable and could
+        read the old value, and if it runs more than once. When it does, the variable moves into a
+        module of its own, so the state is kept and every write to it is marked `update`."""
         for fn, scope in built:
             if not isinstance(fn, Function):
                 continue
@@ -3021,6 +3023,7 @@ class FParser:
                     if name not in scope.dummies and not info.parameter:
                         saved.setdefault(name, (scope.save_all, "the procedure has a bare save statement"))
             procs = self.visible_procs(unit, fn)
+            keep = []
             for name, (line, why) in saved.items():
                 info = scope.decls.get(name)
                 if info is None or info.parameter or name in scope.dummies or name in (scope.name, scope.result):
@@ -3028,11 +3031,72 @@ class FParser:
                 _, writes, _ = self.usage(fn.body, name, procs)
                 if not writes or self.overwritten_first(fn.body, name):
                     continue
-                msg = (f"'{name}' ({why}) keeps its value between calls in Fortran, and this procedure changes "
-                       f"it; Boreas locals start fresh on every call, so the converted procedure behaves "
-                       f"differently (pass it in as an inout argument, or keep the state in the caller)")
-                self.todo(line, msg)
-                fn.comments.append("TODO(convert): " + msg)
+                if self.called_once(unit, fn.name):
+                    self.note(line, f"'{name}' ({why}) keeps its value between calls in Fortran; '{fn.name}' is "
+                                    f"called only once, so a fresh start each call behaves the same")
+                    continue
+                decl = next((d for d in fn.body if isinstance(d, Decl) and d.name == name), None)
+                if decl is None or self.references([decl.dims or [], decl.init]) - set(BUILTINS) - set(ELEMENTAL):
+                    msg = (f"'{name}' ({why}) keeps its value between calls in Fortran, and this procedure changes "
+                           f"it; Boreas locals start fresh on every call, so the converted procedure behaves "
+                           f"differently (its declaration uses other names, so it was not moved to a module)")
+                    self.todo(line, msg)
+                    fn.comments.append("TODO(convert): " + msg)
+                    continue
+                keep.append((decl, line, why))
+            if keep:
+                self.move_to_module(unit, fn, [d for d, _, _ in keep], keep[0][1])
+
+    def move_to_module(self, unit, fn, decls, line):
+        """The saved locals `decls` of `fn` become public variables of a new module that only `fn` uses."""
+        modname = self.unique_module_name(f"{fn.name}_state")
+        mod = Module(modname, [], [replace(d, public=True) for d in decls], {}, line,
+                     [f"state that {fn.name} keeps between calls (its Fortran locals were saved)"])
+        for d in decls:
+            fn.body.remove(d)
+        unit.modules[modname] = mod
+        names = [d.name for d in decls]
+        host = next((m for m in unit.modules.values() if m.functions.get(fn.name) is fn), None)
+        (host or fn).uses.append(Use(modname, names, line))
+        self.note(line, f"{', '.join(names)} of '{fn.name}' keep their value between calls in Fortran, so they "
+                        f"moved to module {modname}; writes to them are marked update")
+
+    def called_once(self, unit, name, seen=()):
+        """Is the procedure called from exactly one place that runs once (the main program, outside
+        every loop), or from one procedure that is itself called once?"""
+        if name in seen:
+            return False
+        sites = []                                          # (owner, inside a loop?)
+        for owner in self.all_functions(unit) + ([unit.program] if unit.program else []):
+            sites += [(owner, in_loop) for in_loop in self.call_sites(owner.body, name, False)]
+        if len(sites) != 1 or sites[0][1]:
+            return False
+        owner = sites[0][0]
+        return isinstance(owner, Program) or self.called_once(unit, owner.name, seen + (name,))
+
+    def call_sites(self, body, name, in_loop):
+        """One entry per call of `name` in `body`: True when the call sits inside a loop."""
+        def calls(x, flag):
+            return [flag for n in iter_nodes(x) if isinstance(n, (Call, Apply)) and n.name == name]
+
+        sites = []
+        for s in body:
+            if isinstance(s, list):
+                sites += self.call_sites(s, name, in_loop)
+            elif isinstance(s, If):
+                for cond, b in s.branches:
+                    sites += calls(cond, in_loop) + self.call_sites(b, name, in_loop)
+                sites += self.call_sites(s.orelse, name, in_loop)
+            elif isinstance(s, Select):
+                sites += calls(s.subject, in_loop)
+                for c in s.cases:
+                    sites += self.call_sites(c.body, name, in_loop)
+            elif isinstance(s, (Do, DoWhile)):
+                sites += calls([s.lo, s.hi, s.step] if isinstance(s, Do) else s.cond, in_loop or isinstance(s, DoWhile))
+                sites += self.call_sites(s.body, name, True)
+            else:
+                sites += calls(s, in_loop)
+        return sites
 
     def overwritten_first(self, body, name):
         """Is `name` always assigned before anything can read it? (Then a saved value is never seen.)"""

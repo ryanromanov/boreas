@@ -344,11 +344,13 @@ class TranslationTests(unittest.TestCase):
         self.assertIn("call bad(k, bad_value)", text)
         self.assertEqual(run_bor(text), ["2 2"])
 
-    def test_implicit_save_is_flagged(self):
+    def test_implicit_save_moves_to_a_module(self):
         src = "subroutine counter(n)\n  integer, intent(out) :: n\n  integer :: calls = 0\n  calls = calls + 1\n  n = calls\nend subroutine\n" \
-              "program p\n  integer :: k\n  call counter(k)\n  print *, k\nend program\n"
-        _, findings = convert(src)
-        self.assertTrue(any("keeps its value between calls" in f[2] for f in todos(findings)))
+              "program p\n  integer :: k\n  call counter(k)\n  call counter(k)\n  print *, k\nend program\n"
+        text, findings = convert(src)
+        self.assertEqual(todos(findings), [])
+        self.assertIn("module counter_state", text)
+        self.assertEqual(run_bor(text), ["2"])
 
     def test_module_variable_is_translated(self):
         src = ("module m\n  implicit none\n  integer :: counter = 0\n  integer, parameter :: k = 3\ncontains\n"

@@ -37,6 +37,15 @@ class FileConversionTests(unittest.TestCase):
                     want = subprocess.run([exe], check=True, capture_output=True, text=True, cwd=tmp2).stdout
                 self.assertTrue(same_output("\n".join(got), want), f"\nBoreas:\n{chr(10).join(got)}\n\ngfortran:\n{want}")
 
+    def test_variables_named_like_the_built_ins_the_converter_writes_are_renamed(self):
+        src = ("program p\n  logical :: exists\n  character(len=3) :: left, right\n  left = 'ab'\n  right = 'cd'\n"
+               "  inquire(file='no_such_file.txt', exist=exists)\n  write(*,'(A,A5)') left, right\n  print *, exists\nend program\n")
+        text, findings = convert(src)
+        self.assertEqual(todos(findings), [])
+        self.assertIn("exists_ = exists(", text)
+        from test_fortran import run_bor
+        self.assertEqual(run_bor(text), ["ab   cd ", "false"])
+
     def test_units_live_in_one_module(self):
         text, _ = convert(read(fixture("files.f90")), "files.f90")
         self.assertIn("module file_units", text)

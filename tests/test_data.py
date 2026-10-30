@@ -49,8 +49,10 @@ class DataStatementTests(unittest.TestCase):
         src = ("subroutine bump()\n  integer :: n\n  data n /0/\n  n = n + 1\n  print *, n\nend subroutine\n"
                "program p\n  call bump()\n  call bump()\nend program\n")
         from boreas.fortran import convert
-        _, findings = convert(src)
-        self.assertEqual(len(todos(findings)), 1)
+        text, findings = convert(src)
+        self.assertEqual(len(todos(findings)), 0)
+        self.assertIn("public integer :: n = 0", text)             # called twice: the state moves to a module
+        self.assertEqual(run_bor(text), ["1", "2"])
 
 
 if __name__ == "__main__":
