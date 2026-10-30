@@ -330,11 +330,14 @@ class TranslationTests(unittest.TestCase):
         self.assertIn("twice_result", text)
         self.assertEqual(run_bor(text), ["4.0"])
 
-    def test_function_that_modifies_an_argument_is_flagged(self):
+    def test_function_that_modifies_an_argument_becomes_a_subroutine(self):
         src = "integer function bad(n)\n  integer, intent(inout) :: n\n  n = n + 1\n  bad = n\nend function\n" \
-              "program p\n  integer :: k\n  k = 1\n  print *, bad(k)\nend program\n"
+              "program p\n  integer :: k\n  k = 1\n  print *, bad(k), k\nend program\n"
         text, findings = convert(src)
-        self.assertTrue(any("modifies argument" in f[2] for f in todos(findings)))
+        self.assertEqual(todos(findings), [])
+        self.assertIn("subroutine bad(inout integer :: n, out integer :: bad_result)", text)
+        self.assertIn("call bad(k, bad_value)", text)
+        self.assertEqual(run_bor(text), ["2 2"])
 
     def test_implicit_save_is_flagged(self):
         src = "subroutine counter(n)\n  integer, intent(out) :: n\n  integer :: calls = 0\n  calls = calls + 1\n  n = calls\nend subroutine\n" \
