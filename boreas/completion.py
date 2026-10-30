@@ -110,7 +110,9 @@ def completions(src, line, character):
         if key in seen or not key.startswith(prefix) or key == prefix:
             return
         seen.add(key)
-        items.append({"label": label, "kind": kind, **({"detail": detail} if detail else {})})
+        # clients sort by sortText, else by label: keep this order, the document's names first
+        items.append({"label": label, "kind": kind, **({"detail": detail} if detail else {}),
+                      "sortText": "%04d" % len(items)})
 
     visible = [d for d in found if d[3] is None or d[3] == scope]
 
