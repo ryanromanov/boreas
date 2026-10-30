@@ -96,8 +96,10 @@ def run_limited(cmd, timeout, stdin_text="", **kw):
 
 
 def compile_original(gfortran, path, exe):
+    """Compile the original: `path` is one file, or a list of files that make up one program."""
+    paths = [path] if isinstance(path, str) else list(path)
     for flags in (["-std=f2018"], []):
-        r = subprocess.run([gfortran, *flags, os.path.abspath(path), "-o", exe], capture_output=True, text=True,
+        r = subprocess.run([gfortran, *flags, *(os.path.abspath(p) for p in paths), "-o", exe], capture_output=True, text=True,
                            errors="replace", cwd=os.path.dirname(exe))      # .mod files land in the scratch dir
         if r.returncode == 0:
             return

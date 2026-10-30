@@ -515,12 +515,14 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - Dummy arguments without `intent` get `in`, `out` or `inout` inferred from the
   body, with a note above the procedure.
 - A function whose name is its result variable gets an explicit result variable.
-- Calls to procedures that exist nowhere in the file are marked TODO, because they would fail.
+- Calls to procedures that exist nowhere in the file are marked TODO, because they would fail. A program split
+  over several files converts as one: `boreas convert main.f lib.f90 -o out.bor` (free and fixed form can be
+  mixed; findings name the file and line).
 - Names that are Boreas keywords (`in`, `out`, `string`, ...) are renamed.
 
 ### Checking a conversion
 
-    boreas convert --verify [--timeout SECONDS] [--input FILE] FILE.f90 [-o OUT]
+    boreas convert --verify [--timeout SECONDS] [--input FILE] FILE.f90 [FILE...] [-o OUT]
 
 `--verify` converts the file as usual, then compiles the original with gfortran
 (set `FC` to use another compiler), runs it and the converted program with empty
