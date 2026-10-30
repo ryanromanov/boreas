@@ -1,5 +1,6 @@
 """A minimal language server: `boreas lsp` speaks LSP over stdin/stdout and reports the
-errors `boreas check` finds as diagnostics, whenever a document is opened or changed."""
+errors `boreas check` finds as diagnostics, whenever a document is opened or changed, and
+completes names (see completion.py)."""
 import json
 import sys
 
@@ -80,7 +81,8 @@ class Server:
         if method is None:                # a response to us; we send no requests
             return
         if method == "initialize":
-            self.reply(id, {"capabilities": {"textDocumentSync": {"openClose": True, "change": 1}},
+            self.reply(id, {"capabilities": {"textDocumentSync": {"openClose": True, "change": 1},
+                                             "completionProvider": {"triggerCharacters": ["."]}},
                             "serverInfo": {"name": "boreas"}})
         elif method == "shutdown":
             self.shutting_down = True
@@ -99,6 +101,11 @@ class Server:
             uri = params["textDocument"]["uri"]
             self.docs.pop(uri, None)
             self.publish(uri)             # clears the squiggles
+        elif method == "textDocument/completion":
+            from .completion import completions
+            pos = params["position"]
+            src = self.docs.get(params["textDocument"]["uri"], "")
+            self.reply(id, {"isIncomplete": False, "items": completions(src, pos["line"], pos["character"])})
         elif id is not None:              # a request we do not support
             self.error(id, METHOD_NOT_FOUND, f"method not supported: {method}")
 
