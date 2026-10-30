@@ -345,16 +345,29 @@ class TranslationTests(unittest.TestCase):
         _, findings = convert(src)
         self.assertTrue(any("keeps its value between calls" in f[2] for f in todos(findings)))
 
-    def test_module_variable_is_a_todo_and_its_uses_are_skipped(self):
+    def test_module_variable_is_translated(self):
         src = ("module m\n  implicit none\n  integer :: counter = 0\n  integer, parameter :: k = 3\ncontains\n"
                "  subroutine bump()\n    counter = counter + 1\n  end subroutine\n"
                "  function triple(x)\n    integer, intent(in) :: x\n    integer :: triple\n    triple = x * k\n  end function\n"
                "end module m\n"
-               "program p\n  use m\n  implicit none\n  call bump()\n  print *, triple(2)\nend program\n")
+               "program p\n  use m\n  implicit none\n  call bump()\n  call bump()\n  print *, triple(2), counter\n"
+               "  counter = 10\n  call bump()\n  print *, counter\nend program\n")
         text, findings = convert(src)
-        self.assertTrue(any("module variable 'counter'" in f[2] for f in todos(findings)))
-        self.assertIn("TODO(convert): uses 'counter'", text)
-        self.assertEqual(run_bor(text), ["6"])
+        self.assertEqual(todos(findings), [])
+        self.assertIn("public integer :: counter = 0", text)
+        self.assertIn("update counter = counter + 1", text)
+        self.assertIn("update counter = 10", text)
+        self.assertEqual(run_bor(text), ["6 2", "11"])
+
+    def test_function_that_changes_a_module_variable_becomes_a_subroutine(self):
+        src = ("module m\n  integer :: seed = 5\ncontains\n"
+               "  function roll()\n    integer :: roll\n    seed = mod(seed * 7, 11)\n    roll = seed\n  end function\n"
+               "end module m\n"
+               "program p\n  use m\n  integer :: a\n  a = roll() + roll()\n  print *, a, seed\nend program\n")
+        text, findings = convert(src)
+        self.assertEqual(todos(findings), [])
+        self.assertIn("subroutine roll(out integer :: roll_result)", text)
+        self.assertEqual(run_bor(text), ["5 3"])
 
     def test_unknown_module_and_private_names_are_todos(self):
         src = ("module m\n  implicit none\n  private\n  public :: f\ncontains\n"

@@ -116,7 +116,7 @@ class Use: module: str; names: list; line: int
 class Module:
     name: str
     uses: list
-    consts: list          # [Decl], all const
+    decls: list           # [Decl]: the module's constants and variables, in order
     functions: dict       # name -> Function
     line: int
     comments: list = field(default_factory=list)   # printed above the header by `convert`
@@ -170,45 +170,66 @@ def target_text(t):
     return t.name
 
 
-def check_writes(body, params):
-    """`update` marks exactly the writes that reach the caller: assignments to
-    out/inout parameters. `params` maps parameter name -> intent."""
+def check_writes(body, params, shared=None, is_sub=True):
+    shared = shared or {}
+    """`update` marks exactly the writes that reach beyond the procedure: assignments to out/inout
+    parameters and to module variables (`shared`, the ones declared in or imported into this
+    procedure's module). `params` maps parameter name -> intent. A function stays free of side
+    effects, so only a subroutine may change a module variable."""
+    def reaches(name, update):
+        if params.get(name) in ("out", "inout"):
+            return params[name] + " parameter"
+        if name in shared and name not in params:
+            return "module variable" if shared[name] or update else None     # an import may be a constant
+        return None
+
+    def write(s, name, shown, what, imported=False):
+        if what == "module variable" and not is_sub:
+            raise LangError(f"line {s.line}: a function cannot change the module variable '{name}'; "
+                            f"make it a subroutine")
+        if what and not s.update:
+            raise LangError(f"line {s.line}: '{name}' is {article(what)}, so other code sees this write; "
+                            f"write 'update {shown} = ...'")
+        if s.update and not what and not imported:
+            kind = "an 'in' parameter" if params.get(name) == "in" else "a local variable"
+            raise LangError(f"line {s.line}: 'update' is for out and inout parameters and module variables, "
+                            f"but '{name}' is {kind}")
+
     for s in body:
         if isinstance(s, list):
-            check_writes(s, params)
+            check_writes(s, params, shared, is_sub)
         elif isinstance(s, Assign):
             name = root_name(s.target)
-            escapes = params.get(name) in ("out", "inout")
-            if escapes and not s.update:
-                shown = target_text(s.target) if isinstance(s.target, FieldAccess) else name
-                raise LangError(f"line {s.line}: '{name}' is an {params[name]} parameter, so the caller sees "
-                                f"this write; write 'update {shown} = ...'")
-            if s.update and not escapes:
-                what = "an 'in' parameter" if params.get(name) == "in" else "a local variable"
-                raise LangError(f"line {s.line}: 'update' is for out and inout parameters, but "
-                                f"'{name}' is {what}")
+            write(s, name, target_text(s.target) if isinstance(s.target, FieldAccess) else name,
+                  reaches(name, s.update), name in shared and not shared[name] and name not in params)
         elif isinstance(s, Read):
             names = {root_name(t) for t in s.targets + ([s.status] if s.status is not None else [])}
-            escapes = sorted(n for n in names if params.get(n) in ("out", "inout"))
+            escapes = sorted(n for n in names if reaches(n, s.update))
             if escapes and not s.update:
-                raise LangError(f"line {s.line}: '{escapes[0]}' is an {params[escapes[0]]} parameter, so the "
-                                f"caller sees this read; write 'update read ...'")
-            if s.update and not escapes:
-                raise LangError(f"line {s.line}: 'update' is for out and inout parameters, but this 'read' "
-                                f"writes none")
+                raise LangError(f"line {s.line}: '{escapes[0]}' is {article(reaches(escapes[0], s.update))}, so other "
+                                f"code sees this read; write 'update read ...'")
+            if s.update and not escapes and not any(n in shared for n in names):
+                raise LangError(f"line {s.line}: 'update' is for out and inout parameters and module "
+                                f"variables, but this 'read' writes none")
+            if escapes and not is_sub and any(reaches(n, s.update) == "module variable" for n in escapes):
+                raise LangError(f"line {s.line}: a function cannot change a module variable; make it a subroutine")
         elif isinstance(s, If):
             for _, b in s.branches:
-                check_writes(b, params)
-            check_writes(s.orelse, params)
+                check_writes(b, params, shared, is_sub)
+            check_writes(s.orelse, params, shared, is_sub)
         elif isinstance(s, Select):
             for c in s.cases:
-                check_writes(c.body, params)
+                check_writes(c.body, params, shared, is_sub)
         elif isinstance(s, Do):
             if s.var in params:
                 raise LangError(f"line {s.line}: loop variable '{s.var}' cannot be a parameter")
-            check_writes(s.body, params)
+            check_writes(s.body, params, shared, is_sub)
         elif isinstance(s, DoWhile):
-            check_writes(s.body, params)
+            check_writes(s.body, params, shared, is_sub)
+
+
+def article(what):
+    return ("an " if what[0] in "aeiou" else "a ") + what
 
 
 def sub_bodies(s):
@@ -364,6 +385,7 @@ def check_allocs(body, params):
 # --- Parser ------------------------------------------------------------
 class Parser:
     def __init__(self, src):
+        self.module_checks = []                     # one list per module being parsed: its procedures, checked at its end
         self.toks, self.i = lex(src), 0
         self.inside = []                  # enclosing "select" / "loop" constructs, innermost last
 
@@ -475,7 +497,7 @@ class Parser:
         self.expect("program")
         if self.tok.kind == "ident":
             self.next()
-        check_writes(body, {})
+        check_writes(body, {}, {n: False for n in (n for u in uses for n in u.names)})
         check_loops(body)
         check_allocs(body, set())
         return Program(name, body, uses=uses)
@@ -500,8 +522,11 @@ class Parser:
         name = self.ident()
         self.newline()
         uses = self.uses()
-        consts, funcs, recs = [], {}, {}
-        taken = {}                                     # name -> line, across constants and procedures
+        decls, funcs, recs = [], {}, {}
+        taken = {}                                     # name -> line, across constants, variables and procedures
+        checks = []                                    # (procedure, its parameter modes): checked once every variable is known
+        shared = {n: False for u in uses for n in u.names}   # names other procedures can see: imported (False) or declared here (True)
+        self.module_checks.append(checks)
 
         def claim(n, at):
             if n in taken:
@@ -520,7 +545,7 @@ class Parser:
                 for x in (d if isinstance(d, list) else [d]):
                     x.public = public
                     claim(x.name, x.line)
-                    consts.append(x)
+                    decls.append(x)
             elif self.at("record"):
                 r = self.record_def(public)
                 claim(r.name, r.line)
@@ -534,15 +559,23 @@ class Parser:
             elif self.at("allocatable"):
                 self.error("a module cannot hold allocatable arrays; declare them inside a procedure")
             elif self.tok.kind == "ident" and (self.tok.text in TYPES or self.typed_ahead()):
-                self.error("a module holds constants, records and procedures; declare this with 'const'")
+                x = self.decl()                        # a module variable: shared, changed only with `update`
+                x.public = public
+                claim(x.name, x.line)
+                decls.append(x)
+                if not x.const:
+                    shared[x.name] = True
             else:
-                self.error("expected 'const', 'record', 'function', 'subroutine' or 'end module'")
+                self.error("expected a declaration, 'record', 'function', 'subroutine' or 'end module'")
             self.skip_newlines()
         self.expect("end")
         self.expect("module")
+        self.module_checks.pop()
         if self.tok.kind == "ident":
             self.next()
-        return Module(name, uses, consts, funcs, line, records=recs)
+        for f, params in checks:
+            check_writes(f.body, params, {**{n: False for u in f.uses for n in u.names}, **shared}, f.is_sub)
+        return Module(name, uses, decls, funcs, line, records=recs)
 
     def procedure(self):
         kind = self.next().text           # "function" or "subroutine"
@@ -558,10 +591,15 @@ class Parser:
         self.expect(kind)
         if self.tok.kind == "ident":
             self.next()
-        check_writes(body, {n: intent for _, n, intent in params})
+        f = Function(name, params, ret, body, is_sub, uses=uses)
+        modes = {n: intent for _, n, intent in params}
+        if self.module_checks:
+            self.module_checks[-1].append((f, modes))
+        else:
+            check_writes(body, modes, {n: False for u in uses for n in u.names}, is_sub)
         check_loops(body)
         check_allocs(body, {n for _, n, _ in params})
-        return Function(name, params, ret, body, is_sub, uses=uses)
+        return f
 
     def params(self, is_sub):
         """`(real :: x, inout integer :: n)`; the mode defaults to `in`."""

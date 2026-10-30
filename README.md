@@ -385,8 +385,30 @@ exactly the names it uses:
 
 Nothing is visible without a `use`. Importing a private or missing name is an
 error, an imported constant is read-only, and modules cannot import each other in
-a cycle. Modules hold only constants and procedures for now (no mutable module
-variables). See `examples/modules.bor`.
+a cycle. See `examples/modules.bor`.
+
+A module can also hold variables. They keep their value between calls, and every write
+to one is marked with `update`, the same word that marks a write to an `out` parameter:
+
+    module counter
+      public integer :: hits = 0
+
+      public subroutine hit()
+        update hits = hits + 1
+      end subroutine
+    end module
+
+    program demo
+      use counter: hits, hit
+      call hit()
+      call hit()
+      print hits          ! 2
+      update hits = 0
+    end program
+
+Any code that imports a variable can read it, and can write it with `update`. A function
+cannot change a module variable (only a subroutine can), so functions stay free of side effects.
+A module variable cannot be `allocatable` yet.
 
 ## Checking a file
 
@@ -417,7 +439,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - `parameter` constants become `const`.
 - `allocatable` locals, `allocate` / `deallocate` (one statement per array) and `allocated()` are
   translated. `stat=`, `errmsg=`, `source=`, `mold=`, non-1 lower bounds, allocatable
-  dummy arguments, results and module variables become TODOs. A whole-array assignment to an
+  dummy arguments and results become TODOs, and so do allocatable module variables. A whole-array assignment to an
   allocatable with no earlier `allocate` gets a note, since Fortran allocated it automatically.
 - Derived types become records, with `%` turned into `.` and `type(point)` into `point`. Component
   defaults carry over (parameters are folded in unless they are module constants), constructors
@@ -481,9 +503,14 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - Modules become Boreas modules. Fortran is public by default, so names get `public`
   unless the Fortran says `private`. `use m` becomes an explicit `use m: a, b` listing
   the names the code actually uses (names a module re-exports are imported from where
-  they are defined). Module variables are mutable shared state, which Boreas modules
-  don't have yet, so they become TODOs, as does code that uses them. A `use` of a module
-  that isn't defined earlier in the same file, or an import that renames, is a TODO too.
+  they are defined). Module variables stay module variables; every write to one gets `update`,
+  and a function that changes one becomes a subroutine with an `out` result (like a function that
+  changes its arguments). A `use` of a module that isn't defined earlier in the same file, or an
+  import that renames, is a TODO.
+- `common /block/ a, b` becomes a module `common_block` of variables, and `block data` supplies their
+  first values. The names come from the first unit that mentions the block; other units that call the
+  variables something else are renamed to match (by position). A block seen with a different number of
+  variables, or different types, is a TODO.
 - Missing declarations are filled in using Fortran's implicit typing rules.
 - Dummy arguments without `intent` get `in`, `out` or `inout` inferred from the
   body, with a note above the procedure.

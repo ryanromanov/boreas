@@ -208,7 +208,7 @@ def module(m):
     lines = [_comment(c) for c in m.comments] + [f"module {m.name}"] + _uses(m.uses)
     for r in m.records.values():
         lines.extend("  " + l for l in record(r))
-    lines.extend(stmts(m.consts))
+    lines.extend(stmts(m.decls))
     for f in m.functions.values():
         lines.extend("  " + l if l else l for l in procedure(f))
     return lines + [f"end module {m.name}"]

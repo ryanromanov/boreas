@@ -417,10 +417,6 @@ end module
         more = self.MOD + "module other\n public record point\n  integer :: k\n end record\nend module\n"
         fails("use geo: point\nuse other: point\nprint 1", "already defined here", more, "")
 
-    def test_modules_cannot_hold_record_variables(self):
-        with self.assertRaisesRegex(LangError, "declare this with 'const'"):
-            run_source("module m\n point :: p\nend module\nprogram t\n print 1\nend program")
-
     def test_module_record_fields_use_records_it_imports(self):
         src = (self.MOD + "module shapes\n use geo: point\n public record seg\n  point :: a\n  point :: b\n end record\n"
                "end module\nprogram t\n use geo: point\n use shapes: seg\n seg :: s\n s.a = point(1.0, 2.0)\n"
