@@ -41,6 +41,11 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(labels("  t"), ["total", "tan", "tanh", "tiny", "transpose", "trim", "then", "true"])
         self.assertEqual(labels("  INT"), ["int16", "int32", "int64", "int8", "integer"])
 
+    def test_sort_text_keeps_the_order(self):
+        src = SRC.replace("CURSOR", "  t")
+        items = completions(src, src.split("\n").index("  t"), 3)
+        self.assertEqual(sorted(items, key=lambda i: i["sortText"]), items)
+
     def test_names_keep_their_spelling_and_match_any_case(self):
         self.assertEqual(labels("  SQ"), ["square", "sqrt"])
 
@@ -74,7 +79,8 @@ class CompletionTests(unittest.TestCase):
     def test_detail_describes_the_name(self):
         src = SRC.replace("CURSOR", "  squ")
         (item,) = completions(src, src.split("\n").index("  squ"), 5)
-        self.assertEqual(item, {"label": "square", "kind": 3, "detail": "function square(real :: side) -> real"})
+        self.assertEqual(item, {"label": "square", "kind": 3, "detail": "function square(real :: side) -> real",
+                                "sortText": "0000"})
 
 
 class ServerTests(unittest.TestCase):
