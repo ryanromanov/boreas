@@ -236,6 +236,8 @@ def to_source(unit, header=()):
     blocks = []
     if header:
         blocks.append([_comment(h) for h in header])
+    if unit.ieee:
+        blocks.append(["use ieee"])
     for r in unit.records.values():
         blocks.append(record(r))
     for m in unit.modules.values():

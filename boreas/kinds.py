@@ -3,6 +3,7 @@
 Plain Python `int` is Boreas's `integer` (32 bits, checked) and plain `float` is `real` (a double). The
 other widths are subclasses, so a value carries its kind and arithmetic can pick the right one:
 int8, int16, int64, real32."""
+import math
 import struct
 from .lexer import LangError
 
@@ -35,6 +36,34 @@ REAL32_EPSILON = 2.0 ** -23
 
 _F32 = struct.Struct("f")
 
+INF = float("inf")
+IEEE = False        # set by the interpreter: True for a program that says `use ieee`
+
+
+def set_ieee(on):
+    global IEEE
+    IEEE = bool(on)
+
+
+def ieee_text(x, width=None):
+    """NaN / Infinity / -Infinity written as gfortran writes them (shorter forms in a narrow field),
+    or None when x is an ordinary number."""
+    if x != x:
+        return "NaN" if width is None or width == 0 or width >= 3 else "*" * width
+    if x == INF:
+        return "Infinity" if width is None or width == 0 or width >= 8 else "Inf" if width >= 3 else "*" * width
+    if x == -INF:
+        return "-Infinity" if width is None or width == 0 or width >= 9 else "-Inf" if width >= 4 else "*" * width
+    return None
+
+
+def ieee_div(a, b):
+    """a / b for numbers when b is zero, as IEEE arithmetic has it: Infinity with the sign of the
+    answer, and NaN for 0/0."""
+    if a != a or a == 0:
+        return float("nan")
+    return math.copysign(INF, a) * math.copysign(1.0, b)
+
 
 def _round32(x):
     try:
@@ -46,15 +75,16 @@ def _round32(x):
 def round32(x):
     """The nearest single-precision value to x."""
     r = _round32(x)
-    if r in (float("inf"), float("-inf")) and x - x == 0:      # x was finite
+    if r in (float("inf"), float("-inf")) and x - x == 0 and not IEEE:      # x was finite
         raise LangError(f"{x!r} is too large for real32")
     return r
 
 
 def shortest32(x):
     """The shortest decimal text that reads back as the same single-precision value."""
-    if x != x or x in (float("inf"), float("-inf")):
-        return str(float(x))
+    special = ieee_text(x)
+    if special is not None:
+        return special
     for digits in range(1, 10):
         text = f"{x:.{digits}g}"
         if _round32(float(text)) == x:
@@ -111,8 +141,15 @@ def raw_arith(op, a, b):
                 return int_pow(a, b)
             return a ** b
     except ZeroDivisionError:
+        if IEEE and op == "/":
+            return ieee_div(a, b)
+        if IEEE and op == "**":                                 # 0.0 ** -1
+            return INF
         raise LangError("division by zero")
     except OverflowError:
+        if IEEE:
+            odd = isinstance(b, int) and b % 2 == 1
+            return -INF if odd and a < 0 else INF
         raise LangError(f"{a} {op} {b} is too large")
     raise LangError(f"unknown operator {op}")
 

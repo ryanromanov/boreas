@@ -36,6 +36,8 @@ def tokens_equal(x, y):
         fx, fy = float(x), float(y)
     except ValueError:
         return x == y
+    if fx != fx or fy != fy or abs(fx) == float("inf") or abs(fy) == float("inf"):
+        return (fx != fx and fy != fy) or fx == fy                   # NaN matches NaN, an infinity its own sign
     single = any(significant_digits(t) == 9 and not t.lstrip("+-").isdigit() for t in (x, y))
     tolerance = SINGLE_TOLERANCE if single else TOLERANCE
     return abs(fx - fy) <= tolerance * max(1.0, abs(fx), abs(fy))
