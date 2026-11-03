@@ -20,7 +20,7 @@ def words(text):
     return [{"T": "true", "F": "false"}.get(w, w) for w in text.split()]
 
 
-SINGLE_TOLERANCE = 5e-8
+SINGLE_TOLERANCE = 6e-8        # half a single-precision step: 2 ** -24 is 5.96e-8
 
 
 def significant_digits(text):
@@ -161,6 +161,6 @@ def verify(path, boreas_text, had_todos, timeout=DEFAULT_TIMEOUT, report=None, s
         say("note: some constructs were not translated (TODO), so a mismatch is expected")
     say("likely causes: Fortran integers are 32-bit and wrap on overflow, while Boreas stops with an error "
         "(use +%, -% and *% where wrapping is intended); single-precision library functions (sin, exp, ...) "
-        "can differ in the last digit; an expression mixing single and double precision. "
+        "can differ in the last digit between platforms; an expression mixing single and double precision. "
         "(Spacing and commas in list-directed output are already ignored.)")
     return 1

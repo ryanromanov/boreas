@@ -573,6 +573,20 @@ IEEE_MATH = {"sqrt", "log", "log10", "asin", "acos", "acosh", "atanh", "exp", "s
              "gamma", "log_gamma", "tan", "hypot", "erf", "erfc"}
 
 
+def single_precision(name, f):
+    """`f`, but a call whose arguments are all real32 goes to the C library's single-precision function
+    (sinf, expf, ...), as it does in a Fortran program."""
+    lib = kinds.single_function(name)
+    if lib is None:
+        return f
+
+    def g(*xs):
+        if all(type(x) is Real32 for x in xs):
+            return kinds.single_check(name, lib(*xs), xs)
+        return f(*xs)
+    return g
+
+
 def ieee_math(name, args, err):
     """What IEEE arithmetic gives where Python's math library raises: NaN for a domain error, Infinity for
     overflow, and -Infinity for log(0) (a file that says `use ieee`)."""
@@ -1462,6 +1476,17 @@ class Interp:
             if kind not in INT_RANGE:
                 raise LangError(f"operator {op!r} works on integers, got {ka} and {kb}")
             return wrap(kind, raw_arith(op[0], a, b))
+        if op == "**" and kind == "real32":                 # gfortran: multiply for a whole exponent, else powf
+            try:
+                return Real32(single_pow(Real32(float(a)), b if isinstance(b, int) else Real32(float(b))))
+            except ZeroDivisionError:
+                if kinds.IEEE:
+                    return Real32(kinds.INF)
+                raise LangError("division by zero")
+            except (ValueError, OverflowError) as err:
+                if kinds.IEEE:
+                    return Real32(float("nan") if isinstance(err, ValueError) else kinds.INF)
+                raise LangError(f"{a} ** {b} is {'not a real number' if isinstance(err, ValueError) else 'too large'}")
         r = raw_arith(op, a, b)
         if kind in INT_RANGE and not isinstance(r, int):    # an integer power of an integer stays an integer
             raise LangError(f"operator {op!r} on {ka} and {kb} did not give an integer")
@@ -1594,7 +1619,7 @@ class Interp:
             if name in ("open", "try_open"):
                 return self.open_file(args, line, name == "open")
             if name in ELEMENTAL:
-                f = ELEMENTAL[name]
+                f = single_precision(name, ELEMENTAL[name])
                 if kinds.IEEE and name in IEEE_MATH:
                     raw = f
 
