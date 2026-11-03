@@ -9,6 +9,7 @@ from itertools import product
 from .lexer import LangError
 from .parser import *
 from .kinds import *
+from . import kinds
 from .kinds import _F32
 
 
@@ -444,7 +445,11 @@ def _fixed(x, decimals, width=None):
     (stars if it does not fit; a leading 0 is dropped before giving up)."""
     if type_of(x) not in NUMERIC or isinstance(x, complex):
         raise TypeError(f"needs a real or integer number, got {type_of(x)}")
-    text = f"{float(x):.{_count('fixed', 'the number of decimals', decimals)}f}"
+    decimals = _count('fixed', 'the number of decimals', decimals)
+    special = ieee_text(float(x), None if width is None else _count("fixed", "the width", width))
+    if special is not None:
+        return special.rjust(width) if width else special
+    text = f"{float(x):.{decimals}f}"
     if decimals == 0:
         text += "."                                        # Fortran's F4.0 shows the point: "2."
     if width is None or width == 0:
@@ -465,7 +470,8 @@ def _pad(side):
         if isinstance(x, (Array, Record)) or x is NULL or isinstance(x, complex):
             raise TypeError(f"needs text or a number, got {type_of(x) if x is not NULL else 'null'}")
         text = x if isinstance(x, str) else ("true" if x is True else "false" if x is False else
-                                           shortest32(x) if type(x) is Real32 else str(x))
+                                           shortest32(x) if type(x) is Real32 else
+                                           ieee_text(x) if type(x) is float and ieee_text(x) else str(x))
         if width == 0:                                               # width 0: just the text (Fortran's I0)
             return text
         if len(text) > width:
@@ -480,6 +486,12 @@ def _repeat(text, n):
     if not isinstance(text, str):
         raise TypeError(f"needs a string, got {type_of(text)}")
     return text * _count("repeat", "the count", n)
+
+
+def _need_number(name, x):
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        raise TypeError(f"needs a real number, got {type_of(x)}")
+    return x
 
 
 def _trim(s):
@@ -497,6 +509,7 @@ BUILTINS = {
     "len": _len, "achar": _achar, "iachar": _iachar,
     "random": lambda: _random.random(),
     "argument": None, "argument_count": None, "read_line": None,   # need the interpreter: see call_builtin
+    "nan": lambda: float("nan"), "infinity": lambda: kinds.INF,
     "open": None, "try_open": None, "exists": lambda name: os.path.exists(_need_string("exists", name)),
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
     "transpose": _transpose, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
@@ -519,6 +532,8 @@ ELEMENTAL = {
     "conjg": _need_complex("conjg", lambda z: z.conjugate()),
 }
 # These also take a complex argument and then give a complex result.
+ELEMENTAL.update({"isnan": lambda x: _need_number("isnan", x) != x,
+                  "isinf": lambda x: abs(_need_number("isinf", x)) == kinds.INF})
 ELEMENTAL.update({name: _complex_aware(getattr(math, name), getattr(cmath, name)) for name in (
     "sqrt", "sin", "cos", "tan", "asin", "acos", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
     "exp", "log", "log10")})
@@ -552,6 +567,25 @@ def overlaps(a, b):
     if a is None or b is None:
         return True
     return all(max(_span(x)[0], _span(y)[0]) <= min(_span(x)[1], _span(y)[1]) for x, y in zip(a, b))
+
+
+IEEE_MATH = {"sqrt", "log", "log10", "asin", "acos", "acosh", "atanh", "exp", "sinh", "cosh", "mod", "modulo",
+             "gamma", "log_gamma", "tan", "hypot", "erf", "erfc"}
+
+
+def ieee_math(name, args, err):
+    """What IEEE arithmetic gives where Python's math library raises: NaN for a domain error, Infinity for
+    overflow, and -Infinity for log(0) (a file that says `use ieee`)."""
+    if not args or not all(isinstance(a, (int, float)) and not isinstance(a, bool) for a in args):
+        raise err
+    x = float(args[0])
+    if isinstance(err, OverflowError):
+        return -kinds.INF if name in ("sinh", "gamma") and x < 0 else kinds.INF
+    if name in ("log", "log10") and x == 0:
+        return -kinds.INF
+    if name == "atanh" and abs(x) == 1:
+        return math.copysign(kinds.INF, x)
+    return float("nan")
 
 
 PURE_BUILTINS = (set(BUILTINS) | set(ELEMENTAL)) - {"allocated", "present", "random", "read_line", "argument", "open", "try_open", "exists",
@@ -638,6 +672,7 @@ def read_value(typ, token):
 class Interp:
     def __init__(self, unit, out=print, args=(), stdin=None):
         self.unit, self.out = unit, out
+        kinds.set_ieee(getattr(unit, "ieee", False))
         self.input = LineInput(stdin)
         self.pending = ""                 # text written with `write` that is waiting for its newline
         self.open_files = []              # every file the program opened; closed when it ends
@@ -1058,6 +1093,7 @@ class Interp:
         if isinstance(v, bool): return "true" if v else "false"
         if isinstance(v, complex): return f"({v.real}, {v.imag})"
         if type(v) is Real32: return shortest32(v)
+        if type(v) is float and (v != v or v in (kinds.INF, -kinds.INF)): return ieee_text(v)
         if isinstance(v, Record):
             missing = v.first_unassigned()
             if missing:
@@ -1374,6 +1410,8 @@ class Interp:
                     try:
                         return f(a, b)
                     except ZeroDivisionError:
+                        if kinds.IEEE:
+                            return ieee_div(a, b)
                         raise LangError("division by zero")
             elif ta is Real32:                         # two single-precision values: round each result
                 f = FAST_FLOAT.get(op)
@@ -1381,6 +1419,8 @@ class Interp:
                     try:
                         r = f(a, b)
                     except ZeroDivisionError:
+                        if kinds.IEEE:
+                            return Real32(ieee_div(a, b))
                         raise LangError("division by zero")
                     if type(r) is not float:
                         return r                       # a comparison
@@ -1555,6 +1595,14 @@ class Interp:
                 return self.open_file(args, line, name == "open")
             if name in ELEMENTAL:
                 f = ELEMENTAL[name]
+                if kinds.IEEE and name in IEEE_MATH:
+                    raw = f
+
+                    def f(*xs):
+                        try:
+                            return raw(*xs)
+                        except (ValueError, ZeroDivisionError, OverflowError) as err:
+                            return ieee_math(name, xs, err)
                 if not any(isinstance(a, Array) for a in args):
                     result = f(*args)
                 else:

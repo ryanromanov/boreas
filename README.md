@@ -142,6 +142,30 @@ and `close` use it:
   Files still open when the program ends are closed for you.
 - Text files read or written one line at a time only; there is no binary or direct access yet.
 
+## Infinity and NaN
+
+By default Boreas stops on real arithmetic that has no ordinary answer: `1.0 / 0.0`, `sqrt(-1.0)`,
+`log(0.0)`, `asin(2.0)`, `exp(1000.0)` and a result too large for its type are errors. A file can ask for
+IEEE arithmetic, as Fortran has it, with one line at the top:
+
+    use ieee
+
+    program demo
+      real :: zero = 0.0
+      print 1.0 / zero, sqrt(-1.0), log(zero)     ! Infinity NaN -Infinity
+      real :: x = asin(2.0)
+      if x /= x then                              ! NaN is the only value that is not equal to itself
+        print "no solution"
+      end if
+    end program
+
+With `use ieee` those operations give `NaN`, `Infinity` or `-Infinity` and the program carries on. Comparisons
+follow IEEE (every comparison with NaN is false except `/=`). `isnan(x)` and `isinf(x)` test a value (also
+element by element on arrays), and `nan()` and `infinity()` make one on purpose; those four work with or
+without `use ieee`. Printing writes `NaN`, `Infinity` and `-Infinity` as gfortran does, and `fixed` pads them
+like Fortran's `F8.2`. Integer division by zero and turning NaN into an integer stop the program either way.
+`boreas convert` writes `use ieee` into every converted program, since Fortran programs may rely on it.
+
 ## Constants
 
     const real :: pi = 3.14159
@@ -551,6 +575,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
   first values. The names come from the first unit that mentions the block; other units that call the
   variables something else are renamed to match (by position). A block seen with a different number of
   variables, or different types, is a TODO.
+- Converted programs start with `use ieee`, so real arithmetic gives NaN and Infinity as Fortran does.
 - Missing declarations are filled in using Fortran's implicit typing rules.
 - Dummy arguments without `intent` get `in`, `out` or `inout` inferred from the
   body, with a note above the procedure.

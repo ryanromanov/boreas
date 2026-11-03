@@ -2558,7 +2558,7 @@ class FParser:
                 continue
             rd = RecordDef(t.name, t.fields, t.module is not None and self.is_public(t.module, t.name), t.line)
             (modules[t.module.name].records if t.module is not None else records)[t.name] = rd
-        unit = Unit(functions, program, modules, records)
+        unit = Unit(functions, program, modules, records, ieee=True)    # Fortran arithmetic is IEEE
         self.link_uses(unit, built)
         self.check_saved(unit, built)
         self.infer_intents(unit)

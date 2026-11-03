@@ -130,6 +130,7 @@ class Unit:
     program: Program      # None for a library-only file
     modules: dict = field(default_factory=dict)
     records: dict = field(default_factory=dict)    # top-level record types
+    ieee: bool = False    # `use ieee`: real arithmetic follows IEEE (NaN, Infinity) instead of stopping
 
 
 def root_name(target):
@@ -435,7 +436,7 @@ class Parser:
 
     # -- top level
     def parse(self):
-        funcs, mods, prog, recs = {}, {}, None, {}
+        funcs, mods, prog, recs, ieee = {}, {}, None, {}, False
         self.skip_newlines()
         while self.tok.kind != "eof":
             if self.at("public", "private"):
@@ -459,12 +460,15 @@ class Parser:
                 if prog:
                     self.error("only one program allowed")
                 prog = self.program()
+            elif self.at("use") and self.toks[self.i + 1].text == "ieee" and self.toks[self.i + 2].kind in ("nl", "eof"):
+                self.next(); self.next()
+                ieee = True                                  # `use ieee`: real arithmetic gives NaN and Infinity
             else:
-                self.error("expected 'module', 'record', 'function', 'subroutine' or 'program'")
+                self.error("expected 'use ieee', 'module', 'record', 'function', 'subroutine' or 'program'")
             self.skip_newlines()
         if not prog:
             raise LangError("no program found")
-        return Unit(funcs, prog, mods, recs)
+        return Unit(funcs, prog, mods, recs, ieee)
 
     def record_def(self, public):
         """`record point` / one `type :: name` line per field / `end record`."""
