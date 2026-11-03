@@ -66,6 +66,13 @@ Integers and reals come in fixed widths, named by their size:
 - **`real32` is real single precision**: every operation is rounded to 24 bits, so the results match
   Fortran's `real`. A real literal next to a `real32` is a `real32` (`x * 2.0`), as in Fortran.
   Values print with the shortest text that reads back (`0.1`, not `0.10000000149`).
+- `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `exp`,
+  `log`, `log10`, `hypot`, `gamma`, `log_gamma`, `erf` and `erfc` of `real32` values call the C library's
+  single-precision versions (`sinf`, `expf`, ...), which is what Fortran does, so the last bit matches
+  gfortran on the same machine (a double-precision `sin` rounded to single is off by one bit in a few
+  percent of cases). `x ** n` with a whole exponent multiplies in single precision and `x ** y` calls `powf`,
+  as gfortran does. Another platform's library can differ in the last bit, as with Fortran. If the library
+  cannot be loaded, Boreas falls back to double precision rounded to single.
 - Conversion functions: `int8(x)`, `int16(x)`, `int32(x)` / `int(x)`, `int64(x)` (truncate and check
   the range), `real32(x)`, `real64(x)` / `real(x)`. `huge`, `epsilon` and `tiny` work for every kind.
 - Single precision is slower than double: each result is rounded and tagged with its width.
@@ -598,7 +605,7 @@ output, which Fortran prints with nine digits, within half a single-precision st
 It prints "verified: ... (N values compared)" and exits 0 on a match. On a
 mismatch it shows the first differing value from each program and exits 1.
 Common causes are integer arithmetic that wraps around in Fortran but stops with an error in Boreas
-(use `+%`/`*%`), single-precision library functions that differ in the last digit, an expression
+(use `+%`/`*%`), single-precision library functions that differ in the last digit on another platform, an expression
 mixing single and double precision, and constructs reported as TODO. Exit status 2
 means it could not verify (gfortran missing, the original does not compile, or
 it timed out).

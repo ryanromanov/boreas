@@ -3,6 +3,8 @@
 Plain Python `int` is Boreas's `integer` (32 bits, checked) and plain `float` is `real` (a double). The
 other widths are subclasses, so a value carries its kind and arithmetic can pick the right one:
 int8, int16, int64, real32."""
+import ctypes
+import ctypes.util
 import math
 import struct
 from .lexer import LangError
@@ -55,6 +57,75 @@ def ieee_text(x, width=None):
     if x == -INF:
         return "-Infinity" if width is None or width == 0 or width >= 9 else "-Inf" if width >= 4 else "*" * width
     return None
+
+
+# --- single-precision library functions ---------------------------------
+# Fortran computes sin(x) for a real(4) with the C library's sinf, not with a double-precision sin
+# rounded to single, and the two differ in the last bit now and then (a few percent of the time for
+# atan). Boreas calls the same sinf, expf, ... the platform's gfortran does, so a real32 program gives
+# the same bits; where the library cannot be loaded it falls back to double precision rounded to single.
+SINGLE_UNARY = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "asin": "asinf", "acos": "acosf", "atan": "atanf",
+                "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf", "acosh": "acoshf",
+                "atanh": "atanhf", "exp": "expf", "log": "logf", "log10": "log10f", "erf": "erff", "erfc": "erfcf",
+                "gamma": "tgammaf", "log_gamma": "lgammaf"}
+SINGLE_BINARY = {"atan2": "atan2f", "hypot": "hypotf", "pow": "powf"}
+_single_cache = {}
+_libm = []
+
+
+def single_function(name):
+    """The C library's single-precision version of a math function (by Boreas name, or "pow"), or None."""
+    if name in _single_cache:
+        return _single_cache[name]
+    fn = None
+    c_name = SINGLE_UNARY.get(name) or SINGLE_BINARY.get(name)
+    if c_name is not None:
+        try:
+            if not _libm:
+                _libm.append(ctypes.CDLL(ctypes.util.find_library("m")))
+            fn = getattr(_libm[0], c_name)
+            fn.restype = ctypes.c_float
+            fn.argtypes = [ctypes.c_float] * (2 if name in SINGLE_BINARY else 1)
+        except (OSError, AttributeError, TypeError):
+            fn = None
+    _single_cache[name] = fn
+    return fn
+
+
+def single_check(name, r, xs):
+    """A library result that is NaN or infinite where the arguments were finite is a domain or range
+    error, which stops the program unless the file says `use ieee`."""
+    if IEEE or (r == r and abs(r) != INF) or any(x != x or abs(x) == INF for x in xs):
+        return r
+    if r != r:
+        raise ValueError("math domain error")
+    if name in ("log", "log10", "atanh", "gamma", "log_gamma"):
+        raise ValueError("math domain error")
+    raise OverflowError("math range error")
+
+
+def single_pow(a, b):
+    """a ** b for single-precision operands, the way gfortran does it: a whole-number exponent multiplies
+    (repeated squaring, each product rounded to single), any other exponent calls powf."""
+    if isinstance(b, int) and not isinstance(b, bool):
+        n = abs(b)
+        if n == 0:
+            return 1.0
+        x, y = float(a), (float(a) if n % 2 else 1.0)
+        while n >> 1:
+            n >>= 1
+            x = round32(x * x)
+            if n % 2:
+                y = round32(y * x)
+        if b < 0:
+            if y == 0:
+                raise ZeroDivisionError("zero to a negative power")
+            return round32(1.0 / y)
+        return y
+    fn = single_function("pow")
+    if fn is None:
+        return round32(float(a) ** float(b))
+    return single_check("pow", fn(a, b), (a, b))
 
 
 def ieee_div(a, b):
