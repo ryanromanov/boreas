@@ -582,6 +582,10 @@ report on stderr. Translations that change meaning are flagged, never silent:
   first values. The names come from the first unit that mentions the block; other units that call the
   variables something else are renamed to match (by position). A block seen with a different number of
   variables, or different types, is a TODO.
+- `equivalence` between names of the same type becomes one name: `equivalence (a, b)` renames `b` to `a`,
+  and `equivalence (v(3), x)` makes `x` the element `v(3)`. Arrays that overlap at an offset get their
+  subscripts shifted. Overlaying different types (type punning), overlays that neither name covers, and
+  whole-array uses of a shifted array are TODOs.
 - Converted programs start with `use ieee`, so real arithmetic gives NaN and Infinity as Fortran does.
 - Missing declarations are filled in using Fortran's implicit typing rules.
 - Dummy arguments without `intent` get `in`, `out` or `inout` inferred from the

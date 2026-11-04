@@ -20,10 +20,10 @@ class ManyFilesTests(unittest.TestCase):
         self.assertGreaterEqual(len(todos(findings)), 1)
 
     def test_findings_point_into_the_right_file(self):
-        bad = "subroutine odd()\n  integer a, b\n  equivalence (a, b)\nend subroutine\n"
+        bad = "subroutine odd()\n  integer a\n  real b\n  equivalence (a, b)\nend subroutine\n"
         _, findings, where = convert_files([("main.f", MAIN), ("lib.f90", LIB), ("odd.f90", bad)])
         line = next(f[0] for f in findings if "equivalence" in f[2])
-        self.assertEqual(where(line), (2, 3))
+        self.assertEqual(where(line), (2, 4))
         self.assertEqual(where(1), (0, 1))
 
     def test_command_line(self):

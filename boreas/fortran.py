@@ -269,6 +269,7 @@ class Scope:
         self.formats = {}             # label -> the text inside the parentheses of a `format` statement
         self.units = set()            # unit numbers of the files this procedure uses
         self.commons = {}             # common block name ('' for blank common) -> [(variable, line)], in order
+        self.equivs = []              # `equivalence` groups: ([(name, element or None)], line)
 
 
 @dataclass
@@ -302,6 +303,22 @@ def iter_nodes(obj):
         yield obj
         for f in fields(obj):
             yield from iter_nodes(getattr(obj, f.name))
+
+
+def replace_nodes(obj, make):
+    """Rebuild `obj` with each node for which `make(node)` returns a node replaced by that node.
+    Children are rewritten first; lists change in place, tuples are rebuilt."""
+    if isinstance(obj, list):
+        obj[:] = [replace_nodes(x, make) for x in obj]
+        return obj
+    if isinstance(obj, tuple):
+        return tuple(replace_nodes(x, make) for x in obj)
+    if is_dataclass(obj) and not isinstance(obj, type):
+        for f in fields(obj):
+            setattr(obj, f.name, replace_nodes(getattr(obj, f.name), make))
+        new = make(obj)
+        return obj if new is None else new
+    return obj
 
 
 def implicit_type(name):
@@ -985,7 +1002,7 @@ class FParser:
         if handler is not None:
             self.k += 1
             return handler(it, scope)
-        if name in ("equivalence", "namelist", "include",
+        if name in ("namelist", "include",
                     "nullify", "rewind",
                     "backspace", "format", "entry", "pause", "dimension", "pointer",
                     "target", "intrinsic", "import", "enum", "sync", "lock", "unlock"):
@@ -1475,6 +1492,31 @@ class FParser:
                 info.dims = [hi for _, hi in specs]
             scope.commons.setdefault(block, []).append((name, it.line))
             self.accept_op(",")
+        return []
+
+    def st_equivalence(self, it, scope):
+        """`equivalence (a, b), (v(2), x)`: names for the same storage. Recorded here and rewritten
+        in finalize (apply_equivalences) once every declaration is known."""
+        while True:
+            self.expect_op("(")
+            group = []
+            while True:
+                name = self.rename(self.expect_name())
+                element = None
+                if self.accept_op("("):
+                    element = self.constant_int(self.expr())
+                    if element is None or not self.accept_op(")"):
+                        raise Unsupported("equivalence with a subscript that is not a literal number")
+                if name not in scope.decls:
+                    scope.decls[name] = Info(implicit_type(name), None, False, None, None, False, it.line)
+                group.append((name, element))
+                if not self.accept_op(","):
+                    break
+            self.expect_op(")")
+            scope.equivs.append((group, it.line))
+            if not self.accept_op(","):
+                break
+        self.end_of_statement()
         return []
 
     def st_go(self, it, scope):
@@ -2512,6 +2554,129 @@ class FParser:
                 if r is not None:
                     self.add_use(sc, ms.name, members, line)
 
+    def apply_equivalences(self, r):
+        """Names that share storage become one name. Same-type scalars and arrays work out to a
+        rename (`equivalence (a, b)`) or an element of the larger one (`equivalence (v(3), x)` makes
+        `x` stand for `v(3)`); overlapping storage of different types has no Boreas form."""
+        s = r.scope
+        for group, line in s.equivs:
+            why = self.equivalence_plan(s, group)
+            if isinstance(why, str):
+                self.todo(line, why)
+                r.body.insert(0, Comment("TODO(convert): " + why))
+                continue
+            anchor, plan = why
+            for name, make in plan.items():
+                info = s.decls.pop(name)
+                s.saved.pop(name, None)
+                ainfo = s.decls[anchor]
+                if info.init is not None:
+                    ainfo.init = info.init
+                if make is not None:
+                    r.body[:] = replace_nodes(r.body, make(name))
+                    left = [n for n in iter_nodes(r.body) if isinstance(n, (Var, Apply)) and n.name == name]
+                    if left or any(isinstance(n, Do) and n.var == name for n in iter_nodes(r.body)):
+                        msg = f"'{name}' shares storage with '{anchor}' and is used in a way that cannot be rewritten"
+                        self.todo(line, msg)
+                        r.body.insert(0, Comment("TODO(convert): " + msg))
+                    continue
+                r.body[:] = replace_nodes(r.body, lambda n, old=name: self.rename_node(n, old, anchor))
+
+    @staticmethod
+    def rename_node(n, old, new):
+        if isinstance(n, (Var, Apply)) and n.name == old:
+            n.name = new
+        elif isinstance(n, Do) and n.var == old:
+            n.var = new
+        return None
+
+    def equivalence_plan(self, s, group):
+        """Either a message saying why this group cannot be rewritten, or (anchor name, {name: rewrite})."""
+        names = [n for n, _ in group]
+        text = "equivalence (" + ", ".join(n if k is None else f"{n}({k})" for n, k in group) + ")"
+        if len(set(names)) < len(names):
+            return f"{text} names a variable twice"
+        infos = {n: s.decls[n] for n in names}
+        for n in names:
+            i = infos[n]
+            if n in s.dummies or i.parameter or i.allocatable:
+                return f"{text}: '{n}' is an argument, a constant or allocatable"
+            if any(n == c for entries in s.commons.values() for c, _ in entries):
+                return f"{text}: '{n}' is in a common block"
+        if len({i.type for i in infos.values()}) > 1:
+            return f"{text} overlays different types, which Boreas cannot express"
+        if any(i.type == "string" for i in infos.values()):
+            return f"{text} overlays character variables"
+        size = {}
+        for n, k in group:
+            i = infos[n]
+            if i.dims is None:
+                if k is not None:
+                    return f"{text}: '{n}' is not an array"
+                size[n] = None
+                continue
+            sizes = [self.const_int(d, s) for d in i.dims]
+            if None in sizes:
+                return f"{text}: '{n}' has a size that is not a literal number"
+            size[n] = sizes
+        first = group[0][0]
+        arrays = [n for n in names if size[n] is not None]
+        if any(len(size[n]) > 1 for n in arrays):                 # whole same-shape arrays only
+            if any(k is not None for _, k in group) or any(size[n] != size[first] for n in names):
+                return f"{text} overlays arrays of different shapes"
+            if any(infos[n].init is not None for n in names[1:]) or any(
+                    infos[n].dims != infos[first].dims for n in names):
+                return f"{text}: the arrays are declared differently"
+            return first, {n: None for n in names[1:]}
+        start, extent = {}, {}                                    # element 1 of each name, and its length
+        for n, k in group:
+            count = 1 if size[n] is None else size[n][0]
+            if k is not None and not 1 <= k <= count:
+                return f"{text}: '{n}' has no element {k}"
+            start[n], extent[n] = -((k or 1) - 1), count          # positions are counted from the shared element
+        anchor = next((n for n in names if all(start[n] <= start[m] and start[m] + extent[m] <= start[n] + extent[n]
+                                                for m in names)), None)
+        if anchor is None:
+            return f"{text} overlays storage that neither name covers"
+        k_a = dict(group)[anchor] or 1
+        plan = {}
+        for n, k in group:
+            if n == anchor:
+                continue
+            shift = k_a - (k or 1)
+            if infos[n].init is not None and (shift or size[n] != size[anchor] or infos[anchor].init is not None):
+                return f"{text}: '{n}' has initial values that cannot move to '{anchor}'"
+            if size[n] is None:                                   # a scalar: one element of the anchor
+                if size[anchor] is None:
+                    plan[n] = None
+                else:
+                    plan[n] = lambda old, a=anchor, at=k_a: (
+                        lambda node: Apply(a, [Num(at)], getattr(node, "line", 0))
+                        if isinstance(node, Var) and node.name == old else None)
+                continue
+            if shift == 0 and size[n] == size[anchor]:
+                plan[n] = None
+            elif size[anchor] is None:
+                return f"{text}: '{n}' is larger than '{anchor}'"
+            else:
+                plan[n] = lambda old, a=anchor, sh=shift: self.shifted(old, a, sh)
+        return anchor, plan
+
+    @staticmethod
+    def shifted(old, anchor, shift):
+        def make(node):
+            if isinstance(node, Apply) and node.name == old and len(node.args) == 1 and not isinstance(node.args[0], Slice):
+                i = node.args[0]
+                if shift == 0:
+                    new = i
+                elif isinstance(i, Num) and isinstance(i.value, int):
+                    new = Num(i.value + shift)
+                else:
+                    new = Binary("+" if shift > 0 else "-", i, Num(abs(shift)))
+                return Apply(anchor, [new], node.line)
+            return None
+        return make
+
     def add_use(self, scope, modname, names, line):
         """A procedure inside a module imports through its module (Boreas modules import for their procedures)."""
         (scope.module or scope).uses.append((modname, names, line))
@@ -2530,6 +2695,8 @@ class FParser:
             s.decls[name] = Info("integer", None, False, None, None, False, r.line)
 
     def finalize(self):
+        for r in self.raw:
+            self.apply_equivalences(r)
         self.merge_commons()
         self.merge_units()
         for r in self.raw:
