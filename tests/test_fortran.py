@@ -236,7 +236,7 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(run_bor(text), ["two"])
 
     def test_unsupported_statement_is_a_todo_not_a_crash(self):
-        text, findings = conv("integer :: a, b\n  equivalence (a, b)", "")
+        text, findings = conv("integer :: a\n  real :: b\n  equivalence (a, b)", "")
         self.assertGreaterEqual(len(todos(findings)), 1)
         parse(text)                                            # still valid Boreas
 
