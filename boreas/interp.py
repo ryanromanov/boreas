@@ -614,7 +614,7 @@ BUILTINS = {
     "fixed": _fixed, "tf": _tf, "scientific": _scientific, "general": _general, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
     "len": _len, "achar": _achar, "iachar": _iachar,
     "random": lambda: _random.random(),
-    "argument": None, "argument_count": None, "read_line": None,   # need the interpreter: see call_builtin
+    "argument": None, "argument_count": None, "read_line": None, "text": None,   # need the interpreter: see call_builtin
     "nan": lambda: float("nan"), "infinity": lambda: kinds.INF,
     "open": None, "try_open": None, "exists": lambda name: os.path.exists(_need_string("exists", name)),
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
@@ -1725,6 +1725,10 @@ class Interp:
                 return self.args[args[0]] if 0 <= args[0] < len(self.args) else ""
             if name == "argument_count":
                 return len(self.args) - 1
+            if name == "text":                   # any value as `print` shows it
+                if len(args) != 1:
+                    raise TypeError("needs one value")
+                return args[0] if isinstance(args[0], str) else self.show(args[0])
             if name == "read_line":              # the next whole line of input (or of a file), or null at the end
                 if args and not (isinstance(args[0], FileHandle) and args[0].is_open and args[0].mode == "read"):
                     raise TypeError("needs a file that is open for reading")

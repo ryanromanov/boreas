@@ -115,13 +115,17 @@ Output is built as a string and printed; there is no format mini-language.
     left("ab", 5)             ! "ab   "
     right(42, 5, "0")         ! "00042"    right(-42, 5, "0") is "-0042"
     repeat("-", 5)            ! "-----"
+    text(2.5)                 ! "2.5"        any value, as print shows it
     scientific(12345.678, 4)  ! "1.2346E+04"   scientific(x, digits [, width [, style]])
     general(12345.678, 4)     ! "1.235E+04"    general(x, digits [, width [, style]])
     general(123.0, 4)         ! "123"          the shorter of plain and scientific, 4 significant digits
 
-`right` and `left` take text or a number. Text that is too long is cut to its first characters; a number
-that does not fit shows as stars (`*****`), as in Fortran. A width of 0 gives just the text, which is how a
-number becomes text inside a longer line: `"n = " + right(n, 0)`. `fixed(x, d, w)` right-aligns in `w`
+`right` and `left` take text, a number or a logical. Text that is too long is cut to its first characters; a number
+that does not fit shows as stars (`*****`), as in Fortran. A width of 0 gives just the text.
+
+`text(x)` turns any value into the text `print` would show for it, with no width and no padding, so a number can
+go inside a longer line: `"n = " + text(n) + ", done = " + text(true)`. Strings come back unchanged, and arrays
+read as `[1, 2, 3]`. `fixed(x, d, w)` right-aligns in `w`
 characters, dropping the leading 0 if that makes it fit (`.500`).
 
 `tf(flag)` is `"T"` or `"F"`, the letters Fortran's `L` prints: `right(tf(done), 5)`. `right` and `left` also
