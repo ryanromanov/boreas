@@ -460,6 +460,105 @@ def _fixed(x, decimals, width=None):
     return text.rjust(width) if len(text) <= width else "*" * width
 
 
+def _number_arg(name, x):
+    if type_of(x) not in NUMERIC or isinstance(x, complex):
+        raise TypeError(f"needs a real or integer number, got {type_of(x)}")
+    return float(x)
+
+
+def _style_arg(name, style):
+    """None for the plain Boreas style, True for "fortran" (what the Fortran E and G descriptors print)."""
+    if style is None:
+        return False
+    if style != "fortran":
+        raise TypeError(f'{name}: the style must be "fortran" (or left off), got {style!r}')
+    return True
+
+
+def _exponent_text(e, fortran):
+    """E+05; Fortran drops the E when the exponent has three digits (0.1000+201)."""
+    return f"E{e:+03d}" if abs(e) <= 99 or not fortran else f"{e:+04d}"
+
+
+def _minus(x):
+    return "-" if math.copysign(1.0, x) < 0 else ""
+
+
+def _significant(x, digits):
+    """x rounded to `digits` significant digits: (digit string, e) with |x| = d.ddd * 10**e."""
+    mantissa, e = f"{abs(x):.{digits - 1}e}".split("e")
+    return mantissa.replace(".", ""), int(e)
+
+
+def _scientific_text(x, digits, fortran):
+    if fortran:                                           # 0.1235E+05
+        if x == 0:
+            return _minus(x) + "0." + "0" * digits + _exponent_text(0, True)
+        d, e = _significant(x, digits)
+        return _minus(x) + "0." + d + _exponent_text(e + 1, True)
+    mantissa, e = f"{abs(x):.{digits}e}".split("e")      # 1.2346E+04
+    return _minus(x) + mantissa + _exponent_text(int(e), False)
+
+
+def _fit(text, width, fortran):
+    """Right-align in `width` characters (Fortran drops the leading 0 of 0.1235E+05 before giving up)."""
+    if not width or len(text) <= width:
+        return text.rjust(width or 0)
+    if fortran:
+        text = text.replace("0.", ".", 1)
+    return text.rjust(width) if len(text) <= width else "*" * width
+
+
+def _scientific(x, digits, width=None, style=None):
+    """x as 1.2346E+04: `digits` after the point, the width as for `fixed`. The style "fortran" gives what
+    Fortran's Ew.d prints: 0.1235E+05."""
+    fortran = _style_arg("scientific", style)
+    x = _number_arg("scientific", x)
+    digits = _count("scientific", "the number of digits", digits)
+    width = None if width is None else _count("scientific", "the width", width)
+    if fortran and digits < 1:
+        raise TypeError('the "fortran" style needs at least 1 digit')
+    special = ieee_text(x, width)
+    if special is not None:
+        return special.rjust(width) if width else special
+    return _fit(_scientific_text(x, digits, fortran), width, fortran)
+
+
+def _general(x, digits, width=None, style=None):
+    """x with `digits` significant digits, in the shorter of the plain and the scientific form: 123.0 is
+    "123", 0.5 is "0.5", 12345.678 is "1.235E+04". The style "fortran" gives what Fortran's Gw.d prints:
+    a fixed layout with trailing blanks where the exponent would go (`123.0    `), or E form."""
+    fortran = _style_arg("general", style)
+    x = _number_arg("general", x)
+    digits = _count("general", "the number of digits", digits)
+    width = None if width is None else _count("general", "the width", width)
+    if digits < 1:
+        raise TypeError("needs at least 1 significant digit")
+    special = ieee_text(x, width)
+    if special is not None:
+        return special.rjust(width) if width else special
+    if fortran:
+        k = 0 if x == 0 else _significant(x, digits)[1] + 1          # the value is 0.ddd * 10**k
+        if x == 0 or 0 <= k <= digits:
+            decimals = digits - 1 if x == 0 else digits - k
+            body = _fixed(x, decimals, max(width - 4, 0) if width else None)
+            if "*" in body:
+                return "*" * width
+            return (body + "    ").rjust(width or 0)
+        return _fit(_scientific_text(x, digits, True), width, True)
+    if x == 0:
+        text = _minus(x) + "0"
+    else:
+        e = _significant(x, digits)[1]
+        if e < -4 or e >= digits:
+            mantissa = f"{abs(x):.{digits - 1}e}".split("e")[0]
+            text = _minus(x) + (mantissa.rstrip("0").rstrip(".") if "." in mantissa else mantissa) + _exponent_text(e, False)
+        else:
+            plain = f"{abs(x):.{digits - 1 - e}f}"
+            text = _minus(x) + (plain.rstrip("0").rstrip(".") if "." in plain else plain)
+    return _fit(text, width, False)
+
+
 def _pad(side):
     def pad(x, width, fill=" "):
         """Align x in `width` characters (left or right). Text that is too long is cut to its first
@@ -505,7 +604,7 @@ def _index(s, sub):
 
 BUILTINS = {
     "trim": _trim, "len_trim": lambda s: len(_trim(s)), "index": _index,
-    "fixed": _fixed, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
+    "fixed": _fixed, "scientific": _scientific, "general": _general, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
     "len": _len, "achar": _achar, "iachar": _iachar,
     "random": lambda: _random.random(),
     "argument": None, "argument_count": None, "read_line": None,   # need the interpreter: see call_builtin
