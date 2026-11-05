@@ -14,6 +14,43 @@
     }
   ],
   "indentation": {
-    "blockDelimiters": []
+    "blockDelimiters": [
+      {
+        "begin": "^\\s*(?:public\\s+)?(?:program|module|record|function|subroutine)\\b",
+        "regularExpression": true,
+        "ignoreCase": true,
+        "description": "program, module, record, function, subroutine"
+      },
+      {
+        "begin": "^\\s*(?:\\w+\\s*:\\s*)?do\\b",
+        "regularExpression": true,
+        "ignoreCase": true,
+        "description": "do loops, labeled or not"
+      },
+      {
+        "begin": "^\\s*select\\s+case\\b",
+        "regularExpression": true,
+        "ignoreCase": true,
+        "description": "select case"
+      },
+      {
+        "begin": "^\\s*case\\b(?!.*->)",
+        "regularExpression": true,
+        "ignoreCase": true,
+        "description": "case blocks, but not one-line case ... ->"
+      },
+      {
+        "begin": "^[^!]*\\bthen\\s*(?:!.*)?$",
+        "regularExpression": true,
+        "ignoreCase": true,
+        "description": "then followed by a comment"
+      },
+      {
+        "begin": "^\\s*else\\s*(?:!.*)?$",
+        "regularExpression": true,
+        "ignoreCase": true,
+        "description": "else followed by a comment"
+      }
+    ]
   }
 }
