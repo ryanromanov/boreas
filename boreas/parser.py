@@ -90,9 +90,9 @@ class ExprStmt: expr: object
 @dataclass
 class Call: name: str; args: list; line: int
 @dataclass
-class Allocate: name: str; dims: list; line: int   # allocate a(n, m): one extent per dimension
+class Allocate: name: str; dims: list; line: int; update: bool = False   # allocate a(n, m): one extent per dimension
 @dataclass
-class Deallocate: name: str; line: int
+class Deallocate: name: str; line: int; update: bool = False
 @dataclass
 class Comment: text: str          # only produced by `boreas convert`; the interpreter skips it
 
@@ -363,9 +363,11 @@ def _nodes(obj):
             yield from _nodes(getattr(obj, f.name))
 
 
-def check_allocs(body, params):
-    """`allocate` and `deallocate` need a local allocatable array of matching rank.
-    `params` is the set of parameter names (these can never be allocated)."""
+def check_allocs(body, params, shared=None, is_sub=True):
+    """`allocate` and `deallocate` need an allocatable array of matching rank: a local one, or a module
+    variable (`shared`: name -> its Decl, None for an import), which other code sees and so needs
+    `update allocate`, in a subroutine. `params` is the set of parameter names (never allocated)."""
+    shared = shared or {}
     decls = {d.name: d for d in _nodes(body) if isinstance(d, Decl)}
     for s in _nodes(body):
         if not isinstance(s, (Allocate, Deallocate)):
@@ -374,6 +376,21 @@ def check_allocs(body, params):
         d = decls.get(s.name)
         if s.name in params:
             why = "a parameter; only a local allocatable array can be allocated or deallocated"
+        elif d is None and s.name in shared:
+            if not is_sub:
+                raise LangError(f"line {s.line}: a function cannot {word} the module variable '{s.name}'; "
+                                f"make it a subroutine")
+            if not s.update:
+                raise LangError(f"line {s.line}: '{s.name}' is a module variable, so other code sees this; "
+                                f"write 'update {word} {s.name}{'(...)' if word == 'allocate' else ''}'")
+            m = shared[s.name]
+            if m is not None and not m.allocatable:
+                why = "not allocatable (declare it with 'allocatable')"
+            elif m is not None and isinstance(s, Allocate) and len(s.dims) != len(m.dims):
+                raise LangError(f"line {s.line}: '{s.name}' has {len(m.dims)} dimension(s) but "
+                                f"{len(s.dims)} extent(s) were given to allocate")
+            else:
+                continue
         elif d is None:
             why = "not declared as a local allocatable array"
         elif not d.allocatable:
@@ -382,6 +399,8 @@ def check_allocs(body, params):
             raise LangError(f"line {s.line}: '{s.name}' has {len(d.dims)} dimension(s) but "
                             f"{len(s.dims)} extent(s) were given to allocate")
         else:
+            if s.update:
+                raise LangError(f"line {s.line}: 'update' is for module variables, but '{s.name}' is a local array")
             continue
         raise LangError(f"line {s.line}: cannot {word} '{s.name}': it is {why}")
 
@@ -506,7 +525,7 @@ class Parser:
             self.next()
         check_writes(body, {}, {n: False for n in (n for u in uses for n in u.names)})
         check_loops(body)
-        check_allocs(body, set())
+        check_allocs(body, set(), {n: None for u in uses for n in u.names})
         return Program(name, body, uses=uses)
 
     def uses(self):
@@ -564,7 +583,12 @@ class Parser:
                 claim(f.name, at)
                 funcs[f.name] = f
             elif self.at("allocatable"):
-                self.error("a module cannot hold allocatable arrays; declare them inside a procedure")
+                self.next()
+                x = self.decl(allocatable=True)        # a shared array: allocated only with `update allocate`
+                x.public = public
+                claim(x.name, x.line)
+                decls.append(x)
+                shared[x.name] = True
             elif self.tok.kind == "ident" and (self.tok.text in TYPES or self.typed_ahead()):
                 x = self.decl()                        # a module variable: shared, changed only with `update`
                 x.public = public
@@ -580,8 +604,11 @@ class Parser:
         self.module_checks.pop()
         if self.tok.kind == "ident":
             self.next()
+        variables = {d.name: d for d in decls if not d.const}
         for f, params in checks:
             check_writes(f.body, params, {**{n: False for u in f.uses for n in u.names}, **shared}, f.is_sub)
+            check_allocs(f.body, set(params), {**{n: None for u in f.uses for n in u.names},
+                                               **{n: None for u in uses for n in u.names}, **variables}, f.is_sub)
         return Module(name, uses, decls, funcs, line, records=recs)
 
     def procedure(self):
@@ -605,7 +632,8 @@ class Parser:
         else:
             check_writes(body, modes, {n: False for u in uses for n in u.names}, is_sub)
         check_loops(body)
-        check_allocs(body, {n for _, n, _ in params})
+        if not self.module_checks:                  # a module's procedures are checked when the module ends
+            check_allocs(body, {n for _, n, _ in params}, {n: None for u in uses for n in u.names}, is_sub)
         return f
 
     def params(self, is_sub):
@@ -684,6 +712,8 @@ class Parser:
         if self.at("record"):
             self.error("records are defined at the top level or inside a module, not in a procedure")
         if t.kind == "ident" and t.text in ("allocate", "deallocate") and self.toks[self.i + 1].kind == "ident":
+            return self.allocation()
+        if self.at("update") and self.toks[self.i + 1].text in ("allocate", "deallocate"):
             return self.allocation()
         if self.at("if"):
             return self.if_stmt()
@@ -794,11 +824,12 @@ class Parser:
 
     def allocation(self):
         """`allocate a(n, m)` or `deallocate a`: one array per statement."""
+        update = bool(self.accept("update"))
         t = self.next()
         name = self.ident()
         if t.text == "deallocate":
             self.newline()
-            return Deallocate(name, t.line)
+            return Deallocate(name, t.line, update)
         if not self.at("("):
             self.error("expected the extents, as in 'allocate a(n)'")
         self.next()
@@ -807,7 +838,7 @@ class Parser:
             dims.append(self.expr())
         self.expect(")")
         self.newline()
-        return Allocate(name, dims, t.line)
+        return Allocate(name, dims, t.line, update)
 
     def decl(self, const=False, allocatable=False):
         line = self.tok.line

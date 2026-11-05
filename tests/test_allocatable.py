@@ -37,10 +37,6 @@ class ParseTests(unittest.TestCase):
             with self.subTest(body=body), self.assertRaisesRegex(LangError, msg):
                 parse(f"program t\n{body}\nend program t")
 
-    def test_module_cannot_hold_allocatables(self):
-        with self.assertRaisesRegex(LangError, "module cannot hold allocatable"):
-            parse("module m\nallocatable integer :: a(:)\nend module\nprogram t\nend program t")
-
     def test_allocate_target_errors_at_parse_time(self):
         cases = [
             ("integer :: a(3)\nallocate a(3)", "not allocatable"),
@@ -365,21 +361,6 @@ end program p
         self.assertTrue(any("allocatable dummy argument 'a'" in r and "cannot be allocatable" in r for r in reasons))
         self.assertIn("TODO(convert): uses 'a'", text)      # the body that touches it is not translated
         self.assertNotIn("update a(1)", text)
-
-    def test_allocatable_module_variable_is_a_todo_and_uses_follow(self):
-        src = """module store
-  implicit none
-  real, allocatable :: buf(:)
-contains
-  subroutine put(x)
-    real, intent(in) :: x
-    buf(1) = x
-  end subroutine put
-end module store
-"""
-        text, findings = convert(src + "program p\n  use store\n  call put(1.0)\nend program p\n")
-        self.assertTrue(any("allocatable module variable 'buf'" in f[2] for f in todos(findings)))
-        self.assertIn("TODO(convert): uses 'buf'", text)
 
     def test_allocatable_function_result_is_a_todo(self):
         src = """function make(n)

@@ -1339,10 +1339,6 @@ class FParser:
             scope.skipped.add(name)
             raise Unsupported(f"allocatable dummy argument '{name}': Boreas parameters cannot be "
                               f"allocatable, and a callee cannot allocate its caller's array")
-        if scope.kind == "module":
-            scope.skipped.add(name)
-            raise Unsupported(f"allocatable module variable '{name}': a Boreas module cannot hold "
-                              f"allocatable arrays")
         if specs is None or not all(sp == "deferred" for sp in specs):
             raise Unsupported(f"allocatable '{name}' needs a deferred shape such as '(:)'")
         if init is not None:
@@ -1884,9 +1880,11 @@ class FParser:
             name = self.rename(self.expect_name())
             if self.at_op("::"):
                 raise Unsupported(f"'{what}' with a type-spec is not supported")
-            info = scope.decls.get(name)
-            if info is None or not info.allocatable or name in scope.dummies:
-                raise Unsupported(f"'{what}' of '{name}', which is not a local allocatable array "
+            info = scope.decls.get(name) if name not in scope.dummies else None
+            if info is None and name not in scope.dummies:
+                info = self.shared_info(scope, name)           # an allocatable module variable
+            if info is None or not info.allocatable:
+                raise Unsupported(f"'{what}' of '{name}', which is not an allocatable array "
                                   f"that Boreas can allocate")
             dims = []
             if self.at_op("("):
@@ -1908,11 +1906,27 @@ class FParser:
         self.end_of_statement()
         return objects
 
+    def shared_info(self, scope, name):
+        """The declaration of a module variable that `scope` can see: its own module's, or an imported one."""
+        s = scope
+        while s is not None:
+            owners = [(s.module, None)] if s.module is not None else []
+            owners += [(self.modules.get(modname), names) for modname, names, _ in s.uses + (s.module.uses if s.module else [])]
+            if s.kind == "module":
+                owners.append((s, None))
+            for other, names in owners:
+                info = other.decls.get(name) if other is not None and (names is None or name in names) else None
+                if info is not None and not info.parameter:
+                    return info
+            s = s.host
+        return None
+
     def st_allocate(self, it, scope):
         out = []
         for name, dims in self.allocation_objects(scope, "allocate"):
-            if len(dims) != len(scope.decls[name].dims):
-                raise Unsupported(f"allocate of '{name}' needs {len(scope.decls[name].dims)} extent(s)")
+            info = scope.decls.get(name) or self.shared_info(scope, name)
+            if len(dims) != len(info.dims):
+                raise Unsupported(f"allocate of '{name}' needs {len(info.dims)} extent(s)")
             out.append(Allocate(name, dims, it.line))
         return out
 
@@ -2752,14 +2766,14 @@ class FParser:
             if name in ms.skipped:
                 continue
             consts.append(Decl(info.type, name, info.dims, info.init, info.line, info.parameter,
-                               self.is_public(ms, name)))
+                               self.is_public(ms, name), allocatable=info.allocatable))
         return mod
 
     def references(self, nodes):
         """Names used in `nodes`: variables, calls, constructors, and the types of declarations."""
         out = set()
         for n in iter_nodes(nodes):
-            if isinstance(n, (Var, Apply, Call)):
+            if isinstance(n, (Var, Apply, Call, Allocate, Deallocate)):
                 out.add(n.name)
             elif isinstance(n, Decl):
                 out.add(n.type)
@@ -2958,6 +2972,8 @@ class FParser:
                 found.append(n)
             elif isinstance(n, Read) and any(root_name(t) in names for t in n.targets
                                              + ([n.status] if n.status is not None else [])):
+                found.append(n)
+            elif isinstance(n, (Allocate, Deallocate)) and n.name in names:
                 found.append(n)
         return found
 

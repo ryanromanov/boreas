@@ -190,9 +190,9 @@ def stmt(s, depth):
     if k is DoWhile:
         return [f"{pad}{_label(s)}do while {expr(s.cond)}"] + stmts(s.body, depth + 1) + [pad + _end_do(s)]
     if k is Allocate:
-        return [f"{pad}allocate {s.name}(" + ", ".join(expr(x) for x in s.dims) + ")"]
+        return [f"{pad}{'update ' if s.update else ''}allocate {s.name}(" + ", ".join(expr(x) for x in s.dims) + ")"]
     if k is Deallocate:
-        return [f"{pad}deallocate {s.name}"]
+        return [f"{pad}{'update ' if s.update else ''}deallocate {s.name}"]
     if k is Decl:
         return [f"{pad}{_decl_head(s)} :: {_decl_entity(s)}"]
     raise LangError(f"cannot print statement {k.__name__}")
