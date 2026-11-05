@@ -559,6 +559,13 @@ def _general(x, digits, width=None, style=None):
     return _fit(text, width, False)
 
 
+def _tf(flag):
+    """"T" or "F", the letters Fortran's L descriptor prints."""
+    if not isinstance(flag, bool):
+        raise TypeError(f"needs a logical, got {type_of(flag)}")
+    return "T" if flag else "F"
+
+
 def _pad(side):
     def pad(x, width, fill=" "):
         """Align x in `width` characters (left or right). Text that is too long is cut to its first
@@ -604,7 +611,7 @@ def _index(s, sub):
 
 BUILTINS = {
     "trim": _trim, "len_trim": lambda s: len(_trim(s)), "index": _index,
-    "fixed": _fixed, "scientific": _scientific, "general": _general, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
+    "fixed": _fixed, "tf": _tf, "scientific": _scientific, "general": _general, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
     "len": _len, "achar": _achar, "iachar": _iachar,
     "random": lambda: _random.random(),
     "argument": None, "argument_count": None, "read_line": None,   # need the interpreter: see call_builtin
