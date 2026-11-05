@@ -105,8 +105,8 @@ class LiteralAndConversionTests(unittest.TestCase):
     def out(self, expr, decls="  real :: x\n  double precision :: d\n  complex(8) :: z\n  integer :: i\n"):
         text, findings = conv(f"  print *, {expr}\n", decls)
         for line in text.splitlines():
-            if line.strip().startswith("print "):
-                return line.strip()[6:]
+            if line.strip().startswith("println("):
+                return line.strip()[8:-1]
         raise AssertionError(text)
 
     def test_single_literals_that_are_not_exact_are_real32(self):
@@ -118,7 +118,7 @@ class LiteralAndConversionTests(unittest.TestCase):
     def test_named_kind_literals(self):
         text, _ = convert("program p\n  implicit none\n  integer, parameter :: dp = kind(1.0d0)\n  integer, parameter :: sp = kind(1.0)\n"
                           "  print *, 0.1_dp, 0.1_sp\nend program\n")
-        self.assertIn("print 0.1, real32(0.1)", text)
+        self.assertIn("println(0.1, real32(0.1))", text)
 
     def test_integer_literal_kinds(self):
         self.assertEqual(self.out("5_8, 5_4, 5_2, 5_1, 5"), "int64(5), 5, int16(5), int8(5), 5")

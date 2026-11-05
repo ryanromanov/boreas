@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from boreas.cli import check_source
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
-GOOD = 'program t\n  print "hi"\nend program\n'
+GOOD = 'program t\n  println("hi")\nend program\n'
 
 
 def check(src, *flags):
@@ -24,13 +24,13 @@ class CheckTests(unittest.TestCase):
         self.assertEqual((p.returncode, p.stdout), (0, ""))
 
     def test_does_not_run_the_program(self):
-        p, _ = check('program t\n  print "ran"\nend program\n')
+        p, _ = check('program t\n  println("ran")\nend program\n')
         self.assertNotIn("ran", p.stdout)
 
     def test_parse_error_has_line_and_column(self):
-        p, name = check("program t\n  integer :: i = 1\n  print i +\nend program\n")
+        p, name = check("program t\n  integer :: i = 1\n  println(i +)\nend program\n")
         self.assertEqual(p.returncode, 1)
-        self.assertTrue(p.stdout.startswith(f"{name}:3:12: expected an expression"), p.stdout)
+        self.assertTrue(p.stdout.startswith(f"{name}:3:14: expected an expression"), p.stdout)
 
     def test_lexer_error_has_column(self):
         p, name = check("program t\n  integer :: i = 1 @\nend program\n")
@@ -47,11 +47,11 @@ class CheckTests(unittest.TestCase):
         self.assertRegex(p.stdout, r":\d+:\d+: ")
 
     def test_json(self):
-        p, name = check("program t\n  print 1 +\nend program\n", "--json")
+        p, name = check("program t\n  println(1 +)\nend program\n", "--json")
         self.assertEqual(p.returncode, 1)
         d = json.loads(p.stdout)
         self.assertEqual(d["file"], name)
-        self.assertEqual((d["errors"][0]["line"], d["errors"][0]["col"]), (2, 12))
+        self.assertEqual((d["errors"][0]["line"], d["errors"][0]["col"]), (2, 14))
         p, _ = check(GOOD, "--json")
         self.assertEqual((p.returncode, json.loads(p.stdout)["errors"]), (0, []))
 
@@ -66,8 +66,8 @@ class CheckTests(unittest.TestCase):
 
     def test_check_source(self):
         self.assertIsNone(check_source(GOOD))
-        line, col, msg = check_source("program t\n  print 1 +\nend program\n")
-        self.assertEqual((line, col), (2, 12))
+        line, col, msg = check_source("program t\n  println(1 +)\nend program\n")
+        self.assertEqual((line, col), (2, 14))
 
 
 if __name__ == "__main__":

@@ -66,8 +66,8 @@ class CompletionTests(unittest.TestCase):
 
     def test_nothing_in_comments_or_strings(self):
         self.assertEqual(labels("  ! t"), [])
-        self.assertEqual(labels('  print "t'), [])
-        self.assertIn("total", labels('  print "x", t'))
+        self.assertEqual(labels('  println("t)'), [])
+        self.assertIn("total", labels('  println("x", t)'))
 
     def test_the_word_already_typed_is_not_offered(self):
         self.assertNotIn("total", labels("  total"))

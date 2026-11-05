@@ -31,7 +31,7 @@ NEST = """
       if j == 2 then
         cycle outer
       end if
-      print i, j
+      println(i, j)
     end do
   end do outer
 """
@@ -68,7 +68,7 @@ class ParseTests(unittest.TestCase):
       end if
     end do
   end do OUTER
-  print i"""), ["1"])
+  println(i)"""), ["1"])
 
     def test_label_may_equal_a_variable(self):
         self.assertEqual(run("""
@@ -77,7 +77,7 @@ class ParseTests(unittest.TestCase):
       exit k
     end if
   end do k
-  print k""", "integer :: k"), ["2"])
+  println(k)""", "integer :: k"), ["2"])
 
     def test_label_may_equal_a_procedure(self):
         src = """function f(integer :: x) -> integer
@@ -88,7 +88,7 @@ program t
   f: do i = 1, 2
     exit f
   end do f
-  print f(i)
+  println(f(i))
 end program t
 """
         self.assertEqual(run_bor(src), ["1"])
@@ -103,7 +103,7 @@ program t
   integer :: s
   a = [1, 2, 3, 4]
   lo: do s = 1, 1
-    print a(2:3), pi2
+    println(a(2:3), pi2)
   end do lo
 end program t
 """
@@ -117,7 +117,7 @@ end program t
   a: do j = 5, 6
     exit a
   end do a
-  print i, j"""), ["1 5"])
+  println(i, j)"""), ["1 5"])
 
     def test_loop_in_if_and_else(self):
         self.assertEqual(run("""
@@ -130,7 +130,7 @@ end program t
       exit a
     end do a
   end if
-  print i"""), ["1"])
+  println(i)"""), ["1"])
 
 
 class ErrorTests(unittest.TestCase):
@@ -221,16 +221,16 @@ class RunTests(unittest.TestCase):
       end if
     end do
   end do outer
-  print i, j"""), ["2 3"])
+  println(i, j)"""), ["2 3"])
 
     def test_exit_outer_keeps_outer_variable_like_plain_exit(self):
         # a plain exit leaves the variable at the iteration it stopped on; so does exit outer
-        self.assertEqual(run("do i = 1, 5\n if i == 3 then\n exit\n end if\n end do\n print i"), ["3"])
+        self.assertEqual(run("do i = 1, 5\n if i == 3 then\n exit\n end if\n end do\n println(i)"), ["3"])
         self.assertEqual(run("o: do i = 1, 5\n do j = 1, 2\n if i == 3 then\n exit o\n end if\n end do\n"
-                             " end do o\n print i, j"), ["3 1"])
+                             " end do o\n println(i, j)"), ["3 1"])
 
     def test_normal_completion_variable_one_step_past(self):
-        self.assertEqual(run("o: do i = 1, 3\n do j = 1, 2\n end do\n end do o\n print i, j"), ["4 3"])
+        self.assertEqual(run("o: do i = 1, 3\n do j = 1, 2\n end do\n end do o\n println(i, j)"), ["4 3"])
 
     def test_cycle_outer_advances_outer_variable(self):
         self.assertEqual(run("""
@@ -242,7 +242,7 @@ class RunTests(unittest.TestCase):
     end do
     n = n + 1000
   end do o
-  print n, i"""), ["4 5"])
+  println(n, i)"""), ["4 5"])
 
     def test_cycle_own_label_and_exit_own_label(self):
         self.assertEqual(run("""
@@ -256,7 +256,7 @@ class RunTests(unittest.TestCase):
     end if
     n = n + i
   end do a
-  print n, i"""), ["4 4"])
+  println(n, i)"""), ["4 4"])
 
     def test_inner_unlabeled_exit_only_leaves_inner(self):
         self.assertEqual(run("""
@@ -267,7 +267,7 @@ class RunTests(unittest.TestCase):
     end do
     n = n + 1
   end do a
-  print n"""), ["3"])
+  println(n)"""), ["3"])
 
     def test_do_while_labels(self):
         self.assertEqual(run("""
@@ -282,9 +282,9 @@ class RunTests(unittest.TestCase):
         cycle scan
       end if
     end do
-    print n
+    println(n)
   end do scan
-  print n"""), ["7", "21"])
+  println(n)"""), ["7", "21"])
 
     def test_exit_do_while_from_for_loop_and_back(self):
         self.assertEqual(run("""
@@ -298,7 +298,7 @@ class RunTests(unittest.TestCase):
       cycle w
     end do for_
   end do w
-  print n"""), ["3"])
+  println(n)"""), ["3"])
 
     def test_three_deep(self):
         self.assertEqual(run("""
@@ -321,9 +321,9 @@ class RunTests(unittest.TestCase):
         n = n + 100 * i + 10 * j + k
       end do c
     end do b
-    print i, n
+    println(i, n)
   end do a
-  print i, j, k, n"""), ["1 466", "2 1332", "4 1 1 1332"])
+  println(i, j, k, n)"""), ["1 466", "2 1332", "4 1 1 1332"])
 
     def test_exit_through_if_blocks(self):
         self.assertEqual(run("""
@@ -334,7 +334,7 @@ class RunTests(unittest.TestCase):
       end if
     end if
   end do a
-  print i"""), ["2"])
+  println(i)"""), ["2"])
 
     def test_return_inside_labeled_loop(self):
         src = """function first(integer :: t) -> integer
@@ -350,7 +350,7 @@ class RunTests(unittest.TestCase):
   return 0
 end function
 program t
-  print first(12), first(99)
+  println(first(12), first(99))
 end program t
 """
         self.assertEqual(run_bor(src), ["34 0"])
@@ -377,7 +377,7 @@ program t
       exit a
     end if
   end do a
-  print n, i
+  println(n, i)
 end program t
 """
         self.assertEqual(run_bor(src), ["6 2"])
@@ -403,7 +403,7 @@ program t
   integer :: total
   total = 0
   call tally(total, 6)
-  print total
+  println(total)
 end program t
 """
 

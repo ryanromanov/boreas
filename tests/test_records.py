@@ -21,39 +21,39 @@ def fails(body, message, funcs="", defs=POINT):
 
 class BasicTests(unittest.TestCase):
     def test_declare_assign_and_read_fields(self):
-        self.assertEqual(run("point :: p\np.x = 1.5\np.y = 2\nprint p.x, p.y"), ["1.5 2.0"])
+        self.assertEqual(run("point :: p\np.x = 1.5\np.y = 2\nprintln(p.x, p.y)"), ["1.5 2.0"])
 
     def test_positional_construction(self):
-        self.assertEqual(run("point :: p = point(1.0, 2)\nprint p.x, p.y"), ["1.0 2.0"])
+        self.assertEqual(run("point :: p = point(1.0, 2)\nprintln(p.x, p.y)"), ["1.0 2.0"])
 
     def test_named_construction_in_any_order(self):
-        self.assertEqual(run("point :: p = point(y = 2.0, x = 1.0)\nprint p"), ["point(x=1.0, y=2.0)"])
+        self.assertEqual(run("point :: p = point(y = 2.0, x = 1.0)\nprintln(p)"), ["point(x=1.0, y=2.0)"])
 
     def test_named_construction_leaves_the_others_at_their_defaults(self):
-        self.assertEqual(run("point :: p = point(y = 5.0)\nprint p"), ["point(x=0.0, y=5.0)"])
+        self.assertEqual(run("point :: p = point(y = 5.0)\nprintln(p)"), ["point(x=0.0, y=5.0)"])
 
     def test_positional_then_named(self):
         defs = "record box\n  integer :: a\n  integer :: b\n  integer :: c\nend record\n"
-        self.assertEqual(run("box :: q = box(1, c = 3)\nq.b = 2\nprint q", defs=defs), ["box(a=1, b=2, c=3)"])
+        self.assertEqual(run("box :: q = box(1, c = 3)\nq.b = 2\nprintln(q)", defs=defs), ["box(a=1, b=2, c=3)"])
 
     def test_fields_start_at_their_default_values(self):
         defs = "record mix\n  integer :: i\n  real :: r\n  logical :: b\n  string :: s\n  point :: p\nend record\n"
-        self.assertEqual(run("mix :: m\nprint m.i, m.r, m.b, m.p", defs=POINT + defs),
+        self.assertEqual(run("mix :: m\nprintln(m.i, m.r, m.b, m.p)", defs=POINT + defs),
                          ["0 0.0 false point(x=0.0, y=0.0)"])
 
     def test_declared_record_can_be_printed_and_used_at_once(self):
-        self.assertEqual(run("point :: p\nprint p"), ["point(x=0.0, y=0.0)"])
-        self.assertEqual(run("point :: pts(2)\nprint pts(2).y"), ["0.0"])
+        self.assertEqual(run("point :: p\nprintln(p)"), ["point(x=0.0, y=0.0)"])
+        self.assertEqual(run("point :: pts(2)\nprintln(pts(2).y)"), ["0.0"])
 
     def test_assignment_copies(self):
-        body = "point :: p = point(1.0, 2.0)\npoint :: q\nq = p\nq.x = 9.0\nprint p.x, q.x"
+        body = "point :: p = point(1.0, 2.0)\npoint :: q\nq = p\nq.x = 9.0\nprintln(p.x, q.x)"
         self.assertEqual(run(body), ["1.0 9.0"])
 
     def test_initializer_copies(self):
-        self.assertEqual(run("point :: p = point(1.0, 2.0)\npoint :: q = p\nq.y = 0.0\nprint p.y, q.y"), ["2.0 0.0"])
+        self.assertEqual(run("point :: p = point(1.0, 2.0)\npoint :: q = p\nq.y = 0.0\nprintln(p.y, q.y)"), ["2.0 0.0"])
 
     def test_integer_widens_to_real_in_fields(self):
-        self.assertEqual(run("point :: p = point(1, 2)\nprint p"), ["point(x=1.0, y=2.0)"])
+        self.assertEqual(run("point :: p = point(1, 2)\nprintln(p)"), ["point(x=1.0, y=2.0)"])
 
     def test_field_type_mismatch(self):
         fails('point :: p\np.x = "hi"', "cannot assign string to real")
@@ -62,7 +62,7 @@ class BasicTests(unittest.TestCase):
         fails("point :: p\np.z = 1.0", "has no field 'z'")
 
     def test_field_of_a_non_record(self):
-        fails("integer :: n = 1\nprint n.x", "'n' is not a record")
+        fails("integer :: n = 1\nprintln(n.x)", "'n' is not a record")
 
     def test_unknown_type(self):
         fails("blob :: b", "unknown type 'blob'")
@@ -76,21 +76,21 @@ class BasicTests(unittest.TestCase):
 
     def test_named_arguments_only_for_records(self):
         f = "function f(real :: a) -> real\n return a\nend function"
-        fails("print f(a = 1.0)", "named arguments are only for building records", f)
+        fails("println(f(a = 1.0))", "named arguments are only for building records", f)
         s = "subroutine s(real :: a)\nend subroutine"
         fails("call s(a = 1.0)", "named arguments are only for building records", s)
 
     def test_record_is_not_arithmetic_or_comparable(self):
-        fails("point :: p = point(1.0, 2.0)\nprint p == p", "records cannot be used with '=='")
-        fails("point :: p = point(1.0, 2.0)\nprint p + p", "records cannot be used with '\\+'")
-        fails("point :: p = point(1.0, 2.0)\nprint -p", "records cannot be used with '-'")
+        fails("point :: p = point(1.0, 2.0)\nprintln(p == p)", "records cannot be used with '=='")
+        fails("point :: p = point(1.0, 2.0)\nprintln(p + p)", "records cannot be used with '\\+'")
+        fails("point :: p = point(1.0, 2.0)\nprintln(-p)", "records cannot be used with '-'")
 
     def test_record_cannot_be_a_select_subject(self):
-        fails("point :: p = point(1.0, 2.0)\nselect case p\ncase 1\nprint 1\nend select", "got point")
+        fails("point :: p = point(1.0, 2.0)\nselect case p\ncase 1\nprintln(1)\nend select", "got point")
 
     def test_field_of_a_computed_value(self):
         f = "function mk() -> point\n return point(1.0, 2.0)\nend function"
-        self.assertEqual(run("print mk().y, point(3.0, 4.0).x", f), ["2.0 3.0"])
+        self.assertEqual(run("println(mk().y, point(3.0, 4.0).x)", f), ["2.0 3.0"])
         fails("mk().x = 5.0", "cannot assign to a field of a computed value", f)
 
 
@@ -99,19 +99,19 @@ class NestedTests(unittest.TestCase):
 
     def test_nested_record_and_array_field(self):
         body = ("segment :: s\ns.a = point(1.0, 2.0)\ns.b.x = 5.0\ns.b.y = 6.0\ns.tags(2) = 7\n"
-                "print s.a.x, s.b.y, s.tags")
+                "println(s.a.x, s.b.y, s.tags)")
         self.assertEqual(run(body, defs=self.DEFS), ["1.0 6.0 [0, 7, 0]"])
 
     def test_array_field_whole_assignment_and_construction(self):
-        body = "segment :: s\ns.tags = [1, 2, 3]\nprint s.tags(3)"
+        body = "segment :: s\ns.tags = [1, 2, 3]\nprintln(s.tags(3))"
         self.assertEqual(run(body, defs=self.DEFS), ["3"])
         fails("segment :: s\ns.tags = [1, 2]", "shape mismatch", defs=self.DEFS)
-        body = "segment :: s = segment(tags = [4, 5, 6])\nprint s.tags"
+        body = "segment :: s = segment(tags = [4, 5, 6])\nprintln(s.tags)"
         self.assertEqual(run(body, defs=self.DEFS), ["[4, 5, 6]"])
         fails("segment :: s = segment(tags = 1)", "is an array of shape \\(3\\)", defs=self.DEFS)
 
     def test_nested_assignment_copies(self):
-        body = "segment :: s\npoint :: p = point(1.0, 1.0)\ns.a = p\ns.a.x = 9.0\nprint p.x, s.a.x"
+        body = "segment :: s\npoint :: p = point(1.0, 1.0)\ns.a = p\ns.a.x = 9.0\nprintln(p.x, s.a.x)"
         self.assertEqual(run(body, defs=self.DEFS), ["1.0 9.0"])
 
     def test_array_field_index_out_of_bounds(self):
@@ -119,27 +119,27 @@ class NestedTests(unittest.TestCase):
 
     def test_array_of_records_elements_are_independent(self):
         body = ("point :: pts(3)\ninteger :: i\ndo i = 1, 3\n  pts(i).x = i * 1.0\n  pts(i).y = pts(i).x * 2.0\n"
-                "end do\nprint pts(2), pts(3).y")
+                "end do\nprintln(pts(2), pts(3).y)")
         self.assertEqual(run(body), ["point(x=2.0, y=4.0) 6.0"])
 
     def test_array_initializer_with_record_values(self):
-        body = "point :: pts(2) = [point(1.0, 2.0), point(3.0, 4.0)]\npts(1).x = 0.0\nprint pts(1).x, pts(2).x"
+        body = "point :: pts(2) = [point(1.0, 2.0), point(3.0, 4.0)]\npts(1).x = 0.0\nprintln(pts(1).x, pts(2).x)"
         self.assertEqual(run(body), ["0.0 3.0"])
 
     def test_array_of_records_whole_assignment_copies(self):
-        body = "point :: a(2)\npoint :: b(2)\na(1).x = 1.0\nb = a\na(1).x = 5.0\nprint b(1).x"
+        body = "point :: a(2)\npoint :: b(2)\na(1).x = 1.0\nb = a\na(1).x = 5.0\nprintln(b(1).x)"
         self.assertEqual(run(body), ["1.0"])
 
     def test_element_assignment_copies(self):
-        body = "point :: pts(2)\npoint :: p = point(1.0, 2.0)\npts(1) = p\npts(1).x = 9.0\nprint p.x, pts(1).x"
+        body = "point :: pts(2)\npoint :: p = point(1.0, 2.0)\npts(1) = p\npts(1).x = 9.0\nprintln(p.x, pts(1).x)"
         self.assertEqual(run(body), ["1.0 9.0"])
 
     def test_array_field_of_records(self):
         defs = POINT + "record line\n  point :: ends(2)\nend record\n"
-        self.assertEqual(run("line :: l\nl.ends(2).y = 4.0\nprint l.ends(2).y", defs=defs), ["4.0"])
+        self.assertEqual(run("line :: l\nl.ends(2).y = 4.0\nprintln(l.ends(2).y)", defs=defs), ["4.0"])
 
     def test_slice_of_records_needs_one_element(self):
-        fails("point :: a(2)\nprint a(1:2).x", "pick one element")
+        fails("point :: a(2)\nprintln(a(1:2).x)", "pick one element")
 
     def test_allocatable_records_are_rejected(self):
         fails("allocatable point :: a(:)", "allocatable arrays of records are not supported")
@@ -147,34 +147,34 @@ class NestedTests(unittest.TestCase):
 
 class DefinitionTests(unittest.TestCase):
     def test_record_cannot_contain_itself(self):
-        fails("print 1", "contains itself: a -> a", defs="record a\n  a :: inner\nend record\n")
-        fails("print 1", "contains itself: a -> b -> a",
+        fails("println(1)", "contains itself: a -> a", defs="record a\n  a :: inner\nend record\n")
+        fails("println(1)", "contains itself: a -> b -> a",
               defs="record a\n  b :: i\nend record\nrecord b\n  a :: j\nend record\n")
 
     def test_unknown_field_type(self):
-        fails("print 1", "unknown type 'nope'", defs="record r\n  nope :: z\nend record\n")
+        fails("println(1)", "unknown type 'nope'", defs="record r\n  nope :: z\nend record\n")
 
     def test_duplicate_fields(self):
-        fails("print 1", "two fields called 'x'", defs="record r\n  real :: x\n  real :: x\nend record\n")
+        fails("println(1)", "two fields called 'x'", defs="record r\n  real :: x\n  real :: x\nend record\n")
 
     def test_field_array_size_must_be_literal(self):
-        fails("print 1", "literal size", defs="record r\n  real :: v(n)\nend record\n")
+        fails("println(1)", "literal size", defs="record r\n  real :: v(n)\nend record\n")
 
     def test_name_clashes(self):
-        fails("print 1", "same name as a procedure", "function point() -> integer\n return 1\nend function")
-        fails("print 1", "cannot be the name of a record", defs="record real\n  integer :: n\nend record\n")
-        fails("print 1", "cannot be the name of a record", defs="record if\n  integer :: n\nend record\n")
+        fails("println(1)", "same name as a procedure", "function point() -> integer\n return 1\nend function")
+        fails("println(1)", "cannot be the name of a record", defs="record real\n  integer :: n\nend record\n")
+        fails("println(1)", "cannot be the name of a record", defs="record if\n  integer :: n\nend record\n")
 
     def test_records_defined_twice(self):
-        fails("print 1", "defined more than once", defs=POINT + POINT)
+        fails("println(1)", "defined more than once", defs=POINT + POINT)
 
     def test_record_inside_a_procedure_is_rejected(self):
         f = "subroutine s()\n record r\n  integer :: n\n end record\nend subroutine"
-        fails("print 1", "defined at the top level or inside a module", f)
+        fails("println(1)", "defined at the top level or inside a module", f)
 
     def test_field_lines_are_plain_declarations(self):
-        fails("print 1", "plain declarations", defs="record r\n  const integer :: n\nend record\n")
-        fails("print 1", "declare one variable per line", defs="record r\n  real :: x, y\nend record\n")
+        fails("println(1)", "plain declarations", defs="record r\n  const integer :: n\nend record\n")
+        fails("println(1)", "declare one variable per line", defs="record r\n  real :: x, y\nend record\n")
 
 
 class FieldDefaultTests(unittest.TestCase):
@@ -182,120 +182,120 @@ class FieldDefaultTests(unittest.TestCase):
            "  string :: name = \"none\"\nend record\n")
 
     def test_declared_record_starts_with_its_defaults(self):
-        self.assertEqual(run("config :: c\nprint c", defs=self.CFG),
+        self.assertEqual(run("config :: c\nprintln(c)", defs=self.CFG),
                          ['config(count=5, scale=1.0, verbose=false, name=none)'])
 
     def test_positional_constructor_may_leave_out_trailing_fields_with_defaults(self):
-        self.assertEqual(run("config :: c = config(1, 2.0, true)\nprint c.name", defs=self.CFG), ["none"])
+        self.assertEqual(run("config :: c = config(1, 2.0, true)\nprintln(c.name)", defs=self.CFG), ["none"])
         fails("config :: c = config(1)", "needs all 4 field", defs=self.CFG)       # verbose has no default
         defs = "record r\n  integer :: a\n  integer :: b = 2\n  integer :: c\nend record\n"
         fails("r :: x = r(1)", "needs all 3 field", defs=defs)             # c has no default
-        self.assertEqual(run("r :: x = r(1, 5, 6)\nprint x", defs=defs), ["r(a=1, b=5, c=6)"])
+        self.assertEqual(run("r :: x = r(1, 5, 6)\nprintln(x)", defs=defs), ["r(a=1, b=5, c=6)"])
 
     def test_constructor_overrides_and_omitted_fields_keep_defaults(self):
-        self.assertEqual(run("config :: c = config(scale = 2.5)\nprint c.count, c.scale", defs=self.CFG), ["5 2.5"])
-        self.assertEqual(run("config :: c = config(1, 3.0, true, \"x\")\nprint c", defs=self.CFG),
+        self.assertEqual(run("config :: c = config(scale = 2.5)\nprintln(c.count, c.scale)", defs=self.CFG), ["5 2.5"])
+        self.assertEqual(run("config :: c = config(1, 3.0, true, \"x\")\nprintln(c)", defs=self.CFG),
                          ["config(count=1, scale=3.0, verbose=true, name=x)"])
 
     def test_every_new_record_gets_the_default(self):
-        body = "config :: cs(3)\ncs(2).count = 9\nprint cs(1).count, cs(2).count, cs(3).count"
+        body = "config :: cs(3)\ncs(2).count = 9\nprintln(cs(1).count, cs(2).count, cs(3).count)"
         self.assertEqual(run(body, defs=self.CFG), ["5 9 5"])
 
     def test_defaults_are_per_instance(self):
-        body = "config :: a\nconfig :: b\na.count = 1\nprint a.count, b.count"
+        body = "config :: a\nconfig :: b\na.count = 1\nprintln(a.count, b.count)"
         self.assertEqual(run(body, defs=self.CFG), ["1 5"])
 
     def test_default_arithmetic_and_negatives(self):
         defs = "record r\n  real :: a = -2.5\n  real :: b = 2.0 * 3.0 + 1\n  integer :: n = -(3 - 1)\nend record\n"
-        self.assertEqual(run("r :: x\nprint x.a, x.b, x.n", defs=defs), ["-2.5 7.0 -2"])
+        self.assertEqual(run("r :: x\nprintln(x.a, x.b, x.n)", defs=defs), ["-2.5 7.0 -2"])
 
     def test_integer_default_widens_to_real(self):
-        self.assertEqual(run("r :: x\nprint x.a", defs="record r\n  real :: a = 2\nend record\n"), ["2.0"])
+        self.assertEqual(run("r :: x\nprintln(x.a)", defs="record r\n  real :: a = 2\nend record\n"), ["2.0"])
 
     def test_nested_record_default_and_record_typed_default(self):
         defs = (POINT + "record seg\n  point :: a = point(1.0, 2.0)\n  point :: b\nend record\n"
                 "record holder\n  seg :: s\nend record\n")
-        self.assertEqual(run("holder :: h\nprint h.s.a, h.s.b", defs=defs),
+        self.assertEqual(run("holder :: h\nprintln(h.s.a, h.s.b)", defs=defs),
                          ["point(x=1.0, y=2.0) point(x=0.0, y=0.0)"])
 
     def test_array_field_defaults(self):
         defs = "record r\n  integer :: v(3) = 7\n  integer :: w(3) = [1, 2, 3]\n  integer :: z(2)\nend record\n"
-        self.assertEqual(run("r :: x\nprint x.v, x.w, x.z", defs=defs), ["[7, 7, 7] [1, 2, 3] [0, 0]"])
-        fails("print 1", "has shape \\(2\\)", defs="record r\n  integer :: v(3) = [1, 2]\nend record\n")
+        self.assertEqual(run("r :: x\nprintln(x.v, x.w, x.z)", defs=defs), ["[7, 7, 7] [1, 2, 3] [0, 0]"])
+        fails("println(1)", "has shape \\(2\\)", defs="record r\n  integer :: v(3) = [1, 2]\nend record\n")
 
     def test_copies_keep_values_and_defaults_do_not_alias(self):
-        body = "config :: a\nconfig :: b = a\nb.count = 0\nprint a.count, b.count"
+        body = "config :: a\nconfig :: b = a\nb.count = 0\nprintln(a.count, b.count)"
         self.assertEqual(run(body, defs=self.CFG), ["5 0"])
 
     def test_out_record_starts_with_defaults_and_needs_only_the_rest(self):
         defs = "record r\n  integer :: a = 1\n  integer :: b\nend record\n"
         sub = "subroutine fill(out r :: x)\n  update x.b = x.a + 1\nend subroutine"
-        self.assertEqual(run("r :: v\ncall fill(v)\nprint v", sub, defs), ["r(a=1, b=2)"])
+        self.assertEqual(run("r :: v\ncall fill(v)\nprintln(v)", sub, defs), ["r(a=1, b=2)"])
 
     def test_out_record_whose_fields_all_have_defaults_may_be_left_alone(self):
         # the caller's own values are replaced by the defaults, not kept
         defs = "record r\n  integer :: a = 1\n  integer :: b = 2\nend record\n"
         sub = "subroutine noop(out r :: x)\nend subroutine"
-        self.assertEqual(run("r :: v\nv.a = 9\ncall noop(v)\nprint v", sub, defs), ["r(a=1, b=2)"])
+        self.assertEqual(run("r :: v\nv.a = 9\ncall noop(v)\nprintln(v)", sub, defs), ["r(a=1, b=2)"])
 
     def test_default_must_be_a_constant_expression(self):
-        fails("print 1", "must be a constant expression",
+        fails("println(1)", "must be a constant expression",
               defs="record r\n  real :: a = select case 1\n case default -> 1.0\n end select\nend record\n")
-        fails("print 1", "must be a constant expression",
+        fails("println(1)", "must be a constant expression",
               defs=POINT + "record r\n  real :: a = point(1.0, 2.0).x\nend record\n")
 
     def test_default_cannot_use_a_variable(self):
-        fails("print 1", "the default of field 'a' in record 'r': 'n' is not declared",
+        fails("println(1)", "the default of field 'a' in record 'r': 'n' is not declared",
               defs="record r\n  real :: a = n\nend record\n")
 
     def test_default_cannot_call_a_user_function(self):
         f = "function f(real :: x) -> real\n return x\nend function"
-        fails("print 1", "calls 'f', which is neither a record nor a built-in", f,
+        fails("println(1)", "calls 'f', which is neither a record nor a built-in", f,
               "record r\n  real :: a = f(1.0)\nend record\n")
 
     def test_a_user_function_named_like_a_builtin_is_still_a_user_function(self):
         mod = ("module m\n function sqrt(real :: x) -> real\n  return x\n end function\n"
                " public record r\n  real :: a = sqrt(4.0)\n end record\nend module\n")
         with self.assertRaisesRegex(LangError, "calls 'sqrt', which is neither a record nor a built-in"):
-            run_source(mod + "program t\n print 1\nend program")
+            run_source(mod + "program t\n println(1)\nend program")
 
     def test_default_can_call_built_in_functions(self):
         defs = ("record r\n  real :: a = sqrt(16.0)\n  real :: b = abs(-2.5) * 2.0\n  integer :: n = mod(17, 5)\n"
                 "  real :: s = sum([1.0, 2.0, 3.0])\n  integer :: v(3) = reshape([1, 2, 3], [3])\nend record\n")
-        self.assertEqual(run("r :: x\nprint x.a, x.b, x.n, x.s, x.v", defs=defs), ["4.0 5.0 2 6.0 [1, 2, 3]"])
+        self.assertEqual(run("r :: x\nprintln(x.a, x.b, x.n, x.s, x.v)", defs=defs), ["4.0 5.0 2 6.0 [1, 2, 3]"])
 
     def test_default_can_use_earlier_module_constants(self):
         mod = ("module m\n const real :: base = 2.0\n const real :: twice = base * 2.0\n public record cfg\n"
                "  real :: a = base\n  real :: b = twice + 1\n end record\nend module\n")
-        self.assertEqual(run("use m: cfg\ncfg :: c\nprint c.a, c.b", mod, ""), ["2.0 5.0"])
+        self.assertEqual(run("use m: cfg\ncfg :: c\nprintln(c.a, c.b)", mod, ""), ["2.0 5.0"])
 
     def test_default_can_be_a_const_record(self):
         mod = ("module m\n public record point\n  real :: x\n  real :: y\n end record\n"
                " public const point :: home = point(1.0, 2.0)\n public record agent\n  point :: at = home\n end record\n"
                "end module\n")
-        self.assertEqual(run("use m: agent\nagent :: a\nprint a.at", mod, ""), ["point(x=1.0, y=2.0)"])
+        self.assertEqual(run("use m: agent\nagent :: a\nprintln(a.at)", mod, ""), ["point(x=1.0, y=2.0)"])
 
     def test_default_can_use_a_constant_declared_after_the_record(self):
         mod = ("module m\n public record cfg\n  real :: a = late\n end record\n const real :: late = 2.0\nend module\n")
-        self.assertEqual(run("use m: cfg\ncfg :: c\nprint c.a", mod, ""), ["2.0"])
+        self.assertEqual(run("use m: cfg\ncfg :: c\nprintln(c.a)", mod, ""), ["2.0"])
 
     def test_constant_that_builds_the_record_before_its_default_exists(self):
         mod = ("module m\n public record cfg\n  real :: a = late\n  real :: b\n end record\n"
                " public const cfg :: first = cfg(b = 1.0)\n const real :: late = 2.0\nend module\n")
         with self.assertRaisesRegex(LangError, "'late' is not declared"):
-            run_source(mod + "program t\n print 1\nend program")
+            run_source(mod + "program t\n println(1)\nend program")
 
     def test_default_type_mismatch_fails_at_load_time(self):
-        fails("print 1", "the default of field 'a' in record 'r'", defs='record r\n  real :: a = "x"\nend record\n')
+        fails("println(1)", "the default of field 'a' in record 'r'", defs='record r\n  real :: a = "x"\nend record\n')
 
     def test_module_record_defaults_and_imports(self):
         mod = ("module m\n public record cfg\n  integer :: n = 3\n  real :: s = 0.5\n end record\nend module\n")
-        self.assertEqual(run("use m: cfg\ncfg :: c\nprint c.n, c.s", mod, ""), ["3 0.5"])
+        self.assertEqual(run("use m: cfg\ncfg :: c\nprintln(c.n, c.s)", mod, ""), ["3 0.5"])
 
     def test_printer_round_trip_with_defaults(self):
         from boreas.parser import parse
         from boreas.printer import to_source
-        text = to_source(parse(self.CFG + "program t\n print 1\nend program\n"))
+        text = to_source(parse(self.CFG + "program t\n println(1)\nend program\n"))
         self.assertIn("record config\n  integer :: count = 5\n  real :: scale = 1.0\n  logical :: verbose\n", text)
         self.assertEqual(to_source(parse(text)), text)
 
@@ -305,11 +305,11 @@ class ProcedureTests(unittest.TestCase):
     MAKE = "subroutine make(out point :: p)\n  update p.x = 1.0\n  update p.y = 2.0\nend subroutine"
 
     def test_inout_record(self):
-        self.assertEqual(run("point :: p = point(1.0, 2.0)\ncall move(p, 2.0)\nprint p", self.MOVE),
+        self.assertEqual(run("point :: p = point(1.0, 2.0)\ncall move(p, 2.0)\nprintln(p)", self.MOVE),
                          ["point(x=3.0, y=2.0)"])
 
     def test_out_record_must_be_fully_assigned(self):
-        self.assertEqual(run("point :: p\ncall make(p)\nprint p", self.MAKE), ["point(x=1.0, y=2.0)"])
+        self.assertEqual(run("point :: p\ncall make(p)\nprintln(p)", self.MAKE), ["point(x=1.0, y=2.0)"])
         half = "subroutine make(out point :: p)\n  update p.x = 1.0\nend subroutine"
         fails("point :: p\ncall make(p)", "not fully assigned in make: 'p.y' has no value", half)
 
@@ -323,7 +323,7 @@ class ProcedureTests(unittest.TestCase):
 
     def test_missing_update_names_the_field(self):
         bad = "subroutine bad(inout point :: p)\n  p.x = 1.0\nend subroutine"
-        fails("print 1", "write 'update p.x = ...'", bad)
+        fails("println(1)", "write 'update p.x = ...'", bad)
 
     def test_update_needs_an_out_parameter(self):
         fails("point :: p\nupdate p.x = 1.0", "'update' is for out and inout parameters")
@@ -332,30 +332,30 @@ class ProcedureTests(unittest.TestCase):
         defs = POINT + "record line\n  point :: ends(2)\nend record\n"
         sub = "subroutine f(inout line :: l)\n  update l.ends(2).y = 9.0\nend subroutine"
         self.assertEqual(run("line :: l\nl.ends(1) = point(0.0, 0.0)\nl.ends(2) = point(0.0, 0.0)\n"
-                             "call f(l)\nprint l.ends(2).y", sub, defs), ["9.0"])
+                             "call f(l)\nprintln(l.ends(2).y)", sub, defs), ["9.0"])
 
     def test_function_returns_a_copy(self):
         f = "function mk(real :: a) -> point\n  point :: r = point(a, a)\n  return r\nend function"
-        self.assertEqual(run("print mk(2.0).y, mk(3.0)", f), ["2.0 point(x=3.0, y=3.0)"])
+        self.assertEqual(run("println(mk(2.0).y, mk(3.0))", f), ["2.0 point(x=3.0, y=3.0)"])
 
     def test_record_argument_type_is_checked(self):
         defs = POINT + "record other\n  real :: x\nend record\n"
         f = "function fx(point :: p) -> real\n  return p.x\nend function"
-        fails("other :: o = other(1.0)\nprint fx(o)", "cannot assign other to point", f, defs)
+        fails("other :: o = other(1.0)\nprintln(fx(o))", "cannot assign other to point", f, defs)
 
     def test_same_named_records_from_different_modules_are_different_types(self):
         src = ("module a\n public record point\n  real :: x\n end record\n"
                " public function make() -> point\n  return point(1.0)\n end function\nend module\n"
                "module b\n use a: make\n public function take(point :: p) -> real\n  return p.x\n end function\n"
                " record point\n  real :: x\n end record\nend module\n"
-               "program t\n use a: make\n use b: take\n print take(make())\nend program")
+               "program t\n use a: make\n use b: take\n println(take(make()))\nend program")
         with self.assertRaisesRegex(LangError, "two records share that name"):
             run_source(src)
 
     def test_distinct_fields_may_be_passed_together(self):
         swap = ("subroutine swap(inout real :: a, inout real :: b)\n  real :: t\n  t = a\n"
                 "  update a = b\n  update b = t\nend subroutine")
-        self.assertEqual(run("point :: p = point(1.0, 2.0)\ncall swap(p.x, p.y)\nprint p", swap),
+        self.assertEqual(run("point :: p = point(1.0, 2.0)\ncall swap(p.x, p.y)\nprintln(p)", swap),
                          ["point(x=2.0, y=1.0)"])
 
     def test_aliasing_is_rejected(self):
@@ -370,7 +370,7 @@ class ProcedureTests(unittest.TestCase):
         run(body, swap)
 
     def test_const_record(self):
-        body = "const point :: o = point(0.0, 0.0)\nprint o.x"
+        body = "const point :: o = point(0.0, 0.0)\nprintln(o.x)"
         self.assertEqual(run(body), ["0.0"])
         fails("const point :: o = point(0.0, 0.0)\no.x = 1.0", "'o.x' is part of a constant")
         fails("const point :: o = point(0.0, 0.0)\no = point(1.0, 1.0)", "'o' is a constant")
@@ -400,12 +400,12 @@ end module
 
     def test_import_a_record_and_use_it(self):
         body = ("use geo: point, mid, origin\npoint :: a = point(0.0, 0.0)\npoint :: b = point(2.0, 4.0)\n"
-                "print mid(a, b), origin")
+                "println(mid(a, b), origin)")
         self.assertEqual(run(body, self.MOD, defs=""), ["point(x=1.0, y=2.0) point(x=0.0, y=0.0)"])
 
     def test_private_record_cannot_be_imported_but_can_be_used_inside(self):
-        fails("use geo: hidden\nprint 1", "'hidden' is private to module 'geo'", self.MOD, "")
-        self.assertEqual(run("use geo: secret\nprint secret()", self.MOD, defs=""), ["7"])
+        fails("use geo: hidden\nprintln(1)", "'hidden' is private to module 'geo'", self.MOD, "")
+        self.assertEqual(run("use geo: secret\nprintln(secret())", self.MOD, defs=""), ["7"])
 
     def test_record_needs_an_import(self):
         fails("point :: a", "unknown type 'point'", self.MOD, "")
@@ -415,12 +415,12 @@ end module
 
     def test_two_imports_with_one_name_clash(self):
         more = self.MOD + "module other\n public record point\n  integer :: k\n end record\nend module\n"
-        fails("use geo: point\nuse other: point\nprint 1", "already defined here", more, "")
+        fails("use geo: point\nuse other: point\nprintln(1)", "already defined here", more, "")
 
     def test_module_record_fields_use_records_it_imports(self):
         src = (self.MOD + "module shapes\n use geo: point\n public record seg\n  point :: a\n  point :: b\n end record\n"
                "end module\nprogram t\n use geo: point\n use shapes: seg\n seg :: s\n s.a = point(1.0, 2.0)\n"
-               " s.b = point(3.0, 4.0)\n print s.b.y\nend program")
+               " s.b = point(3.0, 4.0)\n println(s.b.y)\nend program")
         out = []
         run_source(src, out.append)
         self.assertEqual(out, ["4.0"])
@@ -430,7 +430,7 @@ class PrinterTests(unittest.TestCase):
     SRC = (POINT + "record seg\n  point :: a\n  integer :: tags(2)\nend record\n"
            "module m\n  public record q\n    real :: z\n  end record\nend module\n"
            "program t\n  point :: p = point(1.0, y = 2.0)\n  seg :: s\n  p.x = 3.0\n  s.a.y = p.x\n  s.tags(2) = 1\n"
-           "  print p.x + s.tags(2), p\nend program\n")
+           "  println(p.x + s.tags(2), p)\nend program\n")
 
     def test_round_trip_is_stable(self):
         text = to_source(parse(self.SRC))

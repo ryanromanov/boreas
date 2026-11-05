@@ -21,7 +21,7 @@ Currently a tree-walking interpreter written in Python.
 
     program demo
       integer :: ys(3) = [1, 2, 3]
-      print "squares:", ys * ys, square(2.5)
+      println("squares:", ys * ys, square(2.5))
     end program
 
 ## Declarations
@@ -52,7 +52,7 @@ Integers and reals come in fixed widths, named by their size:
 
     int64 :: big = 3000000000
     real32 :: x = 0.1
-    print big * 3, x * 3.0          ! 9000000000 0.3
+    println(big * 3, x * 3.0)          ! 9000000000 0.3
 
 - **Overflow is an error.** `integer` is 32 bits, so `2147483647 + 1` stops the program ("integer
   overflow") where Fortran wraps around silently. Integer literals too big for 32 bits are `int64`.
@@ -90,7 +90,9 @@ program file and `argument(n)` the n-th one (`""` past the end; `argument(0)` is
 
 ## Input, output and stopping
 
-`print a, b` writes a line. `write a, b` is the same without the final newline, for prompts.
+`println(a, b)` writes the values to the screen and ends the line; `print(a, b)` is the same without the
+final newline, for prompts. `write(f, a, b)` and `writeln(f, a, b)` do the same to a `file` value `f`.
+`println()` writes an empty line.
 Strings can use `"` or `'` quotes, so `'say "hi"'` works.
 
 `read a, b` reads list-directed input from the keyboard: values are separated by blanks or commas,
@@ -123,7 +125,7 @@ Output is built as a string and printed; there is no format mini-language.
 `right` and `left` take text, a number or a logical. Text that is too long is cut to its first characters; a number
 that does not fit shows as stars (`*****`), as in Fortran. A width of 0 gives just the text.
 
-`text(x)` turns any value into the text `print` would show for it, with no width and no padding, so a number can
+`text(x)` turns any value into the text `println` would show for it, with no width and no padding, so a number can
 go inside a longer line: `"n = " + text(n) + ", done = " + text(true)`. Strings come back unchanged, and arrays
 read as `[1, 2, 3]`. `fixed(x, d, w)` right-aligns in `w`
 characters, dropping the leading 0 if that makes it fit (`.500`).
@@ -140,12 +142,12 @@ blanks where the exponent would go, or the E form for very large and small value
 
 ## Files
 
-A `file` value stands for a text file. `open` gives you one, and `print to`, `write to`, `read from`
+A `file` value stands for a text file. `open` gives you one, and `write`, `writeln`, `read from`
 and `close` use it:
 
     file :: log = open("report.txt", "write")      ! "read", "write" (create or replace) or "append"
-    print to log, "Range:", fixed(r, 1)            ! ends the line
-    write to log, "no newline"
+    writeln(log, "Range:", fixed(r, 1))            ! ends the line
+    write(log, "no newline")
     close log
 
     file :: data = open("numbers.txt", "read")
@@ -153,7 +155,7 @@ and `close` use it:
     real :: b
     integer :: ios
     read from data, a, b status ios                ! 0 = ok, -1 = end of file, 1 = bad value
-    print read_line(data)                          ! the next whole line, or null at the end
+    println(read_line(data))                          ! the next whole line, or null at the end
     close data
 
 - `read from` follows the same rules as `read` (blanks or commas separate values, items continue onto
@@ -176,10 +178,10 @@ IEEE arithmetic, as Fortran has it, with one line at the top:
 
     program demo
       real :: zero = 0.0
-      print 1.0 / zero, sqrt(-1.0), log(zero)     ! Infinity NaN -Infinity
+      println(1.0 / zero, sqrt(-1.0), log(zero))     ! Infinity NaN -Infinity
       real :: x = asin(2.0)
       if x /= x then                              ! NaN is the only value that is not equal to itself
-        print "no solution"
+        println("no solution")
       end if
     end program
 
@@ -206,8 +208,8 @@ there is no literal syntax (`cmplx(re)` or an integer or real value widens when 
 
     complex :: z = cmplx(3.0, 4.0)
     const complex :: i = cmplx(0.0, 1.0)
-    print abs(z), real(z), aimag(z), conjg(z)       ! 5.0 3.0 4.0 (3.0, -4.0)
-    print z * z + 1, z ** 2, exp(i * 3.141592653589793)
+    println(abs(z), real(z), aimag(z), conjg(z))       ! 5.0 3.0 4.0 (3.0, -4.0)
+    println(z * z + 1, z ** 2, exp(i * 3.141592653589793))
 
 - `+ - * / **` work, with integers and reals mixed in; `==` and `/=` compare. A complex cannot be
   ordered with `<` (compare `abs` or the parts), and assigning a complex to a `real` is an error
@@ -224,9 +226,9 @@ Arrays have any number of dimensions, 1-based and stored column-major like
 Fortran. A scalar subscript drops that dimension; `:` keeps it.
 
     real :: m(2, 3) = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
-    print m(1, :), m(:, 2), m(1:2, 2:3)    ! row, column, block
+    println(m(1, :), m(:, 2), m(1:2, 2:3))    ! row, column, block
     m(2, :) = 0.0                          ! sections can be assigned
-    print matmul(m, transpose(m))
+    println(matmul(m, transpose(m)))
 
 Operators work elementwise and need matching shapes (scalars broadcast).
 Built in: `size`, `shape`, `reshape`, `matmul`, `transpose`, `dot_product`,
@@ -276,13 +278,13 @@ integer, string or logical (not real).
 
     select case grade
     case 90:100
-      print "A"
+      println("A")
     case 80:89
-      print "B"
+      println("B")
     case 1, 3, 5
-      print "odd and small"
+      println("odd and small")
     case default
-      print "other"
+      println("other")
     end select
 
 - Each case runs only its own body; there is no implicit fallthrough.
@@ -300,12 +302,12 @@ a case body then continues into the next case's body in source order (including
 
     select case fallthrough grade
     case 3
-      print "bronze"
+      println("bronze")
     case 2
-      print "silver"
+      println("silver")
       break
     case 1
-      print "gold"
+      println("gold")
     end select
 
 `grade = 3` prints bronze and silver; `grade = 2` prints silver; `grade = 1` prints gold.
@@ -334,10 +336,10 @@ dimension (the number of colons is the rank), given a size with `allocate`, and 
     allocatable integer :: a(:)
     allocatable real :: m(:, :)
     n = 5
-    print allocated(a)          ! false
+    println(allocated(a))          ! false
     allocate a(n)               ! elements start at 0 / 0.0 / false / ""
     allocate m(n, 2 * n)
-    print allocated(a), size(a) ! true 5
+    println(allocated(a), size(a)) ! true 5
     deallocate a                ! may be allocated again, with any size
 
 Allocatable arrays are locals of functions, subroutines and the program, and have no
@@ -368,7 +370,7 @@ field per line, with no default values:
     point :: q = point(y = 2.0, x = 1.0)   ! or by name, in any order
     point :: r = point(y = 5.0)            ! any subset: the others keep their defaults (0.0)
     p.x = 3.0
-    print p.x + q.y, p
+    println(p.x + q.y, p)
 
 - A record is a value: assigning one, passing it, or returning it copies it, so two variables never
   share fields. Records can hold other records and fixed-size array fields (`integer :: tags(3)`,
@@ -404,9 +406,9 @@ A plain `integer`, `real`, `logical`, `string` or record always holds a value. A
 and the variable may instead be absent (`null`):
 
     integer? :: n                       ! starts as null
-    print present(n), n == null         ! false true
+    println(present(n), n == null)         ! false true
     n = 4
-    print n ?? 10                       ! 4; `a ?? b` is a, or b when a is null
+    println(n ?? 10)                       ! 4; `a ?? b` is a, or b when a is null
     n = null
 
 - `null` only goes into a `?` type; assigning it to a plain one is an error. An optional variable
@@ -461,7 +463,7 @@ exactly the names it uses:
 
     program demo
       use geometry: area, pi
-      print area(2.0)
+      println(area(2.0))
     end program
 
 Nothing is visible without a `use`. Importing a private or missing name is an
@@ -483,7 +485,7 @@ to one is marked with `update`, the same word that marks a write to an `out` par
       use counter: hits, hit
       call hit()
       call hit()
-      print hits          ! 2
+      println(hits)          ! 2
       update hits = 0
     end program
 
@@ -561,7 +563,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
   and `len(a)` becomes `n`. Lengths that are not known numbers (`len=*`), record fields and function results
   keep Boreas's variable-length strings, with a note.
 - Formats become string expressions. `write(*,'(A,I5,F8.3)') s, n, x` (or a labelled `format` statement,
-  before or after the write) turns into `print s + right(n, 5) + fixed(x, 3, 8)`. Translated: `A`, `Aw`,
+  before or after the write) turns into `println(s + right(n, 5) + fixed(x, 3, 8))`. Translated: `A`, `Aw`,
   `Iw`, `Iw.m`, `Fw.d`, `nX`, `/`, literal text, repeat counts and groups, `advance='no'`, and implied-do
   lists with literal bounds (unrolled). More values than descriptors start the format again; a format
   `Ew.d` and `Gw.d` (as `scientific` / `general` with the `"fortran"` style) and `Lw` (as `right(tf(x), w)`), with groups that would have to repeat, and `ES`, `P`, an exponent width (`E12.4E3`), are TODOs. `Tn` pads with blanks up
@@ -577,7 +579,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
   fallthrough` in a loop). Computed `goto`, the arithmetic `if`, labelled `do` loops (a shared last statement
   too) and the `parameter` statement are translated; `common` and `block data` are TODOs.
 - File input and output: `open(unit=9, file=name, status='replace')` becomes `unit_9 = open(name, "write")`,
-  `write(9,*)` / `write(9,fmt)` become `print to unit_9, ...`, `read(9,*)` becomes `read from unit_9, ...`,
+  `write(9,*)` / `write(9,fmt)` become `writeln(unit_9, ...)`, `read(9,*)` becomes `read from unit_9, ...`,
   `read(9,'(A)')` reads a whole line, `close(9)` becomes `close unit_9`, and `inquire(file=f, exist=e)`
   becomes `e = exists(f)`. Each unit number gets a file variable in one generated module `file_units`, so
   every procedure sees the same open file. The mode comes from how the program uses the unit (only

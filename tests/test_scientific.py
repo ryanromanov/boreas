@@ -9,7 +9,7 @@ from boreas.parser import parse
 
 def run(expr):
     out = []
-    Interp(parse(f"program t\n  print {expr}\nend program t\n"), out.append).run()
+    Interp(parse(f"program t\n  println({expr})\nend program t\n"), out.append).run()
     return out[0].rstrip("\n")
 
 

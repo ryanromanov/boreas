@@ -62,20 +62,20 @@ class ParseTests(unittest.TestCase):
             parse("program t\ninteger :: a(2)\nif true then\ndo while false\nallocate a(2)\nend do\nend if\nend program t")
 
     def test_names_are_not_reserved_in_expressions(self):
-        self.assertEqual(run("integer :: allocate = 3\nprint allocate + 1"), ["4"])
+        self.assertEqual(run("integer :: allocate = 3\nprintln(allocate + 1)"), ["4"])
 
 
 class RunTests(unittest.TestCase):
     def test_allocate_use_deallocate(self):
         out = run("""allocatable integer :: a(:)
-print allocated(a)
+println(allocated(a))
 allocate a(3)
-print allocated(a), size(a), a
+println(allocated(a), size(a), a)
 a(2) = 5
 a = a + 1
-print a
+println(a)
 deallocate a
-print allocated(a)""")
+println(allocated(a))""")
         self.assertEqual(out, ["false", "true 3 [0, 0, 0]", "[1, 6, 1]", "false"])
 
     def test_defaults_per_type(self):
@@ -85,15 +85,15 @@ allocatable string :: s(:)
 allocate r(1)
 allocate b(1)
 allocate s(1)
-print r, b, '[' + s(1) + ']'""".replace("'", '"'))
+println(r, b, '[' + s(1) + ']')""".replace("'", '"'))
         self.assertEqual(out, ["[0.0] [false] []"])
 
     def test_extents_are_expressions(self):
-        out = run("integer :: n = 2\nallocatable integer :: a(:)\nallocate a(n * 3 - 1)\nprint size(a)")
+        out = run("integer :: n = 2\nallocatable integer :: a(:)\nallocate a(n * 3 - 1)\nprintln(size(a))")
         self.assertEqual(out, ["5"])
 
     def test_zero_size(self):
-        out = run("allocatable integer :: a(:)\nallocate a(0)\nprint allocated(a), size(a), sum(a)\ndeallocate a")
+        out = run("allocatable integer :: a(:)\nallocate a(0)\nprintln(allocated(a), size(a), sum(a))\ndeallocate a")
         self.assertEqual(out, ["true 0 0"])
 
     def test_two_dimensional_and_shape(self):
@@ -106,9 +106,9 @@ do j = 1, 3
     m(i, j) = 10 * i + j
   end do
 end do
-print m
-print shape(m), size(m, 1), size(m, 2), m(2, 3)
-print transpose(m)""")
+println(m)
+println(shape(m), size(m, 1), size(m, 2), m(2, 3))
+println(transpose(m))""")
         self.assertEqual(out, ["[[11, 12, 13], [21, 22, 23]]", "[2, 3] 2 3 23",
                                "[[11, 21], [12, 22], [13, 23]]"])
 
@@ -117,11 +117,11 @@ print transpose(m)""")
 allocatable integer :: m(:, :)
 allocate a(5)
 a(2:4) = [7, 8, 9]
-print a(2:), a(:2), a(3)
+println(a(2:), a(:2), a(3))
 allocate m(2, 2)
 m(:, 1) = [1, 2]
 m(1, :) = 5
-print m""")
+println(m)""")
         self.assertEqual(out, ["[7, 8, 9, 0] [0, 7] 8", "[[5, 5], [2, 0]]"])
 
     def test_deallocate_and_reallocate_different_size(self):
@@ -130,7 +130,7 @@ allocate a(2)
 a = 9
 deallocate a
 allocate a(4)
-print a""")
+println(a)""")
         self.assertEqual(out, ["[0, 0, 0, 0]"])
 
     def test_allocated_in_a_condition_and_loop(self):
@@ -141,7 +141,7 @@ do i = 1, 3
     allocate a(i)
   end if
 end do
-print size(a)""")
+println(size(a))""")
         self.assertEqual(out, ["1"])
 
     def test_pass_to_procedures(self):
@@ -154,7 +154,7 @@ end subroutine
 function total(integer :: v) -> integer
   return sum(v)
 end function"""
-        out = run("allocatable integer :: a(:)\nallocate a(4)\ncall fill(a)\nprint a, total(a), total(a(2:3))", funcs)
+        out = run("allocatable integer :: a(:)\nallocate a(4)\ncall fill(a)\nprintln(a, total(a), total(a(2:3)))", funcs)
         self.assertEqual(out, ["[1, 4, 9, 16] 30 13"])
 
     def test_locals_in_procedures_are_per_call(self):
@@ -164,11 +164,11 @@ end function"""
   t = n
   return sum(t)
 end function"""
-        self.assertEqual(run("print build(3), build(4)", funcs), ["9 16"])
+        self.assertEqual(run("println(build(3), build(4))", funcs), ["9 16"])
 
     def test_leftover_allocation_is_freed_silently(self):
         funcs = "subroutine s()\n  allocatable integer :: t(:)\n  allocate t(2)\nend subroutine"
-        self.assertEqual(run("call s()\ncall s()\nprint 1", funcs), ["1"])
+        self.assertEqual(run("call s()\ncall s()\nprintln(1)", funcs), ["1"])
 
     def test_allocated_inside_a_procedure_sees_its_own_locals(self):
         funcs = """function f() -> logical
@@ -176,11 +176,11 @@ end function"""
   allocate t(1)
   return allocated(t)
 end function"""
-        self.assertEqual(run("allocatable integer :: t(:)\nprint f(), allocated(t)", funcs), ["true false"])
+        self.assertEqual(run("allocatable integer :: t(:)\nprintln(f(), allocated(t))", funcs), ["true false"])
 
     def test_user_function_named_allocated_wins(self):
         funcs = "function allocated(integer :: x) -> integer\n  return x + 1\nend function"
-        self.assertEqual(run("print allocated(1)", funcs), ["2"])
+        self.assertEqual(run("println(allocated(1))", funcs), ["2"])
 
 
 class RuntimeErrorTests(unittest.TestCase):
@@ -194,9 +194,9 @@ class RuntimeErrorTests(unittest.TestCase):
         funcs = ("subroutine bump(inout integer :: v)\n  update v(1) = 1\nend subroutine\n"
                  "function first(integer :: v) -> integer\n  return v(1)\nend function")
         cases = [
-            "print a", "print a(1)", "print a(1:2)", "a(1) = 1", "a(1:2) = 1", "a = 1", "a = [1, 2, 3]",
-            "integer :: b(3)\nb = a", "print size(a)", "print shape(a)", "print sum(a)", "print a + 1",
-            "call bump(a)", "print first(a)", "integer :: n\nn = size(a, 1)",
+            "println(a)", "println(a(1))", "println(a(1:2))", "a(1) = 1", "a(1:2) = 1", "a = 1", "a = [1, 2, 3]",
+            "integer :: b(3)\nb = a", "println(size(a))", "println(shape(a))", "println(sum(a))", "println(a + 1)",
+            "call bump(a)", "println(first(a))", "integer :: n\nn = size(a, 1)",
         ]
         for body in cases:
             with self.subTest(body=body):
@@ -210,7 +210,7 @@ class RuntimeErrorTests(unittest.TestCase):
         self.fails("allocate a(1)\ndeallocate a\ndeallocate a", "not allocated")
 
     def test_use_after_deallocate(self):
-        self.fails("allocate a(1)\ndeallocate a\nprint a(1)", "not allocated")
+        self.fails("allocate a(1)\ndeallocate a\nprintln(a(1))", "not allocated")
 
     def test_negative_and_non_integer_extents(self):
         self.fails("allocate a(-1)", "non-negative integers")
@@ -218,23 +218,23 @@ class RuntimeErrorTests(unittest.TestCase):
         self.fails("allocate a(true)", "non-negative integers")
 
     def test_extent_of_an_undeclared_value_is_the_default_zero(self):
-        self.fails("integer :: n\nallocate a(n)\nprint a(1)", "out of bounds")
+        self.fails("integer :: n\nallocate a(n)\nprintln(a(1))", "out of bounds")
 
     def test_bounds_after_allocation(self):
-        self.fails("allocate a(2)\nprint a(3)", "out of bounds")
+        self.fails("allocate a(2)\nprintln(a(3))", "out of bounds")
 
     def test_shape_mismatch_on_whole_assignment(self):
         self.fails("allocate a(2)\na = [1, 2, 3]", "shape mismatch")
 
     def test_allocated_needs_an_allocatable_name(self):
-        self.fails("integer :: b(2)\nprint allocated(b)", "not an allocatable")
-        self.fails("print allocated(a(1))", "needs the name")
-        self.fails("print allocated(3)", "needs the name")
-        self.fails("print allocated(zzz)", "not declared")
-        self.fails("print allocated()", "needs the name")
+        self.fails("integer :: b(2)\nprintln(allocated(b))", "not an allocatable")
+        self.fails("println(allocated(a(1)))", "needs the name")
+        self.fails("println(allocated(3))", "needs the name")
+        self.fails("println(allocated(zzz))", "not declared")
+        self.fails("println(allocated())", "needs the name")
 
     def test_unallocated_does_not_leak_through_arguments_of_allocated(self):
-        self.fails("print allocated(a), a", "not allocated")
+        self.fails("println(allocated(a), a)", "not allocated")
 
     def test_callee_cannot_allocate_callers_array(self):
         # the callee's parameter is not allocatable, so this is rejected when the file is parsed
@@ -271,7 +271,7 @@ program t
   if allocated(a) then
     deallocate a
   end if
-  print allocated(b)
+  println(allocated(b))
 end program t
 """
 
@@ -319,7 +319,7 @@ class ConvertTests(unittest.TestCase):
     def test_allocated_intrinsic(self):
         text, findings = conv("  allocate(a(2))\n  print *, allocated(a)", "  integer, allocatable :: a(:)")
         self.assertEqual(todos(findings), [])
-        self.assertIn("print allocated(a)", text)
+        self.assertIn("println(allocated(a))", text)
 
     def test_unsupported_allocate_options_become_todos(self):
         for stmt in ("allocate(a(2), stat=ierr)", "allocate(a(2), errmsg=msg)", "allocate(a, source=b)",

@@ -45,53 +45,53 @@ class LibraryTests(unittest.TestCase):
     def test_real32_functions_use_the_c_library(self):
         atanf = self.c_function("atanf")
         for x in (0.3, 1.7, 12.5, 0.001, 0.77):
-            self.assertEqual(value(run(f"  real32 :: x = {x}\n  print atan(x)")), f32(atanf(f32(x))), x)
+            self.assertEqual(value(run(f"  real32 :: x = {x}\n  println(atan(x))")), f32(atanf(f32(x))), x)
 
     def test_a_double_argument_still_uses_double_precision(self):
         import math
-        self.assertEqual(float(run("  real :: x = 0.3\n  print atan(x)")[0]), math.atan(0.3))
+        self.assertEqual(float(run("  real :: x = 0.3\n  println(atan(x))")[0]), math.atan(0.3))
 
     def test_integer_powers_multiply_in_single_precision(self):
         x = f32(1.1)
-        self.assertEqual(value(run("  real32 :: x = 1.1\n  print x ** 3")), f32(f32(x * x) * x))
+        self.assertEqual(value(run("  real32 :: x = 1.1\n  println(x ** 3)")), f32(f32(x * x) * x))
         x2 = f32(x * x)
         x4 = f32(x2 * x2)
-        self.assertEqual(value(run("  real32 :: x = 1.1\n  print x ** 5")), f32(x * x4))
+        self.assertEqual(value(run("  real32 :: x = 1.1\n  println(x ** 5)")), f32(x * x4))
 
     def test_negative_and_zero_exponents(self):
-        self.assertEqual(run("  real32 :: x = 2.0\n  print x ** (-2)"), ["0.25"])
-        self.assertEqual(run("  real32 :: x = 2.0\n  print x ** 0"), ["1.0"])
+        self.assertEqual(run("  real32 :: x = 2.0\n  println(x ** (-2))"), ["0.25"])
+        self.assertEqual(run("  real32 :: x = 2.0\n  println(x ** 0)"), ["1.0"])
 
     def test_real_exponents_use_powf(self):
         powf = self.c_function("powf", 2)
         want = f32(powf(f32(1.7), f32(0.37)))
-        self.assertEqual(value(run("  real32 :: x = 1.7\n  real32 :: y = 0.37\n  print x ** y")), want)
+        self.assertEqual(value(run("  real32 :: x = 1.7\n  real32 :: y = 0.37\n  println(x ** y)")), want)
 
     def test_results_stay_real32_and_work_on_arrays(self):
         sinf = self.c_function("sinf")
-        out = run("  real32 :: x = 0.5\n  print sin([x, x * 2.0])")[0]
+        out = run("  real32 :: x = 0.5\n  println(sin([x, x * 2.0]))")[0]
         first, second = (f32(float(t)) for t in out.strip("[]").split(", "))
         self.assertEqual((first, second), (f32(sinf(f32(0.5))), f32(sinf(f32(1.0)))))
 
 
 class StrictTests(unittest.TestCase):
     def test_domain_and_range_errors_still_stop_the_program(self):
-        fails(self, "  real32 :: x = 2.0\n  print asin(x)", "domain error")
-        fails(self, "  real32 :: x = 0.0\n  print log(x)", "domain error")
-        fails(self, "  real32 :: x = -1.0\n  print sqrt(x)", "domain error")
-        fails(self, "  real32 :: x = 100.0\n  print exp(x)", "range error")
-        fails(self, "  real32 :: x = 2.0\n  print x ** 200", "too large")
-        fails(self, "  real32 :: x = -2.0\n  real32 :: y = 0.5\n  print x ** y", "not a real number")
+        fails(self, "  real32 :: x = 2.0\n  println(asin(x))", "domain error")
+        fails(self, "  real32 :: x = 0.0\n  println(log(x))", "domain error")
+        fails(self, "  real32 :: x = -1.0\n  println(sqrt(x))", "domain error")
+        fails(self, "  real32 :: x = 100.0\n  println(exp(x))", "range error")
+        fails(self, "  real32 :: x = 2.0\n  println(x ** 200)", "too large")
+        fails(self, "  real32 :: x = -2.0\n  real32 :: y = 0.5\n  println(x ** y)", "not a real number")
 
     def test_use_ieee_gives_nan_and_infinity(self):
-        self.assertEqual(run("  real32 :: x = 2.0\n  print asin(x)", True), ["NaN"])
-        self.assertEqual(run("  real32 :: x = 0.0\n  print log(x)", True), ["-Infinity"])
-        self.assertEqual(run("  real32 :: x = 100.0\n  print exp(x)", True), ["Infinity"])
-        self.assertEqual(run("  real32 :: x = 2.0\n  print x ** 200", True), ["Infinity"])
-        self.assertEqual(run("  real32 :: x = -2.0\n  real32 :: y = 0.5\n  print x ** y", True), ["NaN"])
+        self.assertEqual(run("  real32 :: x = 2.0\n  println(asin(x))", True), ["NaN"])
+        self.assertEqual(run("  real32 :: x = 0.0\n  println(log(x))", True), ["-Infinity"])
+        self.assertEqual(run("  real32 :: x = 100.0\n  println(exp(x))", True), ["Infinity"])
+        self.assertEqual(run("  real32 :: x = 2.0\n  println(x ** 200)", True), ["Infinity"])
+        self.assertEqual(run("  real32 :: x = -2.0\n  real32 :: y = 0.5\n  println(x ** y)", True), ["NaN"])
 
     def test_nan_in_gives_nan_out_even_in_strict_mode(self):
-        self.assertEqual(run("  real32 :: x = nan()\n  print sin(x)"), ["NaN"])
+        self.assertEqual(run("  real32 :: x = nan()\n  println(sin(x))"), ["NaN"])
 
 
 class FallbackTests(unittest.TestCase):
@@ -100,8 +100,8 @@ class FallbackTests(unittest.TestCase):
         try:
             kinds._single_cache.update({n: None for n in list(kinds.SINGLE_UNARY) + list(kinds.SINGLE_BINARY)})
             import math
-            self.assertEqual(value(run("  real32 :: x = 0.3\n  print atan(x)")), f32(math.atan(f32(0.3))))
-            self.assertEqual(value(run("  real32 :: x = 1.7\n  real32 :: y = 0.37\n  print x ** y")),
+            self.assertEqual(value(run("  real32 :: x = 0.3\n  println(atan(x))")), f32(math.atan(f32(0.3))))
+            self.assertEqual(value(run("  real32 :: x = 1.7\n  real32 :: y = 0.37\n  println(x ** y)")),
                              f32(f32(1.7) ** f32(0.37)))
         finally:
             kinds._single_cache.clear()

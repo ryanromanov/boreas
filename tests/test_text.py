@@ -6,7 +6,7 @@ from boreas.parser import parse
 
 def run(body, decls=""):
     out = []
-    Interp(parse(f"program t\n{decls}\n  print {body}\nend program t\n"), out.append).run()
+    Interp(parse(f"program t\n{decls}\n  println({body})\nend program t\n"), out.append).run()
     return out[0].rstrip("\n")
 
 

@@ -39,8 +39,8 @@ program demo
   integer :: e
   real :: t
 
-  print "area of r=2:", area(2.0)
-  print "pi:", pi
+  println("area of r=2:", area(2.0))
+  println("pi:", pi)
   call tally(10, e, t)
-  print "evens:", e, " tau:", t
+  println("evens:", e, " tau:", t)
 end program

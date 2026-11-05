@@ -41,11 +41,11 @@ def program(body):
 
 class AllocatableModuleVariableTests(unittest.TestCase):
     def test_allocated_in_one_procedure_and_used_in_another(self):
-        self.assertEqual(run(program("call setup(4)\nprint total()\nupdate data(2) = 100\nprint total(), size(data)")),
+        self.assertEqual(run(program("call setup(4)\nprintln(total())\nupdate data(2) = 100\nprintln(total(), size(data))")),
                          ["30", "126", "4"])
 
     def test_the_program_can_allocate_an_imported_array(self):
-        self.assertEqual(run(program("update allocate data(2)\nprint data\nupdate deallocate data\nprint allocated(data)")),
+        self.assertEqual(run(program("update allocate data(2)\nprintln(data)\nupdate deallocate data\nprintln(allocated(data))")),
                          ["[0,", "0]", "false"])
 
     def test_allocate_without_update_is_an_error(self):
@@ -78,7 +78,7 @@ class AllocatableModuleVariableTests(unittest.TestCase):
 
     def test_use_before_allocate_and_double_allocate_are_errors(self):
         with self.assertRaisesRegex(LangError, "not allocated"):
-            run(program("print total()"))
+            run(program("println(total())"))
         with self.assertRaisesRegex(LangError, "already allocated"):
             run(program("call setup(2)\ncall setup(2)"))
         with self.assertRaisesRegex(LangError, "not allocated"):
