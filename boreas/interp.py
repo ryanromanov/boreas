@@ -936,7 +936,7 @@ class Interp:
         elif k is Allocate:
             self.allocate(s, env)
         elif k is Deallocate:
-            slot = self.allocatable(s.name, env, s.line)
+            slot = self.allocatable_for(s, env)
             if slot[VALUE] is None:
                 raise LangError(f"line {s.line}: cannot deallocate '{s.name}': it is not allocated")
             slot[VALUE] = None
@@ -1086,8 +1086,16 @@ class Interp:
             raise LangError(f"line {line}: '{name}' is not an allocatable array")
         return slot
 
-    def allocate(self, s, env):
+    def allocatable_for(self, s, env):
+        """The slot `allocate` / `deallocate` changes; a module variable's needs `update`."""
         slot = self.allocatable(s.name, env, s.line)
+        if (slot[INTENT] == "module") != s.update:
+            raise LangError(f"line {s.line}: 'update' must be used exactly when allocating or freeing "
+                            f"a module variable ('{s.name}')")
+        return slot
+
+    def allocate(self, s, env):
+        slot = self.allocatable_for(s, env)
         if slot[VALUE] is not None:
             raise LangError(f"line {s.line}: cannot allocate '{s.name}': it is already allocated "
                             f"(deallocate it first)")

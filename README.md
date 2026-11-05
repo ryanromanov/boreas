@@ -332,6 +332,11 @@ resizes. An allocated array can be passed to any procedure taking an array param
 cannot themselves be `allocatable`, so a callee cannot allocate its caller's array. A leftover
 allocation is freed at the end of its scope.
 
+A module can hold an allocatable array too (`public allocatable integer :: data(:)`). Because every
+importer sees it, allocating or freeing it is a write and says so with `update`, in a subroutine
+(a function cannot): `update allocate data(n)`, `update deallocate data`, `update data(i) = x`.
+Reading needs nothing special. `allocate` on a local array never takes `update`.
+
 ## Records
 
 A record groups named fields. Records are defined at the top level or inside a module, one
@@ -467,7 +472,7 @@ to one is marked with `update`, the same word that marks a write to an `out` par
 
 Any code that imports a variable can read it, and can write it with `update`. A function
 cannot change a module variable (only a subroutine can), so functions stay free of side effects.
-A module variable cannot be `allocatable` yet.
+A module variable can be `allocatable`; see Allocatable arrays above.
 
 ## Checking a file
 
@@ -498,7 +503,8 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - `parameter` constants become `const`.
 - `allocatable` locals, `allocate` / `deallocate` (one statement per array) and `allocated()` are
   translated. `stat=`, `errmsg=`, `source=`, `mold=`, non-1 lower bounds, allocatable
-  dummy arguments and results become TODOs, and so do allocatable module variables. A whole-array assignment to an
+  dummy arguments and results become TODOs. Allocatable module variables work: `update` is added to their
+  `allocate`, `deallocate` and element writes, and a function that allocates one becomes a subroutine. A whole-array assignment to an
   allocatable with no earlier `allocate` gets a note, since Fortran allocated it automatically.
 - Derived types become records, with `%` turned into `.` and `type(point)` into `point`. Component
   defaults carry over (parameters are folded in unless they are module constants), constructors
