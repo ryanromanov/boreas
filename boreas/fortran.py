@@ -19,7 +19,7 @@ from .fformat import FormatError, parse_format, render, substitute
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
 # so a Fortran variable with one of these names is renamed.
-RESERVED = {"left", "right", "fixed", "scientific", "general", "tf", "text", "exists", "open", "try_open", "read_line",     # built-ins the converter writes itself
+RESERVED = {"left", "right", "fixed", "scientific", "general", "tf", "text", "split", "fields", "to_integer", "to_real", "exists", "open", "try_open", "read_line",     # built-ins the converter writes itself
             "close", "file", "const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "println", "write", "writeln", "read", "stop", "call", "return", "exit", "cycle",
