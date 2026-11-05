@@ -194,7 +194,7 @@ class RuntimeErrorTests(unittest.TestCase):
         funcs = ("subroutine bump(inout integer :: v)\n  update v(1) = 1\nend subroutine\n"
                  "function first(integer :: v) -> integer\n  return v(1)\nend function")
         cases = [
-            "println(a)", "println(a(1))", "println(a(1:2))", "a(1) = 1", "a(1:2) = 1", "a = 1", "a = [1, 2, 3]",
+            "println(a)", "println(a(1))", "println(a(1:2))", "a(1) = 1", "a(1:2) = 1", "a = 1",
             "integer :: b(3)\nb = a", "println(size(a))", "println(shape(a))", "println(sum(a))", "println(a + 1)",
             "call bump(a)", "println(first(a))", "integer :: n\nn = size(a, 1)",
         ]
@@ -223,8 +223,11 @@ class RuntimeErrorTests(unittest.TestCase):
     def test_bounds_after_allocation(self):
         self.fails("allocate a(2)\nprintln(a(3))", "out of bounds")
 
-    def test_shape_mismatch_on_whole_assignment(self):
-        self.fails("allocate a(2)\na = [1, 2, 3]", "shape mismatch")
+    def test_a_whole_array_value_resizes_an_allocatable(self):
+        self.assertEqual(run(self.DECL + "allocate a(2)\na = [1, 2, 3]\nprintln(size(a), a)"), ["3 [1, 2, 3]"])
+
+    def test_a_fixed_array_still_needs_the_same_shape(self):
+        self.fails("integer :: b(2)\nb = [1, 2, 3]", "shape mismatch")
 
     def test_allocated_needs_an_allocatable_name(self):
         self.fails("integer :: b(2)\nprintln(allocated(b))", "not an allocatable")

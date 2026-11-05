@@ -106,6 +106,18 @@ Values before a bad one are kept. When a target is an `out` or `inout` parameter
 with `update`, as for assignments: `update read n`. `read_line()` returns the next whole line as a
 `string?` (`null` at the end of input).
 
+Reading a line and splitting it is the other way in:
+
+    allocatable string :: p(:)
+    p = fields(read_line(f) ?? "")        ! "  1.5   2.0 3.7 " -> ["1.5", "2.0", "3.7"]
+    x = to_real(p(1)) ?? 0.0              ! null when the text is not a number
+    p = split("a,,b", ",")                ! ["a", "", "b"]: cuts at exactly the separator
+
+`split(text, sep)` cuts at every `sep` (not empty), so empty pieces stay; `split(text, " ")` cuts at each
+single blank. `fields(text)` treats a run of blanks as one gap and never gives an empty piece.
+`to_integer(text)` and `to_real(text)` give the number the text spells (blanks around it are ignored) or
+`null`: `to_integer("3.5")` is `null`, `to_real("3")` is `3.0`.
+
 `stop` ends the program; `stop 3` ends it with exit code 3.
 
 ## Formatting text
@@ -346,8 +358,9 @@ Allocatable arrays are locals of functions, subroutines and the program, and hav
 initializer and no `const`. Anything but `allocated(a)` and `allocate` on an unallocated array
 is a run-time error (reading, writing, `size(a)`, passing it, printing it, sections, whole-array
 assignment). `allocate` on an allocated array and `deallocate` on an unallocated one are errors.
-Extents must be non-negative integers (zero is fine). Whole-array assignment never allocates or
-resizes. An allocated array can be passed to any procedure taking an array parameter; parameters
+Extents must be non-negative integers (zero is fine). Assigning a whole array to an allocatable one
+allocates it, or resizes it, to the shape of the value (`a = [1, 2, 3]`, `parts = split(line, ",")`); a
+scalar value is only accepted once the array is allocated. A fixed-size array must match the shape. An allocated array can be passed to any procedure taking an array parameter; parameters
 cannot themselves be `allocatable`, so a callee cannot allocate its caller's array. A leftover
 allocation is freed at the end of its scope.
 

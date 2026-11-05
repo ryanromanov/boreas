@@ -609,7 +609,32 @@ def _index(s, sub):
     return _need_string("index", s).find(_need_string("index", sub)) + 1
 
 
+def _split(s, sep):
+    """The pieces of `s` between each exact `sep`; an empty piece stays."""
+    _need_string("split", s)
+    if not isinstance(sep, str) or sep == "":
+        raise TypeError("needs a separator string that is not empty")
+    pieces = s.split(sep)
+    return Array([len(pieces)], pieces)
+
+
+def _fields(s):
+    """The pieces of `s` between runs of blanks; there is never an empty piece."""
+    pieces = _need_string("fields", s).split()
+    return Array([len(pieces)], pieces)
+
+
+def _to_number(typ):
+    """`to_integer` / `to_real`: the number the text spells (blanks around it are ignored), or null."""
+    def convert(s):
+        text = _need_string("to_" + typ, s).strip()
+        value = read_value(typ, text) if text else None
+        return NULL if value is None else value
+    return convert
+
+
 BUILTINS = {
+    "split": _split, "fields": _fields, "to_integer": _to_number("integer"), "to_real": _to_number("real"),
     "trim": _trim, "len_trim": lambda s: len(_trim(s)), "index": _index,
     "fixed": _fixed, "tf": _tf, "scientific": _scientific, "general": _general, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
     "len": _len, "achar": _achar, "iachar": _iachar,
@@ -966,6 +991,8 @@ class Interp:
         elif k is Decl:
             self.declare(s, env)
         elif k is Assign:
+            if self.assign_allocatable(s, env):
+                return
             ref = self.resolve(s.target, env, s.line)
             if (ref.root[INTENT] in ("out", "inout", "module")) != s.update:
                 raise LangError(f"line {s.line}: 'update' must be used exactly when assigning to an "
@@ -1212,6 +1239,33 @@ class Interp:
         if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in shape):
             raise LangError(f"line {s.line}: array extents must be non-negative integers")
         slot[VALUE] = Array(shape, [DEFAULTS[slot[TYPE]]] * math.prod(shape))
+
+    def assign_allocatable(self, s, env):
+        """`a = <array>` on a whole allocatable array allocates it, or resizes it, to the value's shape.
+        Returns False when the statement is something else (the usual assignment handles it)."""
+        if not isinstance(s.target, Var):
+            return False
+        slot = self.lookup(s.target.name, env, s.line)
+        if len(slot) <= RANK or not slot[IS_ARRAY]:
+            return False
+        v = self.eval(s.value, env)
+        if not isinstance(v, Array):
+            if slot[VALUE] is None:
+                raise self.not_allocated(s.target.name, s.line)
+            self.write(self.resolve(s.target, env, s.line), v, s.line)
+            if (slot[INTENT] == "module") != s.update:
+                raise LangError(f"line {s.line}: 'update' must be used exactly when assigning to an "
+                                f"out or inout parameter or a module variable ('{s.target.name}')")
+            return True
+        name = s.target.name
+        if (slot[INTENT] == "module") != s.update:
+            raise LangError(f"line {s.line}: 'update' must be used exactly when assigning to an "
+                            f"out or inout parameter or a module variable ('{name}')")
+        if len(v.shape) != slot[RANK]:
+            raise LangError(f"line {s.line}: '{name}' has {slot[RANK]} dimension(s) but the value has "
+                            f"{len(v.shape)}")
+        slot[VALUE] = Array(list(v.shape), [coerce(slot[TYPE], x, f"line {s.line}") for x in v.data])
+        return True
 
     def not_allocated(self, name, line=None):
         where = f"line {line}: " if line else ""
