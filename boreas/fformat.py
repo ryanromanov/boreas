@@ -141,7 +141,7 @@ class _Parser:
             if not column:
                 raise FormatError("T needs a column number")
             return [("tab", column)]
-        if v not in ("a", "i", "f"):
+        if v not in ("a", "i", "f", "e", "g"):
             raise FormatError(f"the {v.upper()} edit descriptor is not translated")
         width = self.number()
         digits = None
@@ -149,8 +149,12 @@ class _Parser:
             digits = self.number()
             if digits is None:
                 raise FormatError("a '.' in a format needs a number after it")
-        if v == "f" and digits is None:
-            raise FormatError("F needs a number of decimals")
+        if v in ("f", "e", "g") and digits is None:
+            raise FormatError(f"{v.upper()} needs a number of {'decimals' if v == 'f' else 'digits'}")
+        if v in ("e", "g") and (not digits or width is None):
+            raise FormatError(f"{v.upper()} needs a width and at least 1 digit")
+        if v in ("e", "g") and self.peek()[0] == "name" and self.peek()[1] == "e":
+            raise FormatError(f"an exponent width after {v.upper()}w.d is not translated")
         return [("data", v, width, digits)] * (repeat or 1)
 
 
@@ -188,6 +192,8 @@ def _data(desc, value):
             raise FormatError("the minimum digits of an I edit descriptor exceed its width")
         inner = Apply("right", [value, Num(digits), Str("0")], line)
         return inner if digits == width else Apply("right", [inner, Num(width)], line)
+    if kind in ("e", "g"):                          # Fortran's own layouts, so the converted program prints the same
+        return Apply("scientific" if kind == "e" else "general", [value, Num(digits), Num(width), Str("fortran")], line)
     if width in (None, 0):
         return Apply("fixed", [value, Num(digits)], line)
     return Apply("fixed", [value, Num(digits), Num(width)], line)

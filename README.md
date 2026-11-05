@@ -115,11 +115,21 @@ Output is built as a string and printed; there is no format mini-language.
     left("ab", 5)             ! "ab   "
     right(42, 5, "0")         ! "00042"    right(-42, 5, "0") is "-0042"
     repeat("-", 5)            ! "-----"
+    scientific(12345.678, 4)  ! "1.2346E+04"   scientific(x, digits [, width [, style]])
+    general(12345.678, 4)     ! "1.235E+04"    general(x, digits [, width [, style]])
+    general(123.0, 4)         ! "123"          the shorter of plain and scientific, 4 significant digits
 
 `right` and `left` take text or a number. Text that is too long is cut to its first characters; a number
 that does not fit shows as stars (`*****`), as in Fortran. A width of 0 gives just the text, which is how a
 number becomes text inside a longer line: `"n = " + right(n, 0)`. `fixed(x, d, w)` right-aligns in `w`
 characters, dropping the leading 0 if that makes it fit (`.500`).
+
+`scientific` and `general` take the same optional width and the same star rule. Both also accept the style
+`"fortran"`, which prints what Fortran's `Ew.d` and `Gw.d` do, so a converted program prints exactly what the
+original did: `scientific(12345.678, 4, 12, "fortran")` is `  0.1235E+05` (a leading `0.`, and no `E` once the
+exponent has three digits), and `general(123.0, 4, 12, "fortran")` is `   123.0    ` (fixed layout with four
+blanks where the exponent would go, or the E form for very large and small values). Without a style they print
+`1.2346E+04`, and `general` drops trailing zeros.
 
 ## Files
 
@@ -547,7 +557,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
   before or after the write) turns into `print s + right(n, 5) + fixed(x, 3, 8)`. Translated: `A`, `Aw`,
   `Iw`, `Iw.m`, `Fw.d`, `nX`, `/`, literal text, repeat counts and groups, `advance='no'`, and implied-do
   lists with literal bounds (unrolled). More values than descriptors start the format again; a format
-  with groups that would have to repeat, and `E`, `G`, `L`, `ES`, `P`, are TODOs. `Tn` pads with blanks up
+  `Ew.d` and `Gw.d` (as `scientific` / `general` with the `"fortran"` style), with groups that would have to repeat, and `L`, `ES`, `P`, an exponent width (`E12.4E3`), are TODOs. `Tn` pads with blanks up
   to column `n` (moving back over text already written is a TODO).
 - `read(*,*) a, b` and `read(*,*,iostat=ios) a` become `read a, b` and `read a status ios`; `stop`,
   `stop 3` and `error stop` become `stop`, `stop 3` and `stop 1` (a final plain `stop` is dropped; a stop
