@@ -142,10 +142,11 @@ def stmt(s, depth):
     if k is Assign:
         return [f"{pad}{'update ' if s.update else ''}{expr(s.target)} = {expr(s.value)}"]
     if k is Print:
-        if not s.args:
+        if not s.args and not s.newline:
             raise LangError("print needs at least one value")
-        where = f"to {expr(s.to)}, " if s.to is not None else ""
-        return [pad + ("print " if s.newline else "write ") + where + ", ".join(expr(a) for a in s.args)]
+        word = ("write" if s.to is not None else "print") + ("ln" if s.newline else "")
+        parts = ([expr(s.to)] if s.to is not None else []) + [expr(a) for a in s.args]
+        return [f"{pad}{word}(" + ", ".join(parts) + ")"]
     if k is Read:
         tail = f" status {expr(s.status)}" if s.status is not None else ""
         where = f"from {expr(s.source)}, " if s.source is not None else ""

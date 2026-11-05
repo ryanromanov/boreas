@@ -154,7 +154,7 @@ class FixtureTests(unittest.TestCase):
 class TranslationTests(unittest.TestCase):
     def test_relational_dot_operators_and_the_real_literal_trap(self):
         text, _ = conv("print *, 1.eq.1, 2.gt.1, 3.ne.3", "")
-        self.assertIn("print 1 == 1, 2 > 1, 3 /= 3", text)
+        self.assertIn("println(1 == 1, 2 > 1, 3 /= 3)", text)
 
     def test_parameter_becomes_const(self):
         text, findings = conv("integer, parameter :: n = 4, sq(2) = (/ 1, 4 /)\n  real, parameter :: half = 0.5\n"
@@ -167,7 +167,7 @@ class TranslationTests(unittest.TestCase):
     def test_assigning_a_parameter_fails_loudly_in_boreas(self):
         text, _ = conv("integer, parameter :: n = 4\n  print *, n", "")
         with self.assertRaisesRegex(LangError, "constant"):
-            run_bor(text.replace("print n", "n = 5"))
+            run_bor(text.replace("println(n)", "n = 5"))
 
     def test_a_fortran_variable_called_const_is_renamed(self):
         text, _ = conv("integer :: const\n  const = 2\n  print *, const", "")
@@ -176,22 +176,22 @@ class TranslationTests(unittest.TestCase):
 
     def test_d_exponents_and_kinds(self):
         text, _ = conv("print *, 1.5d0, 2.0e3, 3.0_8, 4_8", "")
-        self.assertIn("print 1.5, 2000.0, 3.0, int64(4)", text)
+        self.assertIn("println(1.5, 2000.0, 3.0, int64(4))", text)
 
     def test_continuation_comments_and_semicolons(self):
         text, _ = conv("integer :: a\ninteger :: b\n  a = 1; b = &\n    & 2   ! trailing\n  print *, a, &\n     b", "")
         self.assertIn("a = 1\n  b = 2", text)
-        self.assertIn("print a, b", text)
+        self.assertIn("println(a, b)", text)
         self.assertNotIn("trailing", text)
 
     def test_strings_with_quotes_and_bangs(self):
         text, _ = conv("""print *, 'it''s ! fine'""", "")
-        self.assertIn('print "it\'s ! fine"', text)
+        self.assertIn('println("it\'s ! fine")', text)
 
     def test_string_with_double_quote_uses_single_quotes(self):
         text, findings = conv("""print *, 'say "hi"'""", "")
         self.assertEqual(todos(findings), [])
-        self.assertIn("print 'say \"hi\"'", text)
+        self.assertIn("println('say \"hi\"')", text)
 
     def test_precedence_follows_boreas_not_fortran(self):
         text, _ = conv("real :: a\nreal :: b\nreal :: c\n  a = 1.0; b = 2.0\n  c = -a ** 2 + (a - (b - a)) * 3.0 - a / (b * a)", "")
@@ -203,7 +203,7 @@ class TranslationTests(unittest.TestCase):
 
     def test_eqv_and_not_get_parentheses(self):
         text, _ = conv("logical :: p\nlogical :: q\n  p = .true.; q = .false.\n  print *, p .eqv. q, .not. p .neqv. q, p .or. q .eqv. p", "")
-        self.assertIn("print p == q, (not p) /= q, (p or q) == p", text)
+        self.assertIn("println(p == q, (not p) /= q, (p or q) == p)", text)
 
     def test_keyword_names_are_renamed(self):
         text, findings = conv("integer :: in, out, string\n  in = 1; out = 2; string = in + out\n  print *, string", "")
@@ -214,14 +214,14 @@ class TranslationTests(unittest.TestCase):
 
     def test_bare_print_and_write(self):
         text, _ = conv("print *\n  write(*,*) 'a', 1\n  write(*,'(a)') 'b'", "")
-        self.assertIn('print ""', text)
-        self.assertIn('print "a", 1', text)
-        self.assertIn('print "b"', text)
+        self.assertIn('println("")', text)
+        self.assertIn('println("a", 1)', text)
+        self.assertIn('println("b")', text)
 
     def test_write_to_a_file_unit_becomes_a_file_variable(self):
         text, findings = conv("write(10, *) 1", "")
         self.assertEqual(todos(findings), [])
-        self.assertIn("print to unit_10, 1", text)
+        self.assertIn("writeln(unit_10, 1)", text)
 
     def test_write_to_a_unit_that_is_not_a_constant_is_a_todo(self):
         _, findings = conv("integer :: u\n  u = 10\n  write(u, *) 1", "")
@@ -314,7 +314,7 @@ class TranslationTests(unittest.TestCase):
 
     def test_dble_and_kind_arguments(self):
         text, _ = conv("print *, dble(3), real(2, kind=8), int(2.7d0)", "")
-        self.assertIn("print real64(3), real64(2), int(2.7)", text)
+        self.assertIn("println(real64(3), real64(2), int(2.7))", text)
 
     def test_array_sections_and_constructors(self):
         text, _ = conv("integer :: v(5)\n  v = [1, 2, 3, 4, 5]\n  v(2:3) = 0\n  print *, v, v(:2), sum(v)", "")
@@ -439,7 +439,7 @@ class CommandLineTests(unittest.TestCase):
                 f.write("      PROGRAM X\n      PRINT *, 'hi'\n      END\n")
             r = self.boreas("convert", path)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn('print "hi"', r.stdout)
+            self.assertIn('println("hi")', r.stdout)
 
 
 if __name__ == "__main__":

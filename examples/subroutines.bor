@@ -33,14 +33,14 @@ program demo
   real :: v(3) = [1.0, 2.0, 3.0]
 
   call swap(x, y)
-  print "after swap:", x, y
+  println("after swap:", x, y)
 
   call circle(3.0, a, c)
-  print "circle r=3:", a, c
+  println("circle r=3:", a, c)
 
   call scale(10.0, v)
-  print "scaled:", v
+  println("scaled:", v)
 
   call swap_real(v(1), v(3))          ! array elements work too
-  print "swapped ends:", v
+  println("swapped ends:", v)
 end program

@@ -17,7 +17,7 @@ class EquivalenceTests(unittest.TestCase):
         text, findings = conv("a = 2.0\n  print *, b", "real :: a, b\n  equivalence (a, b)")
         self.assertEqual(todos(findings), [])
         self.assertNotIn("real32 :: b", text)
-        self.assertIn("print a", text)
+        self.assertIn("println(a)", text)
 
     def test_scalar_becomes_an_array_element(self):
         text, findings = conv("x = 4\n  print *, v(3)", "integer :: v(5), x\n  equivalence (v(3), x)")

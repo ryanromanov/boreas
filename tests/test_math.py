@@ -7,7 +7,7 @@ from boreas.lexer import LangError
 
 def value(expr):
     """Evaluate one Boreas expression and give the single printed word."""
-    return run_bor(f"program t\n  print {expr}\nend program\n")[0]
+    return run_bor(f"program t\n  println({expr})\nend program\n")[0]
 
 
 def number(expr):
@@ -87,15 +87,15 @@ class FunctionTests(unittest.TestCase):
                     value(expr)
 
     def test_functions_apply_to_every_element(self):
-        out = run_bor("program t\n  real :: x(3) = [0.5, -2.5, 3.5]\n  print nint(x), floor(x)\n"
-                      "  print sign(1.0, x)\n  print atan2(x, 1.0)\nend program\n")
+        out = run_bor("program t\n  real :: x(3) = [0.5, -2.5, 3.5]\n  println(nint(x), floor(x))\n"
+                      "  println(sign(1.0, x))\n  println(atan2(x, 1.0))\nend program\n")
         self.assertEqual(out[0], "[1, -3, 4] [0, -3, 3]")
         self.assertEqual(out[1], "[1.0, -1.0, 1.0]")
         self.assertAlmostEqual(float(out[2].strip("[]").split(",")[0]), math.atan2(0.5, 1.0))
 
     def test_new_functions_are_allowed_in_field_defaults(self):
         out = run_bor("record r\n  real :: a = hypot(3.0, 4.0)\n  integer :: n = floor(2.7)\nend record\n"
-                      "program t\n  r :: x\n  print x.a, x.n\nend program\n")
+                      "program t\n  r :: x\n  println(x.a, x.n)\nend program\n")
         self.assertEqual(out, ["5.0 2"])
 
 

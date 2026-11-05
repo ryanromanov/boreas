@@ -20,43 +20,43 @@ def fails(test, body, message, extra=""):
 
 class SubstringTests(unittest.TestCase):
     def test_read_a_substring(self):
-        self.assertEqual(out('  string :: s = "Hello"\n  print s(1:2), s(:3), s(4:), s(2:2) == "e"'),
+        self.assertEqual(out('  string :: s = "Hello"\n  println(s(1:2), s(:3), s(4:), s(2:2) == "e")'),
                          ["He Hel lo true"])
 
     def test_assign_a_substring(self):
-        self.assertEqual(out('  string :: s = "Hello"\n  s(1:1) = "J"\n  s(4:5) = "ly"\n  print s'), ["Jelly"])
+        self.assertEqual(out('  string :: s = "Hello"\n  s(1:1) = "J"\n  s(4:5) = "ly"\n  println(s)'), ["Jelly"])
 
     def test_update_a_substring_of_an_inout_parameter(self):
         extra = 'subroutine up(inout string :: s)\n  update s(1:1) = achar(iachar(s(1:1)) - 32)\nend subroutine\n'
-        self.assertEqual(out('  string :: w = "hi"\n  call up(w)\n  print w', extra), ["Hi"])
+        self.assertEqual(out('  string :: w = "hi"\n  call up(w)\n  println(w)', extra), ["Hi"])
 
     def test_substring_must_stay_inside_the_string(self):
-        fails(self, '  string :: s = "Hi"\n  print s(0:1)', "outside the string")
-        fails(self, '  string :: s = "Hi"\n  print s(2:3)', "outside the string")
+        fails(self, '  string :: s = "Hi"\n  println(s(0:1))', "outside the string")
+        fails(self, '  string :: s = "Hi"\n  println(s(2:3))', "outside the string")
 
     def test_assigned_text_must_fit_exactly(self):
         fails(self, '  string :: s = "Hello"\n  s(1:2) = "J"', "holds 2 characters")
 
     def test_a_single_index_is_not_a_substring(self):
-        fails(self, '  string :: s = "Hi"\n  print s(1)', "take part of it with")
+        fails(self, '  string :: s = "Hi"\n  println(s(1))', "take part of it with")
 
 
 class StringFunctionTests(unittest.TestCase):
     def test_len_achar_iachar(self):
-        self.assertEqual(out('  print len("abc"), iachar("A"), achar(66)'), ["3 65 B"])
+        self.assertEqual(out('  println(len("abc"), iachar("A"), achar(66))'), ["3 65 B"])
 
     def test_wrong_types(self):
-        fails(self, "  print len(3)", "needs a string")
-        fails(self, '  print iachar("ab")', "needs a one-character string")
+        fails(self, "  println(len(3))", "needs a string")
+        fails(self, '  println(iachar("ab"))', "needs a one-character string")
 
 
 class SystemTests(unittest.TestCase):
     def test_random_is_in_range(self):
-        self.assertEqual(out("  real :: r = random()\n  print r >= 0.0 and r < 1.0"), ["true"])
+        self.assertEqual(out("  real :: r = random()\n  println(r >= 0.0 and r < 1.0)"), ["true"])
 
     def test_arguments(self):
         lines = []
-        Interp(parse('program t\n  print argument_count(), argument(1), argument(2) == ""\nend program\n'),
+        Interp(parse('program t\n  println(argument_count(), argument(1), argument(2) == "")\nend program\n'),
                lines.append, ["prog", "--version"]).run()
         self.assertEqual(lines, ["1 --version true"])
 
@@ -70,7 +70,7 @@ class ConvertTests(unittest.TestCase):
         self.assertEqual(todos(findings), [])
         self.assertIn("arg = argument(1)", text)
         self.assertIn("r = random()", text)
-        self.assertIn("print iachar(\"A\"), achar(66), argument_count()", text)
+        self.assertIn("println(iachar(\"A\"), achar(66), argument_count())", text)
         self.assertNotIn("random_init", text)
 
     def test_random_number_of_an_array_is_a_todo(self):
@@ -80,8 +80,8 @@ class ConvertTests(unittest.TestCase):
 
 class TrimTests(unittest.TestCase):
     def test_trim_and_len_trim(self):
-        self.assertEqual(out('  print "[" + trim("ab  ") + "]", len_trim("ab  "), len_trim("")'), ["[ab] 2 0"])
-        fails(self, "  print trim(3)", "needs a string")
+        self.assertEqual(out('  println("[" + trim("ab  ") + "]", len_trim("ab  "), len_trim(""))'), ["[ab] 2 0"])
+        fails(self, "  println(trim(3))", "needs a string")
 
 
 class FixedLengthCharacterTests(unittest.TestCase):

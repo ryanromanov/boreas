@@ -24,19 +24,19 @@ def fails(test, body, message, stdin="", extra=""):
 class ReadTests(unittest.TestCase):
     def test_reads_values_by_type(self):
         body = ("  integer :: n\n  real :: x\n  logical :: b\n  string :: s\n  real32 :: y\n"
-                "  read n, x, b, s, y\n  print n, x, b, s, y")
+                "  read n, x, b, s, y\n  println(n, x, b, s, y)")
         self.assertEqual(run(body, "7 2.5d0 T hello 0.1\n")[0], ["7 2.5 true hello 0.1"])
 
     def test_items_continue_on_the_next_line_and_the_rest_of_a_line_is_dropped(self):
-        body = "  integer :: a\n  integer :: b\n  integer :: c\n  read a, b\n  read c\n  print a, b, c"
+        body = "  integer :: a\n  integer :: b\n  integer :: c\n  read a, b\n  read c\n  println(a, b, c)"
         self.assertEqual(run(body, "1\n2 99\n3\n")[0], ["1 2 3"])
 
     def test_commas_and_quoted_strings(self):
-        body = "  string :: s\n  integer :: n\n  read s, n\n  print s, n"
+        body = "  string :: s\n  integer :: n\n  read s, n\n  println(s, n)"
         self.assertEqual(run(body, "'two words', 5\n")[0], ["two words 5"])
 
     def test_array_elements_and_whole_arrays(self):
-        body = "  integer :: a(3)\n  integer :: i\n  read a\n  read a(2)\n  print a"
+        body = "  integer :: a(3)\n  integer :: i\n  read a\n  read a(2)\n  println(a)"
         self.assertEqual(run(body, "1 2 3\n9\n")[0], ["[1, 9, 3]"])
 
     def test_bad_input_stops_the_program(self):
@@ -49,26 +49,26 @@ class ReadTests(unittest.TestCase):
         fails(self, "  integer :: n\n  read n", "no more input", "")
 
     def test_status(self):
-        body = ("  integer :: n = 5\n  integer :: ios\n  read n status ios\n  print ios, n\n"
-                "  read n status ios\n  print ios, n\n  read n status ios\n  print ios, n")
+        body = ("  integer :: n = 5\n  integer :: ios\n  read n status ios\n  println(ios, n)\n"
+                "  read n status ios\n  println(ios, n)\n  read n status ios\n  println(ios, n)")
         self.assertEqual(run(body, "abc\n8\n")[0], ["1 5", "0 8", "-1 8"])
 
     def test_values_before_a_bad_one_are_kept(self):
-        body = "  integer :: a = 0\n  integer :: b = 0\n  integer :: ios\n  read a, b status ios\n  print a, b, ios"
+        body = "  integer :: a = 0\n  integer :: b = 0\n  integer :: ios\n  read a, b status ios\n  println(a, b, ios)"
         self.assertEqual(run(body, "4 x\n")[0], ["4 0 1"])
 
     def test_int8_range_is_checked(self):
-        body = "  int8 :: n = 0\n  integer :: ios\n  read n status ios\n  print n, ios"
+        body = "  int8 :: n = 0\n  integer :: ios\n  read n status ios\n  println(n, ios)"
         self.assertEqual(run(body, "300\n")[0], ["0 1"])
 
     def test_read_line(self):
-        body = ("  string? :: s\n  s = read_line()\n  print s\n  s = read_line()\n  print s ?? 'none'\n"
-                "  s = read_line()\n  print present(s)")
+        body = ("  string? :: s\n  s = read_line()\n  println(s)\n  s = read_line()\n  println(s ?? 'none')\n"
+                "  s = read_line()\n  println(present(s))")
         self.assertEqual(run(body, "hello there\n\n")[0], ["hello there", "", "false"])
 
     def test_update_is_required_for_out_parameters(self):
         extra = "subroutine get(out integer :: n)\n  update read n\nend subroutine\n"
-        self.assertEqual(run("  integer :: k\n  call get(k)\n  print k", "6\n", extra)[0], ["6"])
+        self.assertEqual(run("  integer :: k\n  call get(k)\n  println(k)", "6\n", extra)[0], ["6"])
         with self.assertRaises(LangError) as cm:
             parse("subroutine get(out integer :: n)\n  read n\nend subroutine\nprogram t\nend program\n")
         self.assertIn("update read", str(cm.exception))
@@ -84,23 +84,23 @@ class ReadTests(unittest.TestCase):
 
 class WriteAndStopTests(unittest.TestCase):
     def test_write_prints_without_a_newline(self):
-        out, _ = run("  write 'a'\n  write 'b', 1\n  print 'c'\n  write 'tail'")
+        out, _ = run("  print('a')\n  print('b', 1)\n  println('c')\n  print('tail')")
         self.assertEqual(out, ["ab 1c", "tail"])
 
     def test_stop_with_and_without_a_code(self):
-        self.assertEqual(run("  print 1\n  stop\n  print 2"), (["1"], 0))
-        self.assertEqual(run("  print 1\n  stop 4\n  print 2"), (["1"], 4))
+        self.assertEqual(run("  println(1)\n  stop\n  println(2)"), (["1"], 0))
+        self.assertEqual(run("  println(1)\n  stop 4\n  println(2)"), (["1"], 4))
 
     def test_stop_inside_a_procedure(self):
         extra = "subroutine quit()\n  stop 3\nend subroutine\n"
-        self.assertEqual(run("  call quit()\n  print 1", extra=extra), ([], 3))
+        self.assertEqual(run("  call quit()\n  println(1)", extra=extra), ([], 3))
 
     def test_stop_code_must_be_an_integer(self):
         fails(self, "  stop 'x'", "exit code")
 
     def test_single_quoted_strings(self):
-        self.assertEqual(run("  print 'say \"hi\"', \"it\"")[0], ['say "hi" it'])
-        src = "program t\n  print 'say \"hi\"', \"plain\"\nend program t\n"
+        self.assertEqual(run("  println('say \"hi\"', \"it\")")[0], ['say "hi" it'])
+        src = "program t\n  println('say \"hi\"', \"plain\")\nend program t\n"
         self.assertEqual(to_source(parse(src)), src)
         from boreas.parser import Print, Str
         with self.assertRaises(LangError):                    # both kinds of quote cannot be written
@@ -109,7 +109,7 @@ class WriteAndStopTests(unittest.TestCase):
 
     def test_round_trip_of_new_statements(self):
         src = ("subroutine get(out integer :: n)\n  update read n\nend subroutine\n\n"
-               "program t\n  integer :: a\n  integer :: ios\n  write \"x\"\n  read a, a status ios\n"
+               "program t\n  integer :: a\n  integer :: ios\n  print(\"x\")\n  read a, a status ios\n"
                "  stop 2\nend program t\n")
         self.assertEqual(to_source(parse(src)), src)
 

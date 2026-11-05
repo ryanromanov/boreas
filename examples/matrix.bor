@@ -21,17 +21,17 @@ program demo
   real :: a(2, 3) = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
   real :: sq(2, 2) = reshape([2.0, 0.0, 0.0, 3.0], [2, 2])
 
-  print "a =", a
-  print "shape", shape(a), " rows", size(a, 1), " cols", size(a, 2)
-  print "first row:", a(1, :)
-  print "second column:", a(:, 2)
-  print "transpose:", transpose(a)
-  print "a * a':", matmul(a, transpose(a))
-  print "trace:", trace(sq)
+  println("a =", a)
+  println("shape", shape(a), " rows", size(a, 1), " cols", size(a, 2))
+  println("first row:", a(1, :))
+  println("second column:", a(:, 2))
+  println("transpose:", transpose(a))
+  println("a * a':", matmul(a, transpose(a)))
+  println("trace:", trace(sq))
 
   a(2, :) = 0.0                           ! assign a whole row
-  print "after zeroing row 2:", a
+  println("after zeroing row 2:", a)
 
   call normalize_rows(sq)
-  print "normalized:", sq
+  println("normalized:", sq)
 end program

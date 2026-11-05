@@ -28,12 +28,12 @@ program demo
   
  
   call shift(b, 1.0, 1.0)
-  print "a =", a, " b =", b
+  println("a =", a, " b =", b)
 
   s.from = origin
   s.to = a
-  print "length:", length(s)
+  println("length:", length(s))
 
   s.to = point(x = 6.0, y = 8.0)  ! fields can be named; any subset is allowed
-  print "length:", length(s)
+  println("length:", length(s))
 end program

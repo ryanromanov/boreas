@@ -4,8 +4,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from boreas.lsp import Server, diagnostics
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
-GOOD = 'program t\n  print "hi"\nend program\n'
-BAD = "program t\n  print 1 +\nend program\n"
+GOOD = 'program t\n  println("hi")\nend program\n'
+BAD = "program t\n  println(1 +)\nend program\n"
 URI = "file:///tmp/x.bor"
 
 
@@ -43,7 +43,7 @@ class DiagnosticsTests(unittest.TestCase):
 
     def test_error_range_starts_at_the_column_and_runs_to_line_end(self):
         (d,) = diagnostics(BAD)
-        self.assertEqual(d["range"], {"start": {"line": 1, "character": 10}, "end": {"line": 1, "character": 11}})
+        self.assertEqual(d["range"], {"start": {"line": 1, "character": 13}, "end": {"line": 1, "character": 14}})
         self.assertEqual((d["severity"], d["source"]), (1, "boreas"))
         self.assertIn("expected an expression", d["message"])
 
@@ -54,7 +54,7 @@ class DiagnosticsTests(unittest.TestCase):
 
     def test_crlf_does_not_leak_into_the_range(self):
         (d,) = diagnostics(BAD.replace("\n", "\r\n"))
-        self.assertEqual(d["range"]["end"]["character"], 11)
+        self.assertEqual(d["range"]["end"]["character"], 14)
 
 
 class ServerTests(unittest.TestCase):
@@ -92,7 +92,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(replies[1]["id"], 2)
 
     def test_non_ascii_text_survives_framing(self):
-        replies, _ = talk(open_doc('program t\n  print "é→"\nend program\n'))
+        replies, _ = talk(open_doc('program t\n  println("é→")\nend program\n'))
         self.assertEqual(replies[0]["params"]["diagnostics"], [])
 
 

@@ -71,7 +71,7 @@ class Select:
 @dataclass
 class Break: pass       # leaves the nearest enclosing select statement
 @dataclass
-class Print:   # `write` is a print without the newline; `to` is the file for `print to log, ...`
+class Print:   # print/println go to the screen, write/writeln to the file `to`; the `ln` forms end the line
     args: list; newline: bool = True; to: object = None; line: int = 0
 @dataclass
 class Read: targets: list; status: object; line: int; update: bool = False; source: object = None   # `read from f, ...`
@@ -141,7 +141,7 @@ def root_name(target):
 
 
 KEYWORDS = {"if", "then", "else", "do", "while", "end", "program", "function", "subroutine", "module",
-            "record", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print", "write", "read", "close", "stop",
+            "record", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print", "println", "write", "writeln", "read", "close", "stop",
             "select", "case", "default", "fallthrough", "break", "update", "allocate", "deallocate",
             "allocatable", "in", "out", "inout", "true", "false", "null", "and", "or", "not"}
 
@@ -732,14 +732,25 @@ class Parser:
             return Break()
         if self.at("case"):
             self.error("'case' outside a select")
-        if self.at("print", "write"):
+        if self.at("print", "println", "write", "writeln"):
             word = self.next().text
-            to = self.file_clause("to")
-            args = [self.expr()]
-            while self.accept(","):
+            self.expect("(")
+            to = None
+            if word.startswith("write"):
+                to = self.expr()
+                if not self.at(")"):
+                    self.expect(",")
+            args = []
+            if not self.at(")"):
                 args.append(self.expr())
+                while self.accept(","):
+                    args.append(self.expr())
+            self.expect(")")
             self.newline()
-            return Print(args, word == "print", to, t.line)
+            newline = word.endswith("ln")
+            if not args and not newline:
+                self.error(f"'{word}' needs at least one value")
+            return Print(args, newline, to, t.line)
         if self.at("close"):
             self.next()
             f = self.expr()

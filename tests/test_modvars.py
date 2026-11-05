@@ -37,18 +37,18 @@ def fails(test, body, message, extra=RNG):
 
 class ModuleVariableTests(unittest.TestCase):
     def test_state_lives_between_calls(self):
-        body = "  use rng: next, count\n  integer :: k\n  call next(k)\n  call next(k)\n  print k, count()"
+        body = "  use rng: next, count\n  integer :: k\n  call next(k)\n  call next(k)\n  println(k, count())"
         self.assertEqual(run(body), ["1 2"])
 
     def test_initial_value_and_reading_an_import(self):
-        self.assertEqual(run("  use rng: seed\n  print seed"), ["7"])
+        self.assertEqual(run("  use rng: seed\n  println(seed)"), ["7"])
 
     def test_an_import_sees_changes(self):
-        body = "  use rng: seed, reseed\n  print seed\n  call reseed(40)\n  print seed"
+        body = "  use rng: seed, reseed\n  println(seed)\n  call reseed(40)\n  println(seed)"
         self.assertEqual(run(body), ["7", "40"])
 
     def test_the_program_may_update_an_imported_variable(self):
-        self.assertEqual(run("  use rng: seed\n  update seed = seed + 1\n  print seed"), ["8"])
+        self.assertEqual(run("  use rng: seed\n  update seed = seed + 1\n  println(seed)"), ["8"])
 
     def test_writing_needs_update(self):
         fails(self, "  use rng: seed\n  seed = 1", "must be used exactly")
@@ -59,7 +59,7 @@ class ModuleVariableTests(unittest.TestCase):
         fails(self, "  integer :: k\n  update k = 1", "'update' is for out and inout parameters and module variables")
 
     def test_private_variable_cannot_be_imported(self):
-        fails(self, "  use rng: calls\n  print calls", "private to module")
+        fails(self, "  use rng: calls\n  println(calls)", "private to module")
 
     def test_a_function_cannot_change_a_module_variable(self):
         fails(self, "", "a function cannot change the module variable",
@@ -70,12 +70,12 @@ class ModuleVariableTests(unittest.TestCase):
                "  public integer :: slots(3)\n  public acct :: main\n"
                "  public subroutine put(integer :: i)\n    update slots(i) = i * 10\n"
                "    update main.total = main.total + i\n  end subroutine\nend module\n")
-        self.assertEqual(run("  use bank: slots, main, put\n  call put(2)\n  call put(3)\n  print slots, main.total", src),
+        self.assertEqual(run("  use bank: slots, main, put\n  call put(2)\n  call put(3)\n  println(slots, main.total)", src),
                          ["[0, 20, 30] 5"])
 
     def test_read_into_a_module_variable(self):
         src = "module m\n  public integer :: n\nend module\n"
-        self.assertEqual(run("  use m: n\n  update read n\n  print n", src, "41\n"), ["41"])
+        self.assertEqual(run("  use m: n\n  update read n\n  println(n)", src, "41\n"), ["41"])
         fails(self, "  use m: n\n  read n", "'update' must be used exactly", src)
 
     def test_a_local_cannot_reuse_the_name(self):

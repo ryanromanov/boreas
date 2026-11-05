@@ -23,56 +23,56 @@ def fails(test, body, message, ieee=False, decls=""):
 
 class StrictByDefaultTests(unittest.TestCase):
     def test_bad_real_arithmetic_stops_the_program(self):
-        fails(self, "  print 1.0 / 0.0", "division by zero")
-        fails(self, "  print sqrt(-1.0)", "domain error")
-        fails(self, "  print log(0.0)", "domain error")
-        fails(self, "  print exp(1000.0)", "range error")
-        fails(self, "  print 10.0 ** 400", "too large")
+        fails(self, "  println(1.0 / 0.0)", "division by zero")
+        fails(self, "  println(sqrt(-1.0))", "domain error")
+        fails(self, "  println(log(0.0))", "domain error")
+        fails(self, "  println(exp(1000.0))", "range error")
+        fails(self, "  println(10.0 ** 400)", "too large")
 
     def test_a_nan_made_on_purpose_is_allowed_anywhere(self):
-        self.assertEqual(run("  real :: x = nan()\n  print x, isnan(x), x == x", False), ["NaN true false"])
+        self.assertEqual(run("  real :: x = nan()\n  println(x, isnan(x), x == x)", False), ["NaN true false"])
 
 
 class IeeeTests(unittest.TestCase):
     ZERO = "  real :: z = 0.0\n"
 
     def test_division(self):
-        self.assertEqual(run("  print 1.0 / z, -1.0 / z, z / z, 5 / z", decls=self.ZERO), ["Infinity -Infinity NaN Infinity"])
+        self.assertEqual(run("  println(1.0 / z, -1.0 / z, z / z, 5 / z)", decls=self.ZERO), ["Infinity -Infinity NaN Infinity"])
 
     def test_math_functions(self):
-        self.assertEqual(run("  print sqrt(-1.0), asin(2.0), acos(-3.0), log(z), log(-1.0), exp(1000.0), atanh(1.0)",
+        self.assertEqual(run("  println(sqrt(-1.0), asin(2.0), acos(-3.0), log(z), log(-1.0), exp(1000.0), atanh(1.0))",
                              decls=self.ZERO), ["NaN NaN NaN -Infinity NaN Infinity Infinity"])
 
     def test_power_and_modulo(self):
-        self.assertEqual(run("  print 10.0 ** 400, z ** (-1), mod(5.0, z)", decls=self.ZERO), ["Infinity Infinity NaN"])
+        self.assertEqual(run("  println(10.0 ** 400, z ** (-1), mod(5.0, z))", decls=self.ZERO), ["Infinity Infinity NaN"])
 
     def test_comparisons_follow_ieee(self):
-        body = "  real :: x = nan()\n  print x == x, x /= x, x < 1.0, x > 1.0, x <= x"
+        body = "  real :: x = nan()\n  println(x == x, x /= x, x < 1.0, x > 1.0, x <= x)"
         self.assertEqual(run(body), ["false true false false false"])
 
     def test_isnan_isinf_and_arrays(self):
-        body = "  print isnan(sqrt(-1.0)), isinf(1.0 / z), isinf(1.0), isnan([1.0, nan()]), sqrt([4.0, -4.0])"
+        body = "  println(isnan(sqrt(-1.0)), isinf(1.0 / z), isinf(1.0), isnan([1.0, nan()]), sqrt([4.0, -4.0]))"
         self.assertEqual(run(body, decls=self.ZERO), ["true true false [false, true] [2.0, NaN]"])
 
     def test_single_precision(self):
-        self.assertEqual(run("  real32 :: y = 0.0\n  print 1.0 / y, sqrt(-1.0 + y), y / y"),
+        self.assertEqual(run("  real32 :: y = 0.0\n  println(1.0 / y, sqrt(-1.0 + y), y / y)"),
                          ["Infinity NaN NaN"])
-        self.assertEqual(run("  real32 :: y = 3.0e38\n  print y * 10.0"), ["Infinity"])
+        self.assertEqual(run("  real32 :: y = 3.0e38\n  println(y * 10.0)"), ["Infinity"])
 
     def test_formatted_output_of_special_values(self):
         body = ("  real :: x = nan()\n  real :: y = infinity()\n"
-                '  print fixed(x, 2, 8) + "|" + fixed(y, 2, 10) + "|" + fixed(-y, 2, 6) + "|" + fixed(-y, 2, 9) + "|" + '
-                'fixed(y, 2, 4) + "|" + fixed(y, 2, 2) + "|" + right(x, 5) + "|" + fixed(y, 2)')
+                '  println(fixed(x, 2, 8) + "|" + fixed(y, 2, 10) + "|" + fixed(-y, 2, 6) + "|" + fixed(-y, 2, 9) + "|" + '
+                'fixed(y, 2, 4) + "|" + fixed(y, 2, 2) + "|" + right(x, 5) + "|" + fixed(y, 2))')
         self.assertEqual(run(body), ["     NaN|  Infinity|  -Inf|-Infinity| Inf|**|  NaN|Infinity"])
 
     def test_things_that_still_stop(self):
-        fails(self, "  print 1 / 0", "integer division by zero", ieee=True)
-        fails(self, "  print int(nan())", "", ieee=True)
+        fails(self, "  println(1 / 0)", "integer division by zero", ieee=True)
+        fails(self, "  println(int(nan()))", "", ieee=True)
         fails(self, "  integer :: n\n  n = nint(infinity())", "", ieee=True)
 
     def test_the_flag_belongs_to_the_run(self):
-        run("  print 1.0 / z", decls=self.ZERO)
-        fails(self, "  real :: z = 0.0\n  print 1.0 / z", "division by zero")
+        run("  println(1.0 / z)", decls=self.ZERO)
+        fails(self, "  real :: z = 0.0\n  println(1.0 / z)", "division by zero")
 
 
 class VerifyCompareTests(unittest.TestCase):
@@ -86,7 +86,7 @@ class VerifyCompareTests(unittest.TestCase):
 
 class SyntaxTests(unittest.TestCase):
     def test_use_ieee_round_trips(self):
-        src = "use ieee\n\nprogram t\n  print 1\nend program t\n"
+        src = "use ieee\n\nprogram t\n  println(1)\nend program t\n"
         self.assertEqual(to_source(parse(src)), src)
         self.assertTrue(parse(src).ieee)
         self.assertFalse(parse("program t\nend program\n").ieee)

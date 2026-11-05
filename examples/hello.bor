@@ -22,11 +22,11 @@ program demo
     xs(i) = square(real(i))
     total = total + xs(i)
   end do
-  print "squares:", xs
-  print "total =", total
+  println("squares:", xs)
+  println("total =", total)
 
   ys = ys * 2 + 1                 ! whole-array arithmetic
-  print "ys =", ys, " middle =", ys(2:4)
+  println("ys =", ys, " middle =", ys(2:4))
 
   do i = 1, 20
     if mod(i, 3) == 0 then
@@ -37,7 +37,7 @@ program demo
       count = count + 1
     end if
   end do
-  print "kept", count
+  println("kept", count)
 
-  print "fib(15) =", fib(15)
+  println("fib(15) =", fib(15))
 end program demo
