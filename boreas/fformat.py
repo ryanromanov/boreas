@@ -141,7 +141,7 @@ class _Parser:
             if not column:
                 raise FormatError("T needs a column number")
             return [("tab", column)]
-        if v not in ("a", "i", "f", "e", "g"):
+        if v not in ("a", "i", "f", "e", "g", "l"):
             raise FormatError(f"the {v.upper()} edit descriptor is not translated")
         width = self.number()
         digits = None
@@ -149,6 +149,8 @@ class _Parser:
             digits = self.number()
             if digits is None:
                 raise FormatError("a '.' in a format needs a number after it")
+        if v == "l" and (not width or digits is not None):
+            raise FormatError("L needs a width and nothing else")
         if v in ("f", "e", "g") and digits is None:
             raise FormatError(f"{v.upper()} needs a number of {'decimals' if v == 'f' else 'digits'}")
         if v in ("e", "g") and (not digits or width is None):
@@ -183,6 +185,8 @@ def _data(desc, value):
     line = value.line if isinstance(value, Apply) else 0
     if kind == "a":
         return value if width is None else Apply("right", [value, Num(width)], line)
+    if kind == "l":
+        return Apply("right", [Apply("tf", [value], line), Num(width)], line)
     if kind == "i":
         if width is None:
             raise FormatError("I needs a width")

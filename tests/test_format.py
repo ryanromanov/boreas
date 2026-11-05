@@ -102,7 +102,7 @@ class ConvertFormatTests(unittest.TestCase):
         self.assertIn('write "x"', text)
 
     def test_unsupported_descriptors_are_todos(self):
-        for fmt in ("L2", "T5", "ES10.2", "I", "E10", "E10.3E2", "G12.4E3", "G12"):
+        for fmt in ("L", "L2.1", "T5", "ES10.2", "I", "E10", "E10.3E2", "G12.4E3", "G12"):
             with self.subTest(fmt=fmt):
                 _, findings = self.text(f"  write(*,'({fmt})') n")
                 self.assertEqual(len(todos(findings)), 1)
