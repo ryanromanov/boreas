@@ -68,6 +68,19 @@ def indents_after(line):
 
 
 class EditorIndentTests(unittest.TestCase):
+    def test_default_width_matches_the_converter(self):
+        # Graupel uses this width for new Boreas files; it has to be the one `boreas convert` writes
+        from boreas.fortran import convert
+        with open(EDIT) as f:
+            indentation = json.load(f)["indentation"]
+        source, _ = convert("program p\n  implicit none\n  integer :: i\n  do i = 1, 3\n"
+                            "    if (i > 1) then\n      print *, i\n    end if\n  end do\nend program\n")
+        indents = sorted({len(l) - len(l.lstrip(" ")) for l in source.splitlines() if l.startswith(" ")})
+        self.assertTrue(indents, source)
+        self.assertEqual(indents[0], indentation["width"], source)
+        self.assertTrue(indentation["expandsTab"])
+        self.assertFalse(any(l.startswith("\t") for l in source.splitlines()))
+
     def test_blocks_indent(self):
         for line in ["program demo", "module geometry", "record point", "public record point",
                      "function square(real :: x) -> real", "public function f() -> int",

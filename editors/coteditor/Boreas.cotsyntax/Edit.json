@@ -51,6 +51,8 @@
         "ignoreCase": true,
         "description": "else followed by a comment"
       }
-    ]
+    ],
+    "expandsTab": true,
+    "width": 2
   }
 }
