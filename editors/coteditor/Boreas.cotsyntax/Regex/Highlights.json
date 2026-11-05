@@ -1,12 +1,12 @@
 {
   "keywords": [
     {
-      "begin": "\\b(program|module|function|subroutine|record|const|use|call|return|exit|cycle|print|println|if|then|else|do|while|end|select|case|default|fallthrough|break|update|allocate|deallocate|allocatable|public|private|and|or|not|write|writeln|stop|close)\\b",
+      "begin": "->|::|\\?\\?|\\+%|-%|\\*%",
       "ignoreCase": true,
       "regularExpression": true
     },
     {
-      "begin": "->|::|\\?\\?|\\+%|-%|\\*%",
+      "begin": "\\b(program|module|function|subroutine|record|const|use|call|return|exit|cycle|print|println|if|then|else|do|while|end|select|case|default|fallthrough|break|update|allocate|deallocate|allocatable|public|private|and|or|not|write|writeln|stop|close)\\b",
       "ignoreCase": true,
       "regularExpression": true
     }

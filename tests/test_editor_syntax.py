@@ -42,6 +42,15 @@ class EditorSyntaxTests(unittest.TestCase):
         self.assertTrue(pattern.search("x = try_open(path)"))
         self.assertFalse(pattern.search("x = trimmed(y)"))
 
+    def test_rules_in_graupel_order(self):
+        # Graupel's bundled-syntax test wants each category sorted by its begin string
+        with open(HIGHLIGHTS) as f:
+            rules = json.load(f)
+        for category, items in rules.items():
+            begins = [(r["begin"], r.get("end") or "") for r in items]
+            self.assertEqual(begins, sorted(begins), f"sort the {category} rules in Highlights.json")
+
+
 
 def indents_after(line):
     """Whether Graupel indents the line after `line`, by the block delimiters in Edit.json.
