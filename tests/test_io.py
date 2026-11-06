@@ -99,7 +99,8 @@ class ConvertTests(unittest.TestCase):
         self.assertEqual(todos(findings), [])
         self.assertIn('read_parts = fields(read_line() ?? "", ",")\n  a = to_integer(read_parts(1))\n', text)
         self.assertIn("  b = to_integer(read_parts(2))\n", text)
-        self.assertIn("ios = -1", text)
+        self.assertIn("ios_line = read_line()", text)
+        self.assertNotIn("ios =", text)
         self.assertEqual(len([f for f in findings if f[1] == "note" and f[2].startswith("read:")]), 1)
 
     def test_read_of_arrays_and_sections_are_todos(self):
@@ -118,6 +119,49 @@ class ConvertTests(unittest.TestCase):
         self.assertEqual(todos(findings), [])
         out, _ = run_converted(text, "3, 4\n5 zz\n7 2.5\n")
         self.assertEqual(out, ["3 4 0", "3 4 1", "7 2.5 0", "-1"])
+
+    RETRY = ("subroutine read_int(n)\n  integer, intent(out) :: n\n  integer :: ios\n  read(*,*,iostat=ios) n\n"
+             "  do while (ios .ne. 0)\n    if (ios .lt. 0) stop 3\n    print *, 'again'\n    read(*,*,iostat=ios) n\n  end do\n"
+             "end subroutine\nprogram p\n  integer :: k\n  call read_int(k)\n  print *, k\nend program\n")
+
+    def test_the_retry_idiom_drops_the_status_variable(self):
+        text, findings = convert(self.RETRY)
+        self.assertEqual(todos(findings), [])
+        self.assertNotIn("ios", text.replace("ios_", ""))
+        self.assertIn("do while not present(ios_integer)", text)
+        self.assertIn("if not present(ios_line) then", text)
+        out, code = run_converted(text, "x\n\n4.5\n 12 \n")
+        self.assertEqual(out, ["again", "again", "again", "12"])
+        out, code = run_converted(text, "x\n")
+        self.assertEqual((out, code), (["again"], 3))
+
+    def test_the_status_is_kept_when_it_is_used_in_other_ways(self):
+        for use in ("print *, ios", "call f(ios)", "ios = 0", "if (ios == 5010) stop", "if (ios > n) stop"):
+            with self.subTest(use=use):
+                src = ("subroutine f(k)\n  integer :: k\nend subroutine\nprogram p\n  integer :: n, ios\n  n = 1\n"
+                       f"  read(*,*,iostat=ios) n\n  {use}\nend program\n")
+                text, findings = convert(src)
+                self.assertIn("ios = -1", text)
+
+    def test_comparisons_become_tests_of_the_optionals(self):
+        cases = {"ios == 0": "present(ios_integer)", "ios .lt. 0": "not present(ios_line)",
+                 "ios > 0": "present(ios_line) and not present(ios_integer)", "ios /= 0": "not present(ios_integer)",
+                 "ios <= 0": "not present(ios_line) or present(ios_integer)", "0 /= ios": "not present(ios_integer)",
+                 "ios >= 0": "present(ios_line)", "ios == -1": "not present(ios_line)"}
+        for cond, want in cases.items():
+            with self.subTest(cond=cond):
+                text, _ = convert(f"program p\n  integer :: n, ios\n  read(*,*,iostat=ios) n\n  if ({cond}) stop\nend program\n")
+                self.assertIn(f"if {want} then", text)
+
+    def test_two_reads_with_different_shapes_keep_the_status(self):
+        src = ("program p\n  integer :: a, ios\n  real :: x\n  read(*,*,iostat=ios) a\n  read(*,*,iostat=ios) a, x\n"
+               "  print *, ios\nend program\n")
+        text, findings = convert(src)
+        self.assertEqual(todos(findings), [])
+        out, _ = run_converted(text, "1\n2 3.5\n")
+        self.assertEqual(out, ["0"])
+        out, _ = run_converted(text, "1\n2 q\n")
+        self.assertEqual(out, ["1"])
 
     def test_formatted_read_is_a_todo(self):
         _, findings = convert("program p\n  integer :: a\n  read(*,'(I5)') a\nend program\n")

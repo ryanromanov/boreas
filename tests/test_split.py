@@ -42,6 +42,12 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(run(P + '  p = fields("a,b c", "")\n  println(p)'), ["[a,b, c]"])
         fails(self, P + '  p = fields("a", 1)', "extra separators")
 
+    def test_field_is_one_piece_or_null(self):
+        self.assertEqual(run('  println(field(" 1.5  2.0 ", 2), field("a,b", 2, ","), field("a b", 3) ?? "none")'),
+                         ["2.0 b none"])
+        self.assertEqual(run("  string? :: s\n  println(field(s, 1) ?? \"none\")"), ["none"])
+        fails(self, '  println(field("a", 0))', "positive integer")
+
     def test_errors(self):
         fails(self, P + '  p = split("a", "")', "separator")
         fails(self, P + "  p = split(3, \",\")", "needs a string")
@@ -65,6 +71,10 @@ class ToNumberTests(unittest.TestCase):
 
     def test_the_result_is_null_when_the_text_is_not_a_number(self):
         self.assertEqual(run('  println(to_integer("x") == null, to_real("1") == null)'), ["true false"])
+
+    def test_null_in_gives_null_out(self):
+        body = "  string? :: s\n  println(to_integer(s) == null, to_real(s) == null, to_logical(s) == null)"
+        self.assertEqual(run(body), ["true true true"])
 
     def test_needs_a_string(self):
         fails(self, "  println(to_integer(3))", "needs a string")

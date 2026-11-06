@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass, fields, is_dataclass, replace
 
 from .fixedform import fixed_to_free, is_fixed_form
-from .gotos import Goto, LabelMark, Structurer
+from .gotos import Goto, LabelMark, Structurer, child_lists
 from .lexer import LangError
 from .parser import *
 from .interp import BUILTINS, ELEMENTAL, PURE_BUILTINS
@@ -19,7 +19,7 @@ from .fformat import FormatError, parse_format, render, substitute
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
 # so a Fortran variable with one of these names is renamed.
-RESERVED = {"left", "right", "fixed", "scientific", "general", "tf", "text", "split", "fields", "to_integer", "to_real", "to_logical", "exists", "open", "try_open", "read_line",     # built-ins the converter writes itself
+RESERVED = {"left", "right", "fixed", "scientific", "general", "tf", "text", "split", "fields", "field", "to_integer", "to_real", "to_logical", "exists", "open", "try_open", "read_line",     # built-ins the converter writes itself
             "close", "file", "const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "println", "write", "writeln", "read", "stop", "call", "return", "exit", "cycle",
@@ -319,6 +319,17 @@ def replace_nodes(obj, make):
         new = make(obj)
         return obj if new is None else new
     return obj
+
+
+@dataclass
+class ReadMarker:
+    """A `read(...,iostat=ios)` waiting for `resolve_reads`, which knows whether `ios` can be dropped."""
+    targets: list
+    types: list
+    status: object
+    source: list
+    fits: list
+    line: int
 
 
 def implicit_type(name):
@@ -1768,23 +1779,12 @@ class FParser:
             raise Unsupported(f"read into a {info.type}")
         return info.type
 
-    def read_temps(self, scope, line):
-        """The names of the shared temporaries the converted reads use: (text, parts), made once per procedure."""
-        if getattr(scope, "read_names", None) is None:
-            text, parts = self.unique("read_text", scope, []), self.unique("read_parts", scope, [])
-            scope.decls[text] = Info("string?", None, False, None, None, False, line)
-            scope.decls[parts] = Info("string", [Slice(None, None)], False, None, None, False, line, True)
-            scope.read_names = (text, parts, {})
-        return scope.read_names
-
-    def read_value_temp(self, scope, typ, k, line):
-        """The k-th optional temporary of a type, holding a converted value before it is known to be good."""
-        _, _, values = self.read_temps(scope, line)
-        if (typ, k) not in values:
-            name = self.unique(f"read_{typ}" + (f"_{k}" if k > 1 else ""), scope, [])
-            scope.decls[name] = Info(typ + "?", None, False, None, None, False, line)
-            values[typ, k] = name
-        return values[typ, k]
+    def read_parts_name(self, scope, line):
+        """The shared temporary that holds the pieces of a read line (made once per procedure)."""
+        if getattr(scope, "read_parts", None) is None:
+            scope.read_parts = self.unique("read_parts", scope, [])
+            scope.decls[scope.read_parts] = Info("string", [Slice(None, None)], False, None, None, False, line, True)
+        return scope.read_parts
 
     def read_piece(self, parts, n, typ, line):
         piece = Apply(parts, [Num(n)], line)
@@ -1797,10 +1797,8 @@ class FParser:
     def read_values(self, it, scope, targets, status, source):
         """`read(u,*) a, b`: one line of input, cut into pieces at blanks and commas, one piece per target. Without
         `iostat` every value must be on the line, and a missing or bad one stops the program (as Fortran does).
-        With `iostat` the status is 0, 1 for a bad or missing value (nothing is stored then) or -1 at the end of
-        input."""
+        With `iostat` a ReadMarker is left for `resolve_reads`."""
         types = [self.read_target_type(scope, t) for t in targets]
-        text, parts, _ = self.read_temps(scope, it.line)
         src = [] if source is None else [source]
         line = it.line
         if not getattr(scope, "read_noted", False):
@@ -1808,28 +1806,138 @@ class FParser:
             self.note(line, "read: the values are taken from one line, separated by blanks or commas "
                             "(Fortran also continues on the next line and accepts quoted text and repeat counts)")
         fit = lambda t: [Assign(t, self.fit_to_length(t, self.char_info(t).length), line)] if self.char_info(t) else []
-        if status is None:
-            out = [Assign(Var(parts), Apply("fields", [Binary("??", Apply("read_line", src, line), Str("")), Str(",")], line), line)]
-            for n, (t, typ) in enumerate(zip(targets, types), 1):
-                out.append(Assign(t, self.read_piece(parts, n, typ, line), line))
-                out.extend(fit(t))
-            return out
-        values = [self.read_value_temp(scope, typ, n, line) for n, typ in enumerate(types, 1)]
-        convert = [Assign(Var(v), self.read_piece(parts, n, typ, line), line)
-                   for n, (v, typ) in enumerate(zip(values, types), 1)]
+        if status is not None:
+            return [ReadMarker(targets, types, status, src, [fit(t) for t in targets], line)]
+        parts = self.read_parts_name(scope, line)
+        out = [Assign(Var(parts), Apply("fields", [Binary("??", Apply("read_line", src, line), Str("")), Str(",")], line), line)]
+        for n, (t, typ) in enumerate(zip(targets, types), 1):
+            out.append(Assign(t, self.read_piece(parts, n, typ, line), line))
+            out.extend(fit(t))
+        return out
+
+    # `iostat` reads. The status is 0 (good), -1 (no line) or 1 (a bad or missing value); nothing is stored unless every
+    # value is good. When `ios` is only ever compared with -1, 0 or 1, it is dropped and each comparison becomes a test
+    # of the optional values, as hand-written Boreas would do; otherwise the status variable is kept.
+    COMPARE = {"==": lambda a, b: a == b, "/=": lambda a, b: a != b, "<": lambda a, b: a < b,
+               "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
+    FLIP = {"==": "==", "/=": "/=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
+
+    @staticmethod
+    def int_literal(e):
+        if isinstance(e, Num) and isinstance(e.value, int) and not isinstance(e.value, bool):
+            return e.value
+        if isinstance(e, Unary) and e.op == "-" and isinstance(e.operand, Num) and isinstance(e.operand.value, int):
+            return -e.operand.value
+        return None
+
+    def status_comparison(self, node, name):
+        """(op, value) when `node` compares the variable `name` with -1, 0 or 1, else None."""
+        if not (isinstance(node, Binary) and node.op in self.COMPARE):
+            return None
+        for var, lit, op in ((node.left, node.right, node.op), (node.right, node.left, self.FLIP[node.op])):
+            if isinstance(var, Var) and var.name == name and self.int_literal(lit) in (-1, 0, 1):
+                return op, self.int_literal(lit)
+        return None
+
+    def can_drop_status(self, r, name, markers):
+        scope = r.scope
+        info = scope.decls.get(name)
+        if info is None or info.type != "integer" or info.dims is not None or info.shape_dropped or info.parameter \
+                or info.allocatable or name in scope.dummies or name in scope.saved:
+            return False
+        if any(name == n for group, _ in scope.equivs for n, _ in group) \
+                or any(name == c for entries in scope.commons.values() for c, _ in entries):
+            return False
+        if any(other.scope.host is scope for other in self.raw):         # an internal procedure may use it too
+            return False
+        if any(m.types != markers[0].types for m in markers):
+            return False
+        uses = sum(isinstance(n, Var) and n.name == name for n in iter_nodes(r.body))
+        compared = sum(self.status_comparison(n, name) is not None for n in iter_nodes(r.body))
+        return uses == len(markers) + compared
+
+    def read_temps(self, scope, body, name, types, line, cache):
+        """The line temporary and one optional value temporary per target for the status `name`; the same names are
+        used again by every read of that status."""
+        if (name, "line") not in cache:
+            cache[name, "line"] = self.unique(f"{name}_line", scope, body)
+            scope.decls[cache[name, "line"]] = Info("string?", None, False, None, None, False, line)
+        values, seen = [], {}
+        for typ in types:
+            temp = "real" if typ == "real32" else typ
+            seen[temp] = seen.get(temp, 0) + 1
+            key = (name, temp, seen[temp])
+            if key not in cache:
+                cache[key] = self.unique(f"{name}_{temp}" + (f"_{seen[temp]}" if seen[temp] > 1 else ""), scope, body)
+                scope.decls[cache[key]] = Info(temp + "?", None, False, None, None, False, line)
+            values.append(cache[key])
+        return cache[name, "line"], values
+
+    def expand_read(self, m, text, values, keep_status):
+        line = m.line
+        parts = lambda k: Apply("field", [Var(text), Num(k), Str(",")], line)
+        out = [Assign(Var(text), Apply("read_line", m.source, line), line)]
+        for k, (v, typ) in enumerate(zip(values, m.types), 1):
+            conv = self.READ_CONVERSIONS[typ]
+            out.append(Assign(Var(v), parts(k) if conv is None else Apply(conv, [parts(k)], line), line))
+        store = []
+        for t, v, typ, fits in zip(m.targets, values, m.types, m.fits):
+            value = Apply("real32", [Var(v)], line) if typ == "real32" else Var(v)
+            store += [Assign(t, value, line)] + fits
+        good = self.all_present(values, line)
+        if not keep_status:
+            return out + [If([(good, store)], [])]
+        return out + [If([(Unary("not", Apply("present", [Var(text)], line)), [Assign(m.status, Num(-1), line)]),
+                          (good, store + [Assign(m.status, Num(0), line)])], [Assign(m.status, Num(1), line)])]
+
+    @staticmethod
+    def all_present(values, line):
         good = Apply("present", [Var(values[0])], line)
         for v in values[1:]:
             good = Binary("and", good, Apply("present", [Var(v)], line))
-        store = []
-        for t, v in zip(targets, values):
-            store += [Assign(t, Var(v), line)] + fit(t)
-        enough = Binary(">=", Apply("size", [Var(parts)], line), Num(len(targets)))
-        return [Assign(Var(text), Apply("read_line", src, line), line),
-                If([(Apply("present", [Var(text)], line),
-                     [Assign(Var(parts), Apply("fields", [Var(text), Str(",")], line), line),
-                      Assign(status, Num(1), line),
-                      If([(enough, convert + [If([(good, store + [Assign(status, Num(0), line)])], [])])], [])])],
-                   [Assign(status, Num(-1), line)])]
+        return good
+
+    def status_test(self, op, k, text, values, line):
+        """The condition that says the same as `ios <op> k` for ios in {-1, 0, 1}, as a test of the optionals."""
+        holds = frozenset(v for v in (-1, 0, 1) if self.COMPARE[op](v, k))
+        have, good = Apply("present", [Var(text)], line), self.all_present(values, line)
+        table = {frozenset(): Bool(False), frozenset({-1, 0, 1}): Bool(True), frozenset({0}): good,
+                 frozenset({-1}): Unary("not", have), frozenset({0, 1}): have,
+                 frozenset({1}): Binary("and", have, Unary("not", good)),
+                 frozenset({-1, 1}): Unary("not", good), frozenset({-1, 0}): Binary("or", Unary("not", have), good)}
+        return table[holds]
+
+    def resolve_reads(self, r):
+        markers = [n for n in iter_nodes(r.body) if isinstance(n, ReadMarker)]
+        if not markers:
+            return
+        by_name = {}
+        for m in markers:
+            by_name.setdefault(m.status.name, []).append(m)
+        cache, drop = {}, {}
+        for name, ms in by_name.items():
+            drop[name] = self.can_drop_status(r, name, ms)
+            if drop[name]:
+                r.scope.decls.pop(name)
+                text, values = self.read_temps(r.scope, r.body, name, ms[0].types, ms[0].line, cache)
+                replace_nodes(r.body, lambda node, name=name, text=text, values=values, line=ms[0].line:
+                              None if self.status_comparison(node, name) is None
+                              else self.status_test(*self.status_comparison(node, name), text, values, line))
+
+        def expand(stmts):
+            out = []
+            for s in stmts:
+                if isinstance(s, list):
+                    out.extend(expand(s))
+                elif isinstance(s, ReadMarker):
+                    text, values = self.read_temps(r.scope, r.body, s.status.name, s.types, s.line, cache)
+                    out.extend(self.expand_read(s, text, values, not drop[s.status.name]))
+                else:
+                    for sub in child_lists(s):
+                        sub[:] = expand(sub)
+                    out.append(s)
+            return out
+        r.body[:] = expand(r.body)
 
     def read_whole_line(self, it, scope, targets, status, source=None):
         """`read (*, '(A)', iostat=ios) text`: the next line of input goes into one character variable."""
@@ -2768,6 +2876,8 @@ class FParser:
             s.decls[name] = Info("integer", None, False, None, None, False, r.line)
 
     def finalize(self):
+        for r in self.raw:
+            self.resolve_reads(r)
         for r in self.raw:
             self.apply_equivalences(r)
         self.merge_commons()

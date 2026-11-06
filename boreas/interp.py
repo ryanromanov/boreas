@@ -618,18 +618,34 @@ def _split(s, sep):
     return Array([len(pieces)], pieces)
 
 
-def _fields(s, extra=""):
-    """The pieces of `s` between runs of blanks and of the characters in `extra`; never an empty piece."""
-    _need_string("fields", s)
+def _pieces(name, s, extra):
+    _need_string(name, s)
     if not isinstance(extra, str):
         raise TypeError(f"needs the extra separators as a string, got {type_of(extra)}")
-    pieces = [x for x in re.split("[\\s" + re.escape(extra) + "]+", s) if x]
+    return [x for x in re.split("[\\s" + re.escape(extra) + "]+", s) if x]
+
+
+def _fields(s, extra=""):
+    """The pieces of `s` between runs of blanks and of the characters in `extra`; never an empty piece."""
+    pieces = _pieces("fields", s, extra)
     return Array([len(pieces)], pieces)
+
+
+def _field(s, k, extra=""):
+    """The k-th piece `fields` would give (counting from 1), or null when there is none or `s` is null."""
+    if s is NULL:
+        return NULL
+    if type_of(k) not in INT_RANGE or k < 1:
+        raise TypeError("needs a piece number that is a positive integer")
+    pieces = _pieces("field", s, extra)
+    return pieces[k - 1] if k <= len(pieces) else NULL
 
 
 def _to_number(typ):
     """`to_integer` / `to_real`: the number the text spells (blanks around it are ignored), or null."""
     def convert(s):
+        if s is NULL:
+            return NULL
         text = _need_string("to_" + typ, s).strip()
         value = read_value(typ, text) if text else None
         return NULL if value is None else value
@@ -637,7 +653,7 @@ def _to_number(typ):
 
 
 BUILTINS = {
-    "split": _split, "fields": _fields, "to_integer": _to_number("integer"), "to_real": _to_number("real"), "to_logical": _to_number("logical"),
+    "split": _split, "fields": _fields, "field": _field, "to_integer": _to_number("integer"), "to_real": _to_number("real"), "to_logical": _to_number("logical"),
     "trim": _trim, "len_trim": lambda s: len(_trim(s)), "index": _index,
     "fixed": _fixed, "tf": _tf, "scientific": _scientific, "general": _general, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
     "len": _len, "achar": _achar, "iachar": _iachar,
