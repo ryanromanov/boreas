@@ -3162,6 +3162,8 @@ class FParser:
     def infer_intents(self, unit):
         """Dummy arguments without `intent` get one from how the body uses them."""
         funcs = self.all_functions(unit)
+        for f in funcs:
+            self.localize_loop_counters(f)
         self.module_writers = {id(f) for f in funcs
                                if self.module_variable_writes(f, self.module_variables_seen_by(unit, f))}
         visible = {id(f): self.visible_procs(unit, f) for f in funcs}
@@ -3217,6 +3219,113 @@ class FParser:
                     msg = f"loop variable '{n.var}' is a dummy argument; Boreas loop variables must be locals"
                     f.comments.append("TODO(convert): " + msg)
                     self.todo(n.line, msg)
+
+    def localize_loop_counters(self, f):
+        """`do 10 info = 1, n` where `info` is a dummy argument: the loop counts with a new local, and
+        the dummy gets the counter's value wherever the Fortran would have left it there."""
+        dummies = {p[1]: p[0] for p in f.params if p[2] != "in"}
+        counters = {}
+        while True:
+            found = self.counter_loop(f.body, dummies, [])
+            if found is None:
+                return
+            trail = found
+            lst, idx = trail[-1]
+            loop = lst[idx]
+            name, line = loop.var, loop.line
+            needed = self.read_after(trail, name)            # before the declaration moves the indexes
+            if name not in counters:
+                counters[name] = self.unique_name(f, name + "_i")
+                f.body.insert(0, Decl(dummies[name], counters[name], None, None, line))
+            local = counters[name]
+            for n in iter_nodes(loop.body):
+                if isinstance(n, Var) and n.name == name:
+                    n.name = local
+            loop.var = local
+            copy = lambda: Assign(Var(name), Var(local), line, True)
+            leaving = self.copy_before_leaving(loop.body, copy, needed, ())
+            final = self.final_counter(loop, name, leaving) if needed else None
+            if needed and final is not None:
+                lst.insert(idx + 1, Assign(Var(name), final, line, True))
+            elif needed:
+                msg = (f"the final value of '{name}' after the loop is not reproduced; "
+                       f"Boreas loop variables must be locals")
+                f.comments.append("TODO(convert): " + msg)
+                self.todo(line, msg)
+
+    def unique_name(self, f, base):
+        names = {n.name for n in iter_nodes(f.body) if isinstance(n, (Var, Apply, Decl))} | {p[1] for p in f.params}
+        while base in names:
+            base += "_"
+        return base
+
+    def counter_loop(self, stmts, dummies, trail):
+        """The first `do` whose variable is one of `dummies`, as a trail of (list, index) pairs."""
+        for i, s in enumerate(stmts):
+            here = trail + [(stmts, i)]
+            if isinstance(s, Do) and s.var in dummies:
+                return here
+            for sub in child_lists(s):
+                found = self.counter_loop(sub, dummies, here)
+                if found is not None:
+                    return found
+        return None
+
+    @staticmethod
+    def read_after(trail, name):
+        """Can the value of `name` after the loop at the end of `trail` be seen, by the caller or by the code?"""
+        for depth in range(len(trail) - 1, -1, -1):
+            lst, idx = trail[depth]
+            for s in lst[idx + 1:]:
+                if isinstance(s, Assign) and isinstance(s.target, Var) and s.target.name == name:
+                    return any(isinstance(n, Var) and n.name == name for n in iter_nodes(s.value))
+                if any(isinstance(n, (Var, Return)) and getattr(n, "name", None) in (name, None)
+                       for n in iter_nodes(s)):
+                    return True
+            if depth and isinstance(trail[depth - 1][0][trail[depth - 1][1]], (Do, DoWhile)):
+                return True                      # the enclosing loop comes round again
+        return True                              # the end of the procedure: the caller sees it
+
+    def copy_before_leaving(self, stmts, copy, needed, inner):
+        """Put `copy()` before each return, and (when `needed`) before each exit that leaves the loop.
+        Returns how many exits leave it."""
+        out, leaving = [], 0
+        for s in stmts:
+            leaves_loop = isinstance(s, Exit) and (
+                (s.label is None and not inner) or (s.label is not None and s.label not in inner))
+            if isinstance(s, Return) or (leaves_loop and needed):
+                out.append(copy())
+            leaving += leaves_loop
+            if not isinstance(s, (Do, DoWhile)):
+                subs = child_lists(s)
+                for sub in subs:
+                    leaving += self.copy_before_leaving(sub, copy, needed, inner)
+            else:
+                leaving += self.copy_before_leaving(s.body, copy, needed, inner + (s.label,))
+            out.append(s)
+        stmts[:] = out
+        return leaving
+
+    def offset(self, e, by):
+        n = self.int_literal(e)
+        if n is not None:
+            return Num(n + by)
+        return Binary("+" if by > 0 else "-", e, Num(abs(by)))
+
+    def final_counter(self, loop, name, leaving):
+        """The value a Fortran loop variable has when the loop runs to its end, or None when unknown."""
+        if leaving:
+            return None
+        written = {root_name(n.target) for n in iter_nodes(loop.body) if isinstance(n, Assign)}
+        used = {n.name for e in (loop.lo, loop.hi, loop.step) for n in iter_nodes(e) if isinstance(n, Var)}
+        if name in used or used & written:
+            return None
+        step = 1 if loop.step is None else self.int_literal(loop.step)
+        if step == 1:
+            return Apply("max", [loop.lo, self.offset(loop.hi, 1)], 0)
+        if step == -1:
+            return Apply("min", [loop.lo, self.offset(loop.hi, -1)], 0)
+        return None
 
     def functions_to_subroutines(self, funcs):
         """A Fortran function that changes its arguments becomes a subroutine whose last parameter is
