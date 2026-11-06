@@ -2921,6 +2921,9 @@ class FParser:
             s.decls[name] = Info("integer", None, False, None, None, False, r.line)
 
     def finalize(self):
+        for r in self.raw:                               # a module that stopped half way keeps what it had
+            if r.scope.module is not None:
+                self.modules.setdefault(r.scope.module.name, r.scope.module)
         for r in self.raw:
             self.resolve_reads(r)
         for r in self.raw:
