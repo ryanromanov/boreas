@@ -88,6 +88,14 @@ class LabelTests(unittest.TestCase):
                             "20 n = n + 1\n  if (i < 100) goto 10\n30 print *, n, i")
         self.assertEqual(out, ["33 7"])
 
+    def test_state_machines_inside_each_other_get_their_own_labels(self):
+        text, _, out = body("  n = 0\n  do i = 1, 3\n    if (i > 5) goto 20\n    if (i > 6) goto 30\n"
+                            "    do j = 1, 2\n      if (j == 7) goto 30\n      if (j == 1) goto 200\n      if (j == 5) goto 300\n"
+                            "200   n = n + 1\n300   n = n + 100\n    end do\n"
+                            "20  n = n + 1000\n30  n = n + 10000\n  end do\n  print *, n")
+        self.assertIn("machine_2", text)
+        self.assertEqual(out, ["33606"])         # what gfortran prints
+
     def test_computed_goto_and_arithmetic_if(self):
         _, f, out = body("  do i = 1, 4\n    goto (10, 20), i\n    print *, 'other'\n    goto 30\n"
                          "10  print *, 'one'\n    goto 30\n20  print *, 'two'\n"
