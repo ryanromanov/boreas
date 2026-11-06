@@ -74,8 +74,6 @@ class Break: pass       # leaves the nearest enclosing select statement
 class Print:   # print/println go to the screen, write/writeln to the file `to`; the `ln` forms end the line
     args: list; newline: bool = True; to: object = None; line: int = 0
 @dataclass
-class Read: targets: list; status: object; line: int; update: bool = False; source: object = None   # `read from f, ...`
-@dataclass
 class Close: file: object; line: int
 @dataclass
 class Stop: code: object; line: int
@@ -141,7 +139,7 @@ def root_name(target):
 
 
 KEYWORDS = {"if", "then", "else", "do", "while", "end", "program", "function", "subroutine", "module",
-            "record", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print", "println", "write", "writeln", "read", "close", "stop",
+            "record", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print", "println", "write", "writeln", "close", "stop",
             "select", "case", "default", "fallthrough", "break", "update", "allocate", "deallocate",
             "allocatable", "in", "out", "inout", "true", "false", "null", "and", "or", "not"}
 
@@ -206,17 +204,6 @@ def check_writes(body, params, shared=None, is_sub=True):
             name = root_name(s.target)
             write(s, name, target_text(s.target) if isinstance(s.target, FieldAccess) else name,
                   reaches(name, s.update), name in shared and not shared[name] and name not in params)
-        elif isinstance(s, Read):
-            names = {root_name(t) for t in s.targets + ([s.status] if s.status is not None else [])}
-            escapes = sorted(n for n in names if reaches(n, s.update))
-            if escapes and not s.update:
-                raise LangError(f"line {s.line}: '{escapes[0]}' is {article(reaches(escapes[0], s.update))}, so other "
-                                f"code sees this read; write 'update read ...'")
-            if s.update and not escapes and not any(n in shared for n in names):
-                raise LangError(f"line {s.line}: 'update' is for out and inout parameters and module "
-                                f"variables, but this 'read' writes none")
-            if escapes and not is_sub and any(reaches(n, s.update) == "module variable" for n in escapes):
-                raise LangError(f"line {s.line}: a function cannot change a module variable; make it a subroutine")
         elif isinstance(s, If):
             for _, b in s.branches:
                 check_writes(b, params, shared, is_sub)
@@ -756,8 +743,6 @@ class Parser:
             f = self.expr()
             self.newline()
             return Close(f, t.line)
-        if self.at("read") or (self.at("update") and self.toks[self.i + 1].text == "read"):
-            return self.read_stmt()
         if self.at("stop"):
             self.next()
             code = None if self.tok.kind == "nl" else self.expr()
@@ -800,38 +785,6 @@ class Parser:
             return Assign(e, v, t.line, update)
         self.newline()
         return ExprStmt(e)
-
-    def read_stmt(self):
-        """`read a, b` or `read a, b status ios`; `update read ...` when a target is an out/inout parameter."""
-        line = self.tok.line
-        update = bool(self.accept("update"))
-        self.next()
-        source = self.file_clause("from")
-        targets = [self.read_target()]
-        while self.accept(","):
-            targets.append(self.read_target())
-        status = None
-        if self.tok.kind == "ident" and self.tok.text == "status":
-            self.next()
-            status = self.read_target()
-        self.newline()
-        return Read(targets, status, line, update, source)
-
-    def file_clause(self, word):
-        """`to log,` after print/write, `from data,` after read: which file. `to` and `from` stay usable
-        as variable names, because a file name directly after them cannot be anything else."""
-        if not (self.tok.kind == "ident" and self.tok.text == word and self.toks[self.i + 1].kind == "ident"):
-            return None
-        self.next()
-        f = self.expr()
-        self.expect(",")
-        return f
-
-    def read_target(self):
-        e = self.expr()
-        if not isinstance(e, (Var, Apply, FieldAccess)):
-            self.error("'read' needs variables to read into")
-        return e
 
     def allocation(self):
         """`allocate a(n, m)` or `deallocate a`: one array per statement."""

@@ -73,11 +73,6 @@ class ModuleVariableTests(unittest.TestCase):
         self.assertEqual(run("  use bank: slots, main, put\n  call put(2)\n  call put(3)\n  println(slots, main.total)", src),
                          ["[0, 20, 30] 5"])
 
-    def test_read_into_a_module_variable(self):
-        src = "module m\n  public integer :: n\nend module\n"
-        self.assertEqual(run("  use m: n\n  update read n\n  println(n)", src, "41\n"), ["41"])
-        fails(self, "  use m: n\n  read n", "'update' must be used exactly", src)
-
     def test_a_local_cannot_reuse_the_name(self):
         fails(self, "  use rng: seed\n  integer :: seed", "already")
 

@@ -95,28 +95,21 @@ final newline, for prompts. `write(f, a, b)` and `writeln(f, a, b)` do the same 
 `println()` writes an empty line.
 Strings can use `"` or `'` quotes, so `'say "hi"'` works.
 
-`read a, b` reads list-directed input from the keyboard: values are separated by blanks or commas,
-may continue on following lines, and the rest of the last line is discarded. Each value must suit
-its variable (integer, real, logical, or string; a string with spaces needs quotes). Bad input or the
-end of input stops the program with an error. To handle that yourself, add a status variable:
-
-    read n status ios        ! ios is 0 for success, -1 at the end of input, 1 for a bad value
-
-Values before a bad one are kept. When a target is an `out` or `inout` parameter the statement starts
-with `update`, as for assignments: `update read n`. `read_line()` returns the next whole line as a
-`string?` (`null` at the end of input).
-
-Reading a line and splitting it is the other way in:
+Input is a line of text: `read_line()` returns the next whole line from the keyboard as a `string?` (`null`
+at the end of input), and `read_line(f)` does the same for a file. Cut it up and turn the pieces into numbers:
 
     allocatable string :: p(:)
-    p = fields(read_line(f) ?? "")        ! "  1.5   2.0 3.7 " -> ["1.5", "2.0", "3.7"]
+    p = fields(read_line() ?? "")         ! "  1.5   2.0 3.7 " -> ["1.5", "2.0", "3.7"]
     x = to_real(p(1)) ?? 0.0              ! null when the text is not a number
     p = split("a,,b", ",")                ! ["a", "", "b"]: cuts at exactly the separator
+    p = fields("3, 4.5", ",")             ! ["3", "4.5"]: blanks and commas both separate
 
 `split(text, sep)` cuts at every `sep` (not empty), so empty pieces stay; `split(text, " ")` cuts at each
-single blank. `fields(text)` treats a run of blanks as one gap and never gives an empty piece.
-`to_integer(text)` and `to_real(text)` give the number the text spells (blanks around it are ignored) or
-`null`: `to_integer("3.5")` is `null`, `to_real("3")` is `3.0`.
+single blank. `fields(text)` treats a run of blanks as one gap and never gives an empty piece;
+`fields(text, chars)` also treats each character of `chars` as a gap. `to_integer(text)`, `to_real(text)` and
+`to_logical(text)` (`true`, `false`, `T`, `F`, `.true.`, `.false.`) give the value the text spells (blanks around
+it are ignored) or `null`: `to_integer("3.5")` is `null`, `to_real("3")` is `3.0`. Assigning that `null` to a
+plain `integer` or `real` stops the program, so a bad value is an error unless you give a fallback with `??`.
 
 `stop` ends the program; `stop 3` ends it with exit code 3.
 
@@ -154,7 +147,7 @@ blanks where the exponent would go, or the E form for very large and small value
 
 ## Files
 
-A `file` value stands for a text file. `open` gives you one, and `write`, `writeln`, `read from`
+A `file` value stands for a text file. `open` gives you one, and `write`, `writeln`, `read_line`
 and `close` use it:
 
     file :: log = open("report.txt", "write")      ! "read", "write" (create or replace) or "append"
@@ -163,16 +156,11 @@ and `close` use it:
     close log
 
     file :: data = open("numbers.txt", "read")
-    integer :: a
-    real :: b
-    integer :: ios
-    read from data, a, b status ios                ! 0 = ok, -1 = end of file, 1 = bad value
-    println(read_line(data))                          ! the next whole line, or null at the end
+    string? :: line
+    line = read_line(data)                         ! the next whole line, or null at the end
     close data
 
-- `read from` follows the same rules as `read` (blanks or commas separate values, items continue onto
-  the next line, the rest of the last line is dropped).
-- A failed `open`, a bad value or the end of the file stops the program with a message, as `read` does.
+- A failed `open`, or `read_line` on a closed file or one opened for writing, stops the program with a message.
   `try_open(name, mode)` returns a `file?` that is `null` when the file cannot be opened, and
   `exists("name")` says whether a file is there.
 - A file value is a handle, not a number: it cannot be mixed up with an integer, it can be passed to
@@ -581,7 +569,11 @@ report on stderr. Translations that change meaning are flagged, never silent:
   lists with literal bounds (unrolled). More values than descriptors start the format again; a format
   `Ew.d` and `Gw.d` (as `scientific` / `general` with the `"fortran"` style) and `Lw` (as `right(tf(x), w)`), with groups that would have to repeat, and `ES`, `P`, an exponent width (`E12.4E3`), are TODOs. `Tn` pads with blanks up
   to column `n` (moving back over text already written is a TODO).
-- `read(*,*) a, b` and `read(*,*,iostat=ios) a` become `read a, b` and `read a status ios`; `stop`,
+- `read(*,*) a, b` becomes `read_parts = fields(read_line() ?? "", ",")` and one `to_integer` / `to_real` /
+  `to_logical` per value (text is taken as it is). The values must be on one line, separated by blanks or commas
+  (Fortran also continues on the next line and accepts quoted text and repeat counts such as `3*0`), which
+  the converter says in a note. With `iostat=ios` the status is 0, -1 at the end of input, and 1 for a bad or
+  missing value, in which case nothing is stored. Reads into arrays, sections and record fields are TODOs. `stop`,
   `stop 3` and `error stop` become `stop`, `stop 3` and `stop 1` (a final plain `stop` is dropped; a stop
   message goes to stderr in Fortran, so it is dropped with a note). `read(*,'(A)') text` reads a whole line into
   one character variable; other formatted reads are TODOs.
@@ -592,7 +584,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
   fallthrough` in a loop). Computed `goto`, the arithmetic `if`, labelled `do` loops (a shared last statement
   too) and the `parameter` statement are translated; `common` and `block data` are TODOs.
 - File input and output: `open(unit=9, file=name, status='replace')` becomes `unit_9 = open(name, "write")`,
-  `write(9,*)` / `write(9,fmt)` become `writeln(unit_9, ...)`, `read(9,*)` becomes `read from unit_9, ...`,
+  `write(9,*)` / `write(9,fmt)` become `writeln(unit_9, ...)`, `read(9,*)` takes its line from `read_line(unit_9)`,
   `read(9,'(A)')` reads a whole line, `close(9)` becomes `close unit_9`, and `inquire(file=f, exist=e)`
   becomes `e = exists(f)`. Each unit number gets a file variable in one generated module `file_units`, so
   every procedure sees the same open file. The mode comes from how the program uses the unit (only

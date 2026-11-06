@@ -147,10 +147,6 @@ def stmt(s, depth):
         word = ("write" if s.to is not None else "print") + ("ln" if s.newline else "")
         parts = ([expr(s.to)] if s.to is not None else []) + [expr(a) for a in s.args]
         return [f"{pad}{word}(" + ", ".join(parts) + ")"]
-    if k is Read:
-        tail = f" status {expr(s.status)}" if s.status is not None else ""
-        where = f"from {expr(s.source)}, " if s.source is not None else ""
-        return [f"{pad}{'update ' if s.update else ''}read " + where + ", ".join(expr(t) for t in s.targets) + tail]
     if k is Close:
         return [pad + "close " + expr(s.file)]
     if k is Stop:
