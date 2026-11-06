@@ -108,6 +108,7 @@ class Structurer:
         self.fresh_name = fresh_name       # fresh_name("pc") -> a variable name free in the procedure
         self.todo = todo                   # todo(line, message)
         self.new_vars = []
+        self.machines = 0                  # state machines built so far: each loop needs its own label
 
     def run(self, body):
         self.restructure(body)
@@ -227,7 +228,8 @@ class Structurer:
             return
         pc = self.fresh_name("pc")
         self.new_vars.append(pc)
-        machine = "machine"
+        self.machines += 1
+        machine = "machine" if self.machines == 1 else f"machine_{self.machines}"
         number = {l: n for n, l in enumerate(labels, 1)}
         cases, current = [], []
         for s in stmts:
