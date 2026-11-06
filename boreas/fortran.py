@@ -259,6 +259,7 @@ class Scope:
         self.host = None              # enclosing scope, for internal procedures
         self.body = None
         self.skipped = set()          # declared in Fortran we could not translate
+        self.data_cells = {}          # name -> {index tuple: value} from data statements
         self.saved = {}               # local name -> (line, why) for variables Fortran keeps between calls
         self.save_all = None          # line of a bare `save` statement (every local is saved)
         self.bad_dummies = set()      # dummy arguments whose declaration we could not translate
@@ -861,6 +862,7 @@ class FParser:
         self.collect_formats(scope, kind)
         body = self.parse_body(scope, {("end", kind), ("contains",)})
         scope.body = body
+        self.check_data_cells(scope, it.line)
         toks = self.tokens(self.items[self.i])
         if classify(toks) == ("contains",):
             self.i += 1
@@ -2002,14 +2004,12 @@ class FParser:
                    [Assign(status, Num(-1), it.line)])]
 
     def st_data(self, it, scope):
-        """`data a, b /1, 2/, c(1:3) /3*0/`: initial values, which become declaration initialisers."""
+        """`data a, b /1, 2/, c(1:3) /3*0/, (m(1, j), j = 1, 4) /4*7/`: initial values, which become
+        declaration initialisers. The values are kept per element until an array is completely filled."""
         while True:
-            names = []
+            cells = []
             while True:
-                t = self.next()
-                if t.kind != "name" or self.at_op("("):
-                    raise Unsupported("data with array elements, sections or implied-do loops")
-                names.append(self.rename(t.text))
+                cells.extend(self.data_object(scope, {}))
                 if not self.accept_op(","):
                     break
             self.expect_op("/")
@@ -2019,37 +2019,154 @@ class FParser:
                 if not self.accept_op(","):
                     break
             self.expect_op("/")
-            for name in names:
-                info = scope.decls.get(name)
-                if info is None or name in scope.dummies:
-                    raise Unsupported(f"data for '{name}', which is not a declared local variable")
-                count = 1
-                if info.dims is not None:
-                    sizes = [self.constant_int(d) for d in info.dims]
-                    if None in sizes:
-                        raise Unsupported(f"data for '{name}', whose size is not a literal number")
-                    count = 1
-                    for n in sizes:
-                        count *= n
-                if len(values) < count:
-                    raise Unsupported(f"data for '{name}' has too few values")
-                mine, values = values[:count], values[count:]
-                if info.type == "string" and info.length is not None:
-                    mine = [self.fit_to_length(v, info.length) if isinstance(v, Str) else v for v in mine]
-                if info.dims is None:
-                    info.init = mine[0]
-                else:
-                    items = ArrayLit(mine)
-                    info.init = items if len(sizes) == 1 else Apply("reshape", [items, ArrayLit(
-                        [Num(n) for n in sizes])], self.line)
-                if scope.kind not in ("program", "module", "type", "blockdata"):
-                    scope.saved[name] = (it.line, "initialised by a data statement, which implies save")
-            if values:
+            if len(values) < len(cells):
+                raise Unsupported("data has too few values")
+            if len(values) > len(cells):
                 raise Unsupported("data has more values than objects")
+            touched = []
+            for (name, index), value in zip(cells, values):
+                info = scope.decls[name]
+                if info.type == "string" and info.length is not None and isinstance(value, Str):
+                    value = self.fit_to_length(value, info.length)
+                scope.data_cells.setdefault(name, {})[index] = value
+                if name not in touched:
+                    touched.append(name)
+            for name in touched:
+                self.data_complete(scope, name, it.line)
             if not self.accept_op(","):
                 break
         self.end_of_statement()
         return []
+
+    def data_object(self, scope, env):
+        """The elements one data object names, as [(variable, index tuple)] in the order they get values.
+        `env` holds the variables of the implied-do loops around it."""
+        if self.at_op("("):                                  # (object, object, i = lo, hi [, step])
+            self.k += 1
+            start = self.k
+            depth = 0
+            while True:                                      # find the loop control: `name = ...`
+                t, nxt = self.peek(), self.peek(1)
+                if t is None:
+                    raise Unsupported("malformed implied-do loop in data")
+                if depth == 0 and t.kind == "name" and nxt is not None and nxt.text == "=":
+                    break
+                depth += (t.text == "(") - (t.text == ")")
+                self.k += 1
+            body_end = self.k
+            var = self.rename(self.next().text)
+            self.expect_op("=")
+            lo, hi = self.data_int(self.expr(), scope, env), None
+            self.expect_op(",")
+            hi = self.data_int(self.expr(), scope, env)
+            step = self.data_int(self.expr(), scope, env) if self.accept_op(",") else 1
+            self.expect_op(")")
+            if not step:
+                raise Unsupported("data implied-do loop with a zero step")
+            after = self.k
+            cells = []
+            for value in range(lo, hi + (1 if step > 0 else -1), step):
+                self.k = start
+                inner = dict(env, **{var: value})
+                while self.k < body_end:
+                    cells.extend(self.data_object(scope, inner))
+                    self.accept_op(",")
+            self.k = after
+            return cells
+        t = self.next()
+        if t.kind != "name":
+            raise Unsupported("malformed data statement")
+        name = self.rename(t.text)
+        info = scope.decls.get(name)
+        if info is None or name in scope.dummies:
+            raise Unsupported(f"data for '{name}', which is not a declared local variable")
+        sizes = [1] if info.dims is None else self.data_sizes(info, scope)
+        if None in sizes:
+            raise Unsupported(f"data for '{name}', whose size is not a constant")
+        if info.dims is None:
+            if self.at_op("("):
+                raise Unsupported(f"data for an element of '{name}', which is not an array")
+            return [(name, ())]
+        ranges = [range(1, n + 1) for n in sizes]
+        if self.accept_op("("):
+            ranges = []
+            while True:
+                lo = None if self.at_op(":") else self.expr()
+                if self.accept_op(":"):
+                    hi = None if self.at_op(",", ")") else self.expr()
+                    if self.at_op(":"):
+                        raise Unsupported("data with a strided section")
+                    n = sizes[len(ranges)] if len(ranges) < len(sizes) else 0
+                    first = 1 if lo is None else self.data_int(lo, scope, env)
+                    last = n if hi is None else self.data_int(hi, scope, env)
+                    ranges.append(range(first, last + 1))
+                else:
+                    ranges.append([self.data_int(lo, scope, env)])
+                if not self.accept_op(","):
+                    break
+            self.expect_op(")")
+            if len(ranges) != len(sizes):
+                raise Unsupported(f"data for '{name}' with the wrong number of subscripts")
+        for r, n in zip(ranges, sizes):
+            if any(not 1 <= i <= n for i in r):
+                raise Unsupported(f"data for '{name}' outside its bounds")
+        cells = [()]                                         # column-major: the first subscript varies fastest
+        for r in ranges:
+            cells = [c + (i,) for i in r for c in cells]
+        return [(name, c) for c in cells]
+
+    def data_sizes(self, info, scope):
+        """The extents of a declared array when they are constants (literals or parameters), else [None]."""
+        try:
+            return [self.data_int(d, scope, {}) for d in info.dims]
+        except Unsupported:
+            return [None]
+
+    def data_int(self, e, scope, env):
+        """The value of a constant integer expression in a data statement (loop variables allowed)."""
+        if isinstance(e, Num) and isinstance(e.value, int) and not isinstance(e.value, bool):
+            return e.value
+        if isinstance(e, Var):
+            if e.name in env:
+                return env[e.name]
+            info = scope.decls.get(e.name)
+            if info is not None and info.parameter and info.init is not None:
+                return self.data_int(info.init, scope, {})
+        if isinstance(e, Unary) and e.op == "-":
+            return -self.data_int(e.operand, scope, env)
+        if isinstance(e, Binary) and e.op in ("+", "-", "*"):
+            a, b = self.data_int(e.left, scope, env), self.data_int(e.right, scope, env)
+            return a + b if e.op == "+" else a - b if e.op == "-" else a * b
+        raise Unsupported("data subscript or loop bound that is not a constant")
+
+    def data_complete(self, scope, name, line):
+        """Once every element of `name` has a value, they become its initial value."""
+        info, cells = scope.decls[name], scope.data_cells[name]
+        sizes = [] if info.dims is None else self.data_sizes(info, scope)
+        count = 1
+        for n in sizes:
+            count *= n
+        if len(cells) < count:
+            return
+        order = [()]
+        for n in sizes:
+            order = [c + (i,) for i in range(1, n + 1) for c in order]
+        mine = [cells[c] for c in order]
+        if info.dims is None:
+            info.init = mine[0]
+        else:
+            items = ArrayLit(mine)
+            info.init = items if len(sizes) == 1 else Apply("reshape", [items, ArrayLit(
+                [Num(n) for n in sizes])], self.line)
+        if scope.kind not in ("program", "module", "type", "blockdata"):
+            scope.saved[name] = (line, "initialised by a data statement, which implies save")
+
+    def check_data_cells(self, scope, line):
+        for name, cells in scope.data_cells.items():
+            if scope.decls[name].init is None:
+                msg = f"data fills only {len(cells)} elements of '{name}'; the rest have no value here"
+                scope.comments.append("TODO(convert): " + msg)
+                self.todo(line, msg)
 
     def data_value(self):
         """One value of a data list: a constant, or `n*constant` (n copies)."""
