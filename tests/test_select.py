@@ -611,11 +611,12 @@ class ConverterTests(unittest.TestCase):
         self.assertEqual(todos(findings), [])
         self.assertEqual(run_bor(text), ["10 0"])
 
-    def test_dummy_loop_variable_inside_select_is_flagged(self):
+    def test_dummy_loop_variable_inside_select_uses_a_local_counter(self):
         src = ("subroutine f(i)\n  integer, intent(inout) :: i\n  select case (1)\n  case (1)\n    do i = 1, 2\n    end do\n  end select\nend subroutine\n"
                "program p\n  integer :: k\n  call f(k)\nend program\n")
-        _, findings = convert(src)
-        self.assertTrue(any("loop variable" in f[2] for f in todos(findings)))
+        text, findings = convert(src)
+        self.assertEqual(todos(findings), [])
+        self.assertIn("do i_i = 1, 2", text)
 
     def test_case_variable_name_is_not_mistaken_for_a_case_line(self):
         text, _ = conv("  case(1) = 4\n  print *, case(1)", "  integer :: case(2)")

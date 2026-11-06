@@ -113,11 +113,13 @@ class FixtureTests(unittest.TestCase):
         self.assertNotIn("update i", text)
         self.assertEqual(run_bor(text), ["10"])
 
-    def test_loop_over_a_dummy_argument_is_flagged(self):
+    def test_loop_over_a_dummy_argument_uses_a_local_counter(self):
         src = ("subroutine f(i)\n  integer, intent(inout) :: i\n  do i = 1, 2\n  end do\nend subroutine\n"
                "program p\n  integer :: k\n  call f(k)\nend program\n")
-        _, findings = convert(src)
-        self.assertTrue(any("loop variable" in f[2] for f in todos(findings)))
+        text, findings = convert(src)
+        self.assertEqual(todos(findings), [])
+        self.assertIn("do i_i = 1, 2", text)
+        self.assertIn("update i = max(1, 3)", text)
 
     def test_variables_named_like_module_words_are_renamed(self):
         src = "program p\n  integer :: use\ninteger :: public\n  use = 1\n  public = 2\n  print *, use + public\nend program\n"
