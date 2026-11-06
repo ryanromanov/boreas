@@ -391,21 +391,11 @@ end program p
         text, findings = conv("  s = 1\n  print *, s", "  integer, allocatable :: s")
         self.assertGreaterEqual(len(todos(findings)), 2)
 
-    def test_auto_allocation_on_assignment_is_noted(self):
-        _, findings = conv("  b = [1, 2, 3]\n  a = b", "  integer, allocatable :: a(:), b(:)")
-        notes = [f[2] for f in findings if f[1] == "note" and "automatic allocation" in f[2]]
-        self.assertEqual(len(notes), 2)
-        self.assertIn("assignment to allocatable 'a' relied on automatic allocation in Fortran; "
-                      "Boreas requires an explicit allocate", notes)
-
-    def test_no_note_after_an_allocate(self):
-        _, findings = conv("  allocate(a(3))\n  a = 1", "  integer, allocatable :: a(:)")
-        self.assertFalse([f for f in findings if "automatic allocation" in f[2]])
-
-    def test_note_returns_after_deallocate_and_for_elements_not_at_all(self):
-        _, findings = conv("  allocate(a(3))\n  a(1) = 1\n  deallocate(a)\n  a = 2",
-                           "  integer, allocatable :: a(:)")
-        self.assertEqual(len([f for f in findings if "automatic allocation" in f[2]]), 1)
+    def test_allocation_on_assignment_needs_no_allocate(self):
+        text, findings = conv("  b = [1, 2, 3]\n  a = b", "  integer, allocatable :: a(:), b(:)")
+        self.assertEqual(todos(findings), [])
+        self.assertFalse([f for f in findings if "allocat" in f[2]])
+        self.assertIn("a = b", text)
 
     def test_keywords_are_renamed(self):
         text, findings = conv("  allocate = 1\n  print *, allocate", "  integer :: allocate")

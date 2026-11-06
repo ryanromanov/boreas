@@ -19,7 +19,7 @@ from .fformat import FormatError, parse_format, render, substitute
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
 # so a Fortran variable with one of these names is renamed.
-RESERVED = {"left", "right", "fixed", "scientific", "general", "tf", "text", "split", "fields", "to_integer", "to_real", "exists", "open", "try_open", "read_line",     # built-ins the converter writes itself
+RESERVED = {"left", "right", "fixed", "scientific", "general", "tf", "text", "split", "fields", "to_integer", "to_real", "to_logical", "exists", "open", "try_open", "read_line",     # built-ins the converter writes itself
             "close", "file", "const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "println", "write", "writeln", "read", "stop", "call", "return", "exit", "cycle",
@@ -1749,12 +1749,87 @@ class FParser:
             raise Unsupported("read of something other than variables")
         if whole_line:
             return self.read_whole_line(it, scope, targets, status, source)
-        stmts = [Read(targets, status, it.line, False, source)]
-        for t in targets:                                   # text read into a character(len=n) variable fits n
-            info = self.char_info(t)
-            if info is not None:
-                stmts.append(Assign(t, self.fit_to_length(t, info.length), it.line))
-        return stmts
+        return self.read_values(it, scope, targets, status, source)
+
+    READ_CONVERSIONS = {"integer": "to_integer", "real": "to_real", "real32": "to_real", "logical": "to_logical", "string": None}
+
+    def read_target_type(self, scope, target):
+        """The Boreas type of a scalar read target, or raise Unsupported for the ones the converter does not map."""
+        if isinstance(target, FieldAccess):
+            raise Unsupported("read into a record field")
+        info = scope.decls.get(target.name)
+        if info is None:
+            raise Unsupported(f"read into '{target.name}', whose type is not declared")
+        is_array = info.dims is not None or info.shape_dropped
+        if isinstance(target, Var) and is_array or isinstance(target, Apply) and (
+                not is_array or any(isinstance(a, Slice) for a in target.args)):
+            raise Unsupported(f"read into the array or section '{target.name}'")
+        if info.type not in self.READ_CONVERSIONS:
+            raise Unsupported(f"read into a {info.type}")
+        return info.type
+
+    def read_temps(self, scope, line):
+        """The names of the shared temporaries the converted reads use: (text, parts), made once per procedure."""
+        if getattr(scope, "read_names", None) is None:
+            text, parts = self.unique("read_text", scope, []), self.unique("read_parts", scope, [])
+            scope.decls[text] = Info("string?", None, False, None, None, False, line)
+            scope.decls[parts] = Info("string", [Slice(None, None)], False, None, None, False, line, True)
+            scope.read_names = (text, parts, {})
+        return scope.read_names
+
+    def read_value_temp(self, scope, typ, k, line):
+        """The k-th optional temporary of a type, holding a converted value before it is known to be good."""
+        _, _, values = self.read_temps(scope, line)
+        if (typ, k) not in values:
+            name = self.unique(f"read_{typ}" + (f"_{k}" if k > 1 else ""), scope, [])
+            scope.decls[name] = Info(typ + "?", None, False, None, None, False, line)
+            values[typ, k] = name
+        return values[typ, k]
+
+    def read_piece(self, parts, n, typ, line):
+        piece = Apply(parts, [Num(n)], line)
+        conv = self.READ_CONVERSIONS[typ]
+        if conv is None:
+            return piece
+        value = Apply(conv, [piece], line)
+        return Apply("real32", [value], line) if typ == "real32" else value
+
+    def read_values(self, it, scope, targets, status, source):
+        """`read(u,*) a, b`: one line of input, cut into pieces at blanks and commas, one piece per target. Without
+        `iostat` every value must be on the line, and a missing or bad one stops the program (as Fortran does).
+        With `iostat` the status is 0, 1 for a bad or missing value (nothing is stored then) or -1 at the end of
+        input."""
+        types = [self.read_target_type(scope, t) for t in targets]
+        text, parts, _ = self.read_temps(scope, it.line)
+        src = [] if source is None else [source]
+        line = it.line
+        if not getattr(scope, "read_noted", False):
+            scope.read_noted = True
+            self.note(line, "read: the values are taken from one line, separated by blanks or commas "
+                            "(Fortran also continues on the next line and accepts quoted text and repeat counts)")
+        fit = lambda t: [Assign(t, self.fit_to_length(t, self.char_info(t).length), line)] if self.char_info(t) else []
+        if status is None:
+            out = [Assign(Var(parts), Apply("fields", [Binary("??", Apply("read_line", src, line), Str("")), Str(",")], line), line)]
+            for n, (t, typ) in enumerate(zip(targets, types), 1):
+                out.append(Assign(t, self.read_piece(parts, n, typ, line), line))
+                out.extend(fit(t))
+            return out
+        values = [self.read_value_temp(scope, typ, n, line) for n, typ in enumerate(types, 1)]
+        convert = [Assign(Var(v), self.read_piece(parts, n, typ, line), line)
+                   for n, (v, typ) in enumerate(zip(values, types), 1)]
+        good = Apply("present", [Var(values[0])], line)
+        for v in values[1:]:
+            good = Binary("and", good, Apply("present", [Var(v)], line))
+        store = []
+        for t, v in zip(targets, values):
+            store += [Assign(t, Var(v), line)] + fit(t)
+        enough = Binary(">=", Apply("size", [Var(parts)], line), Num(len(targets)))
+        return [Assign(Var(text), Apply("read_line", src, line), line),
+                If([(Apply("present", [Var(text)], line),
+                     [Assign(Var(parts), Apply("fields", [Var(text), Str(",")], line), line),
+                      Assign(status, Num(1), line),
+                      If([(enough, convert + [If([(good, store + [Assign(status, Num(0), line)])], [])])], [])])],
+                   [Assign(status, Num(-1), line)])]
 
     def read_whole_line(self, it, scope, targets, status, source=None):
         """`read (*, '(A)', iostat=ios) text`: the next line of input goes into one character variable."""
@@ -1937,22 +2012,6 @@ class FParser:
                 raise Unsupported("deallocate takes whole arrays")
             out.append(Deallocate(name, it.line))
         return out
-
-    def note_auto_allocation(self, body):
-        """Fortran 2003 allocates on assignment; Boreas does not. Flag a whole-array assignment
-        to an allocatable that no earlier `allocate` (in text order) covers."""
-        allocatable, ready = set(), set()
-        for n in iter_nodes(body):
-            if isinstance(n, Decl) and n.allocatable:
-                allocatable.add(n.name)
-            elif isinstance(n, Allocate):
-                ready.add(n.name)
-            elif isinstance(n, Deallocate):
-                ready.discard(n.name)
-            elif isinstance(n, Assign) and isinstance(n.target, Var) and n.target.name in allocatable \
-                    and n.target.name not in ready:
-                self.note(n.line, f"assignment to allocatable '{n.target.name}' relied on automatic allocation "
-                                  f"in Fortran; Boreas requires an explicit allocate")
 
     def st_select(self, it, scope):
         resume = self.i
@@ -2746,8 +2805,6 @@ class FParser:
         self.mark_module_writes(unit)
         self.hoist_calls(unit)
         self.check_calls(unit)
-        for owner in self.all_functions(unit) + ([program] if program else []):
-            self.note_auto_allocation(owner.body)
         if program is not None:                          # a final plain `stop` changes nothing
             while program.body and isinstance(program.body[-1], Stop) and program.body[-1].code is None:
                 program.body.pop()
@@ -2970,9 +3027,6 @@ class FParser:
         for n in iter_nodes(owner.body):
             if isinstance(n, Assign) and root_name(n.target) in names:
                 found.append(n)
-            elif isinstance(n, Read) and any(root_name(t) in names for t in n.targets
-                                             + ([n.status] if n.status is not None else [])):
-                found.append(n)
             elif isinstance(n, (Allocate, Deallocate)) and n.name in names:
                 found.append(n)
         return found
@@ -3037,10 +3091,6 @@ class FParser:
             modes = {p[1]: p[2] for p in f.params}
             for n in iter_nodes(f.body):
                 if isinstance(n, Assign) and modes.get(root_name(n.target)) in ("out", "inout"):
-                    n.update = True
-                elif isinstance(n, Read) and any(
-                        modes.get(root_name(t)) in ("out", "inout")
-                        for t in n.targets + ([n.status] if n.status is not None else [])):
                     n.update = True
                 elif isinstance(n, Do) and n.var in modes:
                     msg = f"loop variable '{n.var}' is a dummy argument; Boreas loop variables must be locals"
@@ -3352,13 +3402,6 @@ class FParser:
                     else:
                         read_expr(s.target)
                     read_expr(s.value)
-                elif isinstance(s, Read):
-                    for t in s.targets + ([s.status] if s.status is not None else []):
-                        if ref_name(t) == name:
-                            counts[1] += 1
-                            counts[2] += top and not isinstance(t, FieldAccess)
-                        else:
-                            read_expr(t)
                 elif isinstance(s, If):
                     for cond, b in s.branches:
                         read_expr(cond)

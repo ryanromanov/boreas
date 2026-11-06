@@ -37,6 +37,11 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(run(P + '  p = fields("  1.5   2.0 3.7 ")\n  println(size(p), p)'), ["3 [1.5, 2.0, 3.7]"])
         self.assertEqual(run(P + '  p = fields("   ")\n  println(size(p))'), ["0"])
 
+    def test_fields_with_extra_separators(self):
+        self.assertEqual(run(P + '  p = fields("3, 4.5 ,,x;y", ",;")\n  println(size(p), p)'), ["4 [3, 4.5, x, y]"])
+        self.assertEqual(run(P + '  p = fields("a,b c", "")\n  println(p)'), ["[a,b, c]"])
+        fails(self, P + '  p = fields("a", 1)', "extra separators")
+
     def test_errors(self):
         fails(self, P + '  p = split("a", "")', "separator")
         fails(self, P + "  p = split(3, \",\")", "needs a string")
@@ -52,6 +57,11 @@ class ToNumberTests(unittest.TestCase):
         self.assertEqual(run('  println(to_real("2.5"), to_real("3"), to_real("1e3"), to_real("1d3"), to_real(" .5 "))'),
                          ["2.5 3.0 1000.0 1000.0 0.5"])
         self.assertEqual(run('  println(to_real("") ?? 0.0, to_real("abc") ?? 0.0, to_real("1.2.3") ?? 0.0)'), ["0.0 0.0 0.0"])
+
+    def test_to_logical(self):
+        self.assertEqual(run('  println(to_logical("T"), to_logical(".false."), to_logical(" true "), to_logical("F"))'),
+                         ["true false true false"])
+        self.assertEqual(run('  println(to_logical("yes") ?? false, to_logical("") == null)'), ["false true"])
 
     def test_the_result_is_null_when_the_text_is_not_a_number(self):
         self.assertEqual(run('  println(to_integer("x") == null, to_real("1") == null)'), ["true false"])

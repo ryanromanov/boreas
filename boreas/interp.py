@@ -618,9 +618,12 @@ def _split(s, sep):
     return Array([len(pieces)], pieces)
 
 
-def _fields(s):
-    """The pieces of `s` between runs of blanks; there is never an empty piece."""
-    pieces = _need_string("fields", s).split()
+def _fields(s, extra=""):
+    """The pieces of `s` between runs of blanks and of the characters in `extra`; never an empty piece."""
+    _need_string("fields", s)
+    if not isinstance(extra, str):
+        raise TypeError(f"needs the extra separators as a string, got {type_of(extra)}")
+    pieces = [x for x in re.split("[\\s" + re.escape(extra) + "]+", s) if x]
     return Array([len(pieces)], pieces)
 
 
@@ -634,7 +637,7 @@ def _to_number(typ):
 
 
 BUILTINS = {
-    "split": _split, "fields": _fields, "to_integer": _to_number("integer"), "to_real": _to_number("real"),
+    "split": _split, "fields": _fields, "to_integer": _to_number("integer"), "to_real": _to_number("real"), "to_logical": _to_number("logical"),
     "trim": _trim, "len_trim": lambda s: len(_trim(s)), "index": _index,
     "fixed": _fixed, "tf": _tf, "scientific": _scientific, "general": _general, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
     "len": _len, "achar": _achar, "iachar": _iachar,
@@ -777,17 +780,13 @@ class LineInput:
         return None if line is None else line.rstrip("\r\n")
 
 
-ITEM_RE = re.compile(r"""'[^']*'|"[^"]*"|[^\s,]+""")
 INT_RE = re.compile(r"[+-]?\d+")
 REAL_RE = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eEdD][+-]?\d+)?")
 TRUE_WORDS, FALSE_WORDS = {"t", ".t.", "true", ".true."}, {"f", ".f.", "false", ".false."}
-READ_NAMES = {"integer": "an integer", "int8": "an integer", "int16": "an integer", "int64": "an integer",
-              "real": "a real number", "real32": "a real number", "logical": "true or false",
-              "string": "text"}
 
 
 def read_value(typ, token):
-    """The value a list-directed `read` makes of one input item, or None if it is not a `typ`."""
+    """The value `to_integer` / `to_real` / `to_logical` make of one piece of text, or None if it is not a `typ`."""
     quoted = token[0] in "'\""
     if typ == "string":
         return token[1:-1] if quoted else token
@@ -1057,8 +1056,6 @@ class Interp:
         elif k is Close:
             f = self.file_value(s.file, env, s.line)
             f.close()
-        elif k is Read:
-            self.read_stmt(s, env)
         elif k is Stop:
             code = 0 if s.code is None else self.eval(s.code, env)
             if type_of(code) not in INT_RANGE:
@@ -1716,60 +1713,6 @@ class Interp:
             return NULL
         self.open_files.append(handle)
         return handle
-
-    def read_stmt(self, s, env):
-        """`read a, b [status ios]`: list-directed input. Items are separated by blanks or commas and may
-        continue on following lines; the rest of the last line is discarded."""
-        refs = [self.resolve(t, env, s.line) for t in s.targets]
-        status = self.resolve(s.status, env, s.line) if s.status is not None else None
-        if status is not None and status[0][TYPE] not in ("integer", "integer?"):
-            raise LangError(f"line {s.line}: the status of a read must be an integer variable")
-        escaping = [r for r in refs + ([status] if status is not None else []) if r.root[INTENT] in ("out", "inout", "module")]
-        if bool(escaping) != s.update:
-            raise LangError(f"line {s.line}: 'update' must be used exactly when reading into an "
-                            f"out or inout parameter or a module variable")
-        items = []                                    # (ref, element position or None, element type)
-        for ref in refs:
-            typ = ref[0][TYPE].rstrip("?")
-            if typ not in READ_NAMES:
-                raise LangError(f"line {s.line}: 'read' cannot read a {typ} ('{ref[2]}')")
-            current = self.read(ref)
-            if isinstance(current, Array):
-                items.extend((ref, n, typ) for n in range(len(current.data)))
-            else:
-                items.append((ref, None, typ))
-        tokens, code, done = [], 0, 0
-        arrays = {}
-        source = self.input if s.source is None else self.file_value(s.source, env, s.line, "read").lines
-        for ref, pos, typ in items:
-            while not tokens:
-                line = source.next_line()
-                if line is None:
-                    code = -1
-                    break
-                tokens = ITEM_RE.findall(line)
-            if code:
-                break
-            token = tokens.pop(0)
-            value = read_value(typ, token)
-            if value is None:
-                if status is None:
-                    raise LangError(f"line {s.line}: expected {READ_NAMES[typ]} for '{ref[2]}', "
-                                    f"got {token if token[0] in chr(34) + chr(39) else repr(token)}")
-                code = 1
-                break
-            if pos is None:
-                self.write(ref, value, s.line)
-            else:
-                arrays.setdefault(id(ref), (ref, self.read(ref).copy()))[1].data[pos] = value
-            done += 1
-        for ref, arr in arrays.values():
-            self.write(ref, arr, s.line)
-        if code == -1 and status is None:
-            raise LangError(f"line {s.line}: no more input" if s.source is None else
-                            f"line {s.line}: end of file reached in '{self.file_value(s.source, env, s.line).name}'")
-        if status is not None:
-            self.write(status, code, s.line)
 
     def call_builtin(self, name, args, line):
         try:

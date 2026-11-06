@@ -32,7 +32,7 @@ class FileTests(unittest.TestCase):
     def test_write_then_read_back(self):
         body = ('  file :: f = open("PATH", "write")\n  writeln(f, "Range:", 3.5)\n  write(f, "x")\n'
                 '  write(f, "y")\n  writeln(f, "")\n  close f\n'
-                '  file :: g = open("PATH", "read")\n  string :: a\n  real :: r\n  read from g, a, r\n  println(a, r)\n'
+                '  file :: g = open("PATH", "read")\n  allocatable string :: p(:)\n  p = fields(read_line(g) ?? \"\")\n  println(p(1), to_real(p(2)))\n'
                 '  close g')
         self.assertEqual(self.run_body(body), ["Range: 3.5"])
         with open(self.path) as f:
@@ -50,16 +50,13 @@ class FileTests(unittest.TestCase):
         with open(self.path) as f:
             self.assertEqual(f.read(), "new\n")
 
-    def test_read_status_and_end_of_file(self):
+    def test_end_of_file_is_null(self):
         self.write_file("1 2\nx\n")
-        body = ('  file :: f = open("PATH", "read")\n  integer :: a\n  integer :: b\n  integer :: ios\n'
-                '  read from f, a, b status ios\n  println(a, b, ios)\n  read from f, a status ios\n  println(ios)\n'
-                '  read from f, a status ios\n  println(ios)')
-        self.assertEqual(self.run_body(body), ["1 2 0", "1", "-1"])
-
-    def test_end_of_file_without_status_stops(self):
-        self.write_file("")
-        self.fails('  file :: f = open("PATH", "read")\n  integer :: a\n  read from f, a', "end of file reached")
+        body = ('  file :: f = open("PATH", "read")\n  allocatable string :: p(:)\n'
+                '  p = fields(read_line(f) ?? "")\n  println(to_integer(p(1)), to_integer(p(2)))\n'
+                '  p = fields(read_line(f) ?? "")\n  println(to_integer(p(1)) ?? -1)\n'
+                '  println(present(read_line(f)))')
+        self.assertEqual(self.run_body(body), ["1 2", "-1", "false"])
 
     def test_read_line_from_a_file(self):
         self.write_file("first line\nsecond\n")
@@ -69,8 +66,8 @@ class FileTests(unittest.TestCase):
 
     def test_the_terminal_is_unchanged(self):
         self.write_file("5\n")
-        body = ('  file :: f = open("PATH", "read")\n  integer :: n\n  integer :: m\n  read n\n  read from f, m\n'
-                '  println(n, m)')
+        body = ('  file :: f = open("PATH", "read")\n  integer :: n = to_integer(read_line() ?? "")\n'
+                '  integer :: m = to_integer(read_line(f) ?? "")\n  println(n, m)')
         self.assertEqual(self.run_body(body, stdin="9\n"), ["9 5"])
 
     def test_missing_file(self):
@@ -87,15 +84,15 @@ class FileTests(unittest.TestCase):
     def test_wrong_mode_is_an_error(self):
         self.write_file("1\n")
         self.fails('  file :: f = open("PATH", "read")\n  writeln(f, 1)', "opened for read")
-        self.fails('  file :: f = open("PATH", "write")\n  integer :: n\n  read from f, n', "opened for write")
-        self.fails('  file :: f = open("PATH", "append")\n  integer :: n\n  read from f, n', "opened for append")
+        self.fails('  file :: f = open("PATH", "write")\n  println(read_line(f))', "open for reading")
+        self.fails('  file :: f = open("PATH", "append")\n  println(read_line(f))', "open for reading")
 
     def test_bad_mode(self):
         self.fails('  file :: f = open("PATH", "rw")', "open mode must be")
 
     def test_closed_and_unopened(self):
         self.write_file("1\n")
-        self.fails('  file :: f = open("PATH", "read")\n  close f\n  integer :: n\n  read from f, n', "is closed")
+        self.fails('  file :: f = open("PATH", "read")\n  close f\n  println(read_line(f))', "open for reading")
         self.fails('  file :: f\n  writeln(f, 1)', "never opened")
         self.fails('  file :: f = open("PATH", "read")\n  close f\n  close f', "is closed")
 
@@ -130,12 +127,12 @@ class FileTests(unittest.TestCase):
 
     def test_round_trip(self):
         src = ('program t\n  file :: f = open("x", "write")\n  writeln(f, 1, "a")\n  write(f, 2)\n  close f\n'
-               '  file :: g = open("x", "read")\n  integer :: n\n  integer :: ios\n  read from g, n status ios\n'
-               '  read from g, n\n  close g\nend program t\n')
+               '  file :: g = open("x", "read")\n  string? :: line\n  line = read_line(g)\n'
+               '  println(line)\n  close g\nend program t\n')
         printed = to_source(parse(src))
         self.assertEqual(to_source(parse(printed)), printed)
         self.assertIn('writeln(f, 1, "a")', printed)
-        self.assertIn("read from g, n status ios", printed)
+        self.assertIn("line = read_line(g)", printed)
 
 
 if __name__ == "__main__":

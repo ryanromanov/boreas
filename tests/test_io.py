@@ -22,64 +22,36 @@ def fails(test, body, message, stdin="", extra=""):
 
 
 class ReadTests(unittest.TestCase):
+    """Input is a line from `read_line()`, cut up by `fields` and turned into numbers by `to_*`."""
+
     def test_reads_values_by_type(self):
-        body = ("  integer :: n\n  real :: x\n  logical :: b\n  string :: s\n  real32 :: y\n"
-                "  read n, x, b, s, y\n  println(n, x, b, s, y)")
+        body = ("  allocatable string :: p(:)\n  p = fields(read_line() ?? \"\")\n"
+                "  integer :: n = to_integer(p(1))\n  real :: x = to_real(p(2))\n  logical :: b = to_logical(p(3))\n"
+                "  string :: s = p(4)\n  real32 :: y = real32(to_real(p(5)))\n  println(n, x, b, s, y)")
         self.assertEqual(run(body, "7 2.5d0 T hello 0.1\n")[0], ["7 2.5 true hello 0.1"])
 
-    def test_items_continue_on_the_next_line_and_the_rest_of_a_line_is_dropped(self):
-        body = "  integer :: a\n  integer :: b\n  integer :: c\n  read a, b\n  read c\n  println(a, b, c)"
-        self.assertEqual(run(body, "1\n2 99\n3\n")[0], ["1 2 3"])
-
-    def test_commas_and_quoted_strings(self):
-        body = "  string :: s\n  integer :: n\n  read s, n\n  println(s, n)"
-        self.assertEqual(run(body, "'two words', 5\n")[0], ["two words 5"])
-
-    def test_array_elements_and_whole_arrays(self):
-        body = "  integer :: a(3)\n  integer :: i\n  read a\n  read a(2)\n  println(a)"
-        self.assertEqual(run(body, "1 2 3\n9\n")[0], ["[1, 9, 3]"])
+    def test_commas_separate_values_when_asked(self):
+        body = ("  allocatable string :: p(:)\n  p = fields(read_line() ?? \"\", \",\")\n  println(size(p), p(1), to_integer(p(2)))")
+        self.assertEqual(run(body, "two, 5\n")[0], ["2 two 5"])
 
     def test_bad_input_stops_the_program(self):
-        fails(self, "  integer :: n\n  read n", "expected an integer for 'n', got 'abc'", "abc\n")
-        fails(self, "  real :: x\n  read x", "expected a real number for 'x'", "1_0\n")
-        fails(self, "  integer :: n\n  read n", "expected an integer for 'n'", "3.5\n")
-        fails(self, "  integer8 :: n", "", "") if False else None
+        fails(self, "  integer :: n = to_integer(\"abc\")", "cannot assign null to integer")
+        fails(self, "  real :: x = to_real(\"1_0\")", "cannot assign null to real")
+        fails(self, "  integer :: n = to_integer(\"3.5\")", "cannot assign null to integer")
 
-    def test_end_of_input_stops_the_program(self):
-        fails(self, "  integer :: n\n  read n", "no more input", "")
+    def test_end_of_input_gives_null(self):
+        self.assertEqual(run("  println(present(read_line()))", "")[0], ["false"])
+        fails(self, "  allocatable string :: p(:)\n  p = fields(read_line())", "needs a string", "")
 
-    def test_status(self):
-        body = ("  integer :: n = 5\n  integer :: ios\n  read n status ios\n  println(ios, n)\n"
-                "  read n status ios\n  println(ios, n)\n  read n status ios\n  println(ios, n)")
-        self.assertEqual(run(body, "abc\n8\n")[0], ["1 5", "0 8", "-1 8"])
-
-    def test_values_before_a_bad_one_are_kept(self):
-        body = "  integer :: a = 0\n  integer :: b = 0\n  integer :: ios\n  read a, b status ios\n  println(a, b, ios)"
-        self.assertEqual(run(body, "4 x\n")[0], ["4 0 1"])
-
-    def test_int8_range_is_checked(self):
-        body = "  int8 :: n = 0\n  integer :: ios\n  read n status ios\n  println(n, ios)"
-        self.assertEqual(run(body, "300\n")[0], ["0 1"])
+    def test_the_old_read_statement_is_gone(self):
+        for src in ("integer :: n\nread n", "integer :: n\nupdate read n", "integer :: n\nread n status n"):
+            with self.assertRaises(LangError):
+                parse(f"program t\n{src}\nend program t\n")
 
     def test_read_line(self):
         body = ("  string? :: s\n  s = read_line()\n  println(s)\n  s = read_line()\n  println(s ?? 'none')\n"
                 "  s = read_line()\n  println(present(s))")
         self.assertEqual(run(body, "hello there\n\n")[0], ["hello there", "", "false"])
-
-    def test_update_is_required_for_out_parameters(self):
-        extra = "subroutine get(out integer :: n)\n  update read n\nend subroutine\n"
-        self.assertEqual(run("  integer :: k\n  call get(k)\n  println(k)", "6\n", extra)[0], ["6"])
-        with self.assertRaises(LangError) as cm:
-            parse("subroutine get(out integer :: n)\n  read n\nend subroutine\nprogram t\nend program\n")
-        self.assertIn("update read", str(cm.exception))
-        with self.assertRaises(LangError):
-            parse("program t\n  integer :: n\n  update read n\nend program\n")
-
-    def test_cannot_read_into_an_in_parameter_or_a_constant(self):
-        fails(self, "  const integer :: n = 1\n  read n", "constant", "5\n")
-
-    def test_status_must_be_an_integer(self):
-        fails(self, "  integer :: n\n  real :: r\n  read n status r", "status of a read", "5\n")
 
 
 class WriteAndStopTests(unittest.TestCase):
@@ -108,10 +80,15 @@ class WriteAndStopTests(unittest.TestCase):
             expr(Str("it's \"odd\""))
 
     def test_round_trip_of_new_statements(self):
-        src = ("subroutine get(out integer :: n)\n  update read n\nend subroutine\n\n"
-               "program t\n  integer :: a\n  integer :: ios\n  print(\"x\")\n  read a, a status ios\n"
-               "  stop 2\nend program t\n")
+        src = ("subroutine get(out integer :: n)\n  update n = 1\nend subroutine\n\n"
+               "program t\n  integer :: a\n  print(\"x\")\n  stop 2\nend program t\n")
         self.assertEqual(to_source(parse(src)), src)
+
+
+def run_converted(text, stdin=""):
+    out = []
+    code = Interp(parse(text), out.append, stdin=stdin).run()
+    return out, code
 
 
 class ConvertTests(unittest.TestCase):
@@ -120,9 +97,27 @@ class ConvertTests(unittest.TestCase):
             "program p\n  integer :: a, b, ios\n  read(*,*) a\n  read *, a, b\n  read(5,*,iostat=ios) a\n"
             "  stop 'bye'\nend program\n")
         self.assertEqual(todos(findings), [])
-        self.assertIn("read a\n", text)
-        self.assertIn("read a, b\n", text)
-        self.assertIn("read a status ios", text)
+        self.assertIn('read_parts = fields(read_line() ?? "", ",")\n  a = to_integer(read_parts(1))\n', text)
+        self.assertIn("  b = to_integer(read_parts(2))\n", text)
+        self.assertIn("ios = -1", text)
+        self.assertEqual(len([f for f in findings if f[1] == "note" and f[2].startswith("read:")]), 1)
+
+    def test_read_of_arrays_and_sections_are_todos(self):
+        for body in ("  read(*,*) v", "  read(*,*) v(1:2)", "  read(*,*,iostat=ios) a, v"):
+            with self.subTest(body=body):
+                _, findings = convert(f"program p\n  integer :: a, b, ios, v(3)\n{body}\nend program\n")
+                self.assertEqual(len(todos(findings)), 1)
+
+    def test_several_values_with_iostat_run_as_fortran_would(self):
+        src = ("program p\n  integer :: a, b, ios\n  real :: x\n  a = 0\n  b = 0\n"
+               "  read(*,*,iostat=ios) a, b\n  print *, a, b, ios\n"
+               "  read(*,*,iostat=ios) a, b\n  print *, a, b, ios\n"
+               "  read(*,*,iostat=ios) a, x\n  print *, a, x, ios\n"
+               "  read(*,*,iostat=ios) a, b\n  print *, ios\nend program\n")
+        text, findings = convert(src)
+        self.assertEqual(todos(findings), [])
+        out, _ = run_converted(text, "3, 4\n5 zz\n7 2.5\n")
+        self.assertEqual(out, ["3 4 0", "3 4 1", "7 2.5 0", "-1"])
 
     def test_formatted_read_is_a_todo(self):
         _, findings = convert("program p\n  integer :: a\n  read(*,'(I5)') a\nend program\n")
@@ -134,7 +129,7 @@ class ConvertTests(unittest.TestCase):
             "program p\n  integer :: k\n  call get(k)\n  print *, k\nend program\n")
         self.assertEqual(todos(findings), [])
         self.assertIn("subroutine get(out integer :: n)", text)
-        self.assertIn("update read n", text)
+        self.assertIn("update n = to_integer(read_parts(1))", text)
 
     def test_stop_forms(self):
         text, _ = convert("program p\n  integer :: i\n  i = 1\n  if (i == 1) stop 3\n  print *, i\nend program\n")
