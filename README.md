@@ -106,10 +106,12 @@ at the end of input), and `read_line(f)` does the same for a file. Cut it up and
 
 `split(text, sep)` cuts at every `sep` (not empty), so empty pieces stay; `split(text, " ")` cuts at each
 single blank. `fields(text)` treats a run of blanks as one gap and never gives an empty piece;
-`fields(text, chars)` also treats each character of `chars` as a gap. `to_integer(text)`, `to_real(text)` and
+`fields(text, chars)` also treats each character of `chars` as a gap. `field(text, k)` (or
+`field(text, k, chars)`) is just the k-th of those pieces, or `null` when there is none or `text` is `null`. `to_integer(text)`, `to_real(text)` and
 `to_logical(text)` (`true`, `false`, `T`, `F`, `.true.`, `.false.`) give the value the text spells (blanks around
 it are ignored) or `null`: `to_integer("3.5")` is `null`, `to_real("3")` is `3.0`. Assigning that `null` to a
 plain `integer` or `real` stops the program, so a bad value is an error unless you give a fallback with `??`.
+The `to_` functions also accept `null` and give `null`, so `to_integer(field(read_line(), 1))` is one line.
 
 `stop` ends the program; `stop 3` ends it with exit code 3.
 
@@ -572,8 +574,10 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - `read(*,*) a, b` becomes `read_parts = fields(read_line() ?? "", ",")` and one `to_integer` / `to_real` /
   `to_logical` per value (text is taken as it is). The values must be on one line, separated by blanks or commas
   (Fortran also continues on the next line and accepts quoted text and repeat counts such as `3*0`), which
-  the converter says in a note. With `iostat=ios` the status is 0, -1 at the end of input, and 1 for a bad or
-  missing value, in which case nothing is stored. Reads into arrays, sections and record fields are TODOs. `stop`,
+  the converter says in a note. With `iostat=ios` nothing is stored unless every value is good. When `ios` is only compared with -1, 0 or 1
+  (the usual retry and end-of-input checks) the variable disappears and each comparison becomes a test of the
+  values (`ios /= 0` becomes `not present(ios_integer)`, `ios < 0` becomes `not present(ios_line)`); otherwise it
+  stays, with 0 for success, -1 at the end of input and 1 for a bad or missing value. Reads into arrays, sections and record fields are TODOs. `stop`,
   `stop 3` and `error stop` become `stop`, `stop 3` and `stop 1` (a final plain `stop` is dropped; a stop
   message goes to stderr in Fortran, so it is dropped with a note). `read(*,'(A)') text` reads a whole line into
   one character variable; other formatted reads are TODOs.
