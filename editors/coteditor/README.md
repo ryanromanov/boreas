@@ -8,7 +8,9 @@ YAML syntax format with `.cotsyntax` packages, so the syntax here is a package.
 Copies the scripts into CotEditor's Scripts folder. The syntax has to be imported by hand
 (CotEditor is sandboxed, so a script cannot write into its Syntaxes folder): Settings >
 Format, the "..." menu under the syntax list, Import, then pick `Boreas.cotsyntax`. `.bor` files pick up the Boreas syntax
-(highlighting, outline of procedures, modules and records, `!` comments).
+(highlighting, outline of procedures, modules and records, `!` comments). In Graupel, pressing Return
+after a line that opens a block (`program`, `function`, `do`, `if ... then`, `case`, and so on) also indents the
+next line; CotEditor ignores those rules, since they are regular expressions.
 
 Scripts (Script menu > Boreas), all using `~/.local/bin/boreas`:
 
