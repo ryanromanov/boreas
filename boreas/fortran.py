@@ -255,6 +255,7 @@ class Scope:
         self.ret_type = None
         self.comments = []
         self.externals = set()
+        self.intrinsics = set()       # names in an INTRINSIC statement
         self.host = None              # enclosing scope, for internal procedures
         self.body = None
         self.skipped = set()          # declared in Fortran we could not translate
@@ -732,6 +733,8 @@ class FParser:
                 return NamedArg(self.rename(t.text), self.expr())
             raise Unsupported(f"keyword argument '{t.text}=' in {fname}()")
         lo = None if self.at_op(":") else self.expr()
+        if isinstance(lo, Var) and lo.name in self.cur_scope.intrinsics:
+            raise Unsupported(f"the intrinsic '{lo.name}' is passed as an argument; Boreas cannot pass procedures")
         if self.accept_op(":"):
             hi = None if self.at_op(",", ")") else self.expr()
             if self.at_op(":"):
@@ -1016,7 +1019,7 @@ class FParser:
         if name in ("namelist", "include",
                     "nullify", "rewind",
                     "backspace", "format", "entry", "pause", "dimension", "pointer",
-                    "target", "intrinsic", "import", "enum", "sync", "lock", "unlock"):
+                    "target", "import", "enum", "sync", "lock", "unlock"):
             raise Unsupported(f"'{name}' is not supported")
         if name in BLOCK_KINDS or name in ("endselect",):
             raise Unsupported(f"'{name}' is not supported")
@@ -1473,6 +1476,14 @@ class FParser:
         while self.peek() is not None:
             self.k += 1
         self.note(it.line, f"'{it.text}' ignored: Boreas finds procedures by name")
+        return []
+
+    def st_intrinsic(self, it, scope):
+        while self.peek() is not None:
+            t = self.next()
+            if t.kind == "name":
+                scope.intrinsics.add(t.text)
+        self.note(it.line, f"'{it.text}' ignored: Boreas built-ins need no declaration")
         return []
 
     def st_continue(self, it, scope):
