@@ -1643,8 +1643,7 @@ class FParser:
 
     def do_loop(self, it, scope, label):
         if self.at_name("concurrent"):
-            self.skip_block("do")
-            raise Unsupported("'do concurrent' is not supported; skipped")
+            return self.do_concurrent(it, scope, label)
         end_label = None
         if self.peek() is not None and self.peek().kind == "int":
             end_label = self.next().value
@@ -1666,6 +1665,41 @@ class FParser:
         step = self.expr() if self.accept_op(",") else None
         self.end_of_statement()
         return [Do(var, lo, hi, step, self.loop_body(scope, end_label), it.line, label)]
+
+    def do_concurrent(self, it, scope, label):
+        """`do concurrent (i = 1:n, j = 1:m, mask)` runs in any order, so it becomes nested `do` loops
+        (the first index outermost) with the mask as an `if`."""
+        self.k += 1
+        self.expect_op("(")
+        if self.peek() is not None and self.peek().text in TYPE_WORDS:
+            while not self.accept_op("::"):
+                self.k += 1
+        controls, mask = [], None
+        while True:
+            t, t2 = self.peek(), self.peek(1)
+            if t is not None and t.kind == "name" and t2 is not None and t2.kind == "op" and t2.text == "=":
+                var = self.rename(self.expect_name())
+                self.expect_op("=")
+                lo = self.expr()
+                self.expect_op(":")
+                hi = self.expr()
+                step = self.expr() if self.accept_op(":") else None
+                controls.append((var, lo, hi, step))
+            else:
+                mask = self.expr()
+            if not self.accept_op(","):
+                break
+        self.expect_op(")")
+        if self.peek() is not None:                      # local(...), shared(...), reduce(...) and so on
+            self.skip_block("do")
+            raise Unsupported(f"'do concurrent' with a '{self.peek().text}' clause is not supported; skipped")
+        self.end_of_statement()
+        body = self.block_until(scope, "do")
+        if mask is not None:
+            body = [If([(mask, body)], [])]
+        for n, (var, lo, hi, step) in enumerate(reversed(controls)):
+            body = [Do(var, lo, hi, step, body, it.line, label if n == 0 else None)]
+        return [Comment("was do concurrent: the iterations are independent")] + body
 
     def loop_body(self, scope, end_label):
         """The body of a do loop: up to `end do`, or through the statement labelled `end_label`."""
