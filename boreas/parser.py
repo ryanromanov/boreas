@@ -13,7 +13,10 @@ class Str:  value: str
 @dataclass
 class Bool: value: bool
 @dataclass
-class Var:  name: str
+class Var:
+    name: str
+    line: int = field(default=0, compare=False, repr=False)   # where the name is, for `boreas check`
+    col: int = field(default=0, compare=False, repr=False)
 @dataclass
 class Null: pass          # the absent value of an optional (`T?`) variable
 @dataclass
@@ -21,7 +24,9 @@ class ArrayLit: items: list
 @dataclass
 class Slice: lo: object; hi: object
 @dataclass
-class Apply: name: str; args: list; line: int   # index, slice, or call
+class Apply:   # index, slice, or call
+    name: str; args: list; line: int
+    col: int = field(default=0, compare=False, repr=False)
 @dataclass
 class Unary: op: str; operand: object
 @dataclass
@@ -55,6 +60,7 @@ class If: branches: list; orelse: list   # branches: [(cond, body)]
 class Do:
     var: str; lo: object; hi: object; step: object; body: list; line: int
     label: str = None          # `outer: do ...` / `end do outer`
+    var_col: int = field(default=0, compare=False, repr=False)
 @dataclass
 class DoWhile: cond: object; body: list; label: str = None; line: int = 0
 @dataclass
@@ -86,7 +92,9 @@ class Cycle: label: str = None; line: int = 0
 @dataclass
 class ExprStmt: expr: object
 @dataclass
-class Call: name: str; args: list; line: int
+class Call:
+    name: str; args: list; line: int
+    col: int = field(default=0, compare=False, repr=False)
 @dataclass
 class Allocate: name: str; dims: list; line: int; update: bool = False   # allocate a(n, m): one extent per dimension
 @dataclass
@@ -750,6 +758,7 @@ class Parser:
             return Stop(code, t.line)
         if self.at("call"):
             self.next()
+            col = self.tok.col
             name = self.ident()
             args = []
             if self.accept("("):
@@ -761,7 +770,7 @@ class Parser:
             if any(isinstance(a, NamedArg) for a in args):
                 self.error("named arguments are only for building records")
             self.newline()
-            return Call(name, args, t.line)
+            return Call(name, args, t.line, col)
         if self.at("return"):
             self.next()
             val = None if self.tok.kind == "nl" else self.expr()
@@ -884,6 +893,7 @@ class Parser:
             self.expect("do")
             self.end_label(label)
             return DoWhile(cond, body, label, line)
+        var_col = self.tok.col
         var = self.ident()
         self.expect("=")
         lo = self.expr()
@@ -896,7 +906,7 @@ class Parser:
         self.inside.pop()
         self.expect("do")
         self.end_label(label)
-        return Do(var, lo, hi, step, body, line, label)
+        return Do(var, lo, hi, step, body, line, label, var_col)
 
     def end_label(self, label):
         """After `end do`: a labeled loop must repeat its label, an unlabeled one must not have one."""
@@ -1094,9 +1104,9 @@ class Parser:
             self.error("'break' cannot be used in an expression")
         if t.kind == "ident":
             name = self.next().text
-            e = Var(name)
+            e = Var(name, t.line, t.col)
             if self.accept("("):
-                e = Apply(name, self.call_args(), t.line)
+                e = Apply(name, self.call_args(), t.line, t.col)
             while self.at("."):                    # record fields: p.x, pts(2).pos.y, p.v(3)
                 self.next()
                 field = self.ident()
