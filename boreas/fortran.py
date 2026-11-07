@@ -255,6 +255,7 @@ class Scope:
         self.ret_type = None
         self.comments = []
         self.externals = set()
+        self.import_renames = {}      # local name -> the name the module exports, from `use m, only: local => remote`
         self.intrinsics = set()       # names in an INTRINSIC statement
         self.host = None              # enclosing scope, for internal procedures
         self.body = None
@@ -381,6 +382,11 @@ class FParser:
         return Comment(f"TODO(convert): {msg}: {it.text}")
 
     def rename(self, name):
+        scope = self.cur_scope
+        while scope is not None:                         # `use m, only: local => remote`
+            if name in scope.import_renames:
+                return scope.import_renames[name]
+            scope = scope.host
         if name in RESERVED:
             new = name + "_"
             if name not in self.renames:
@@ -863,6 +869,7 @@ class FParser:
         body = self.parse_body(scope, {("end", kind), ("contains",)})
         scope.body = body
         self.check_data_cells(scope, it.line)
+        self.check_import_renames(scope, it.line)
         toks = self.tokens(self.items[self.i])
         if classify(toks) == ("contains",):
             self.i += 1
@@ -1374,6 +1381,16 @@ class FParser:
             self.k += 1
             self.accept_op("::")
         if self.at_name("iso_fortran_env", "iso_c_binding", "ieee_arithmetic"):
+            self.k += 1
+            while self.peek() is not None:               # `only: rk => real64` is another name for a kind
+                if self.at_name("only") or self.at_op(",", ":"):
+                    self.k += 1
+                    continue
+                local = self.expect_name()
+                if self.accept_op("=>"):
+                    remote = self.expect_name()
+                    if remote in self.kind_names:
+                        self.kind_names[local] = self.kind_names[remote]
             self.note(it.line, f"'{it.text}' ignored (intrinsic module)")
             return []
         name = self.rename(self.expect_name())
@@ -1381,21 +1398,25 @@ class FParser:
         if mod is None:
             raise Unsupported(f"module '{name}' is not defined earlier in this file")
         names = None
+        exports = self.visible(mod)
         if self.accept_op(","):
-            if not self.at_name("only"):
-                raise Unsupported("renaming imports is not supported")
-            self.k += 1
-            self.expect_op(":")
-            names = []
+            only = self.at_name("only")
+            if only:
+                self.k += 1
+                self.expect_op(":")
+                names = []
             while self.peek() is not None:
-                local = self.rename(self.expect_name())
-                if self.at_op("=>"):
-                    raise Unsupported("renaming imports is not supported")
-                names.append(local)
+                local_raw = self.expect_name()
+                if self.accept_op("=>"):
+                    remote_raw = self.expect_name()
+                    self.import_rename(scope, local_raw, remote_raw, names, it.line, exports)
+                elif only:
+                    names.append(self.rename(local_raw))
+                else:
+                    raise Unsupported("'use' with a rename list needs 'only:' or 'local => remote' entries")
                 if not self.accept_op(","):
                     break
         self.end_of_statement()
-        exports = self.visible(mod)
         if names is None:
             scope.skipped |= {n for n in mod.skipped if self.is_public(mod, n)}
         else:
@@ -1409,8 +1430,24 @@ class FParser:
                                        f"constants and procedures only, so uses of it were not translated")
                 else:
                     self.todo(it.line, f"module '{name}' has no public '{n}' that Boreas can import")
+        if names is not None and not names:
+            return []                                     # everything it named was a kind: nothing to import
         scope.uses.append((name, names, it.line))
         return []
+
+    def import_rename(self, scope, local, remote, names, line, exports):
+        """`local => remote`: the file's `local` is the module's `remote`, so uses of `local` are renamed to
+        `remote`. A kind constant also gets `local` as a second kind name, and need not be imported."""
+        kind = remote in self.kind_names
+        if kind:
+            self.kind_names[local] = self.kind_names[remote]
+        if kind and self.rename(remote) not in exports:
+            self.note(line, f"'{local}' is another name for the kind '{remote}', which Boreas writes out")
+            return
+        scope.import_renames[local] = self.rename(remote)
+        if names is not None:
+            names.append(self.rename(remote))
+        self.note(line, f"'{local}' is imported as '{remote}'; uses of '{local}' were renamed")
 
     def st_public(self, it, scope):
         self.access_statement(scope, "public")
@@ -2160,6 +2197,13 @@ class FParser:
                 [Num(n) for n in sizes])], self.line)
         if scope.kind not in ("program", "module", "type", "blockdata"):
             scope.saved[name] = (line, "initialised by a data statement, which implies save")
+
+    def check_import_renames(self, scope, line):
+        for local, remote in scope.import_renames.items():
+            if remote in scope.decls:
+                msg = f"'{local}' is imported as '{remote}', but '{remote}' is also declared here"
+                scope.comments.append("TODO(convert): " + msg)
+                self.todo(line, msg)
 
     def check_data_cells(self, scope, line):
         for name, cells in scope.data_cells.items():
