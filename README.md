@@ -620,6 +620,12 @@ report on stderr. Translations that change meaning are flagged, never silent:
   one-pass loop with `exit`, and jumps that cross each other become a small state machine (`select case
   fallthrough` in a loop). Computed `goto`, the arithmetic `if`, labelled `do` loops (a shared last statement
   too) and the `parameter` statement are translated; `common` and `block data` are TODOs.
+- Callbacks: an interface block describes procedures, which Boreas finds by name, so the block is dropped, but a
+  procedure it describes keeps its signature: `procedure(select_t) :: select` becomes the parameter
+  `function(real :: wr, real :: wi) -> logical :: select_`. A signature whose intents the interface leaves out
+  takes them from the procedures the program passes. An intrinsic passed as an argument (`call integrate(dsin, ...)`)
+  goes through a small generated function (`sin_fn`). Procedure variables and pointers, generic interfaces
+  (overloading) and `external` dummy arguments without an interface are TODOs.
 - Preprocessor lines (`#if`, `#ifdef`, `#ifndef`, `#elif`, `#else`, `#define`, `#include`) in any file are evaluated
   as a preprocessing build would: the converter keeps the branch the conditions pick, given the macros you pass
   with `--define NAME` or `--define NAME=VALUE` and those the file `#define`s; a name not defined counts as

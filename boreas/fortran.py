@@ -256,6 +256,8 @@ class Scope:
         self.ret_type = None
         self.comments = []
         self.externals = set()
+        self.interfaces = {}          # procedure name -> ProcType, from interface blocks
+        self.proc_dummies = {}        # dummy argument -> ProcType, for `procedure(name) :: dummy`
         self.import_renames = {}      # local name -> the name the module exports, from `use m, only: local => remote`
         self.intrinsics = set()       # names in an INTRINSIC statement
         self.host = None              # enclosing scope, for internal procedures
@@ -296,6 +298,13 @@ class TypeInfo:
     @property
     def module(self):
         return self.scope if self.scope.kind == "module" else None
+
+
+def type_names(typ):
+    """The type names a parameter type mentions (a procedure parameter mentions its signature's)."""
+    if isinstance(typ, ProcType):
+        return {t for t, _ in typ.params} | ({typ.ret} if typ.ret else set())
+    return {typ}
 
 
 def iter_nodes(obj):
@@ -357,6 +366,7 @@ class FParser:
         self.fn_lines = {}          # id(Function) -> line of its header
         self.types = {}             # derived type name -> TypeInfo, in source order
         self.cur_scope = None       # the scope of the statement being parsed
+        self.intrinsic_args = {}    # id of a Var naming an intrinsic that a call passes -> (Var, line)
         self.ended = None           # the label whose `do` loop just ended on its last statement
         self.unit_use = {}          # unit number -> {"read", "write"}: which way the program uses the file
         self.opens = []             # (unit number, the Str node holding the mode, status, action, position, line)
@@ -742,7 +752,7 @@ class FParser:
             raise Unsupported(f"keyword argument '{t.text}=' in {fname}()")
         lo = None if self.at_op(":") else self.expr()
         if isinstance(lo, Var) and lo.name in self.cur_scope.intrinsics:
-            raise Unsupported(f"the intrinsic '{lo.name}' is passed as an argument; Boreas cannot pass procedures")
+            self.intrinsic_args[id(lo)] = (lo, self.line)         # wrapped in a function once the callee is known
         if self.accept_op(":"):
             hi = None if self.at_op(",", ")") else self.expr()
             if self.at_op(":"):
@@ -1029,7 +1039,7 @@ class FParser:
         if name in ("namelist", "include",
                     "nullify", "rewind",
                     "backspace", "format", "entry", "pause", "dimension", "pointer",
-                    "target", "import", "enum", "sync", "lock", "unlock"):
+                    "target", "enum", "sync", "lock", "unlock"):
             raise Unsupported(f"'{name}' is not supported")
         if name in BLOCK_KINDS or name in ("endselect",):
             raise Unsupported(f"'{name}' is not supported")
@@ -2426,8 +2436,123 @@ class FParser:
         raise Unsupported("'associate' is not supported; skipped")
 
     def st_interface(self, it, scope):
-        self.skip_block("interface")
-        raise Unsupported("interface blocks are not supported; skipped")
+        return self.interface_block(it, scope)
+
+    def st_abstract(self, it, scope):
+        if not self.at_name("interface"):
+            raise Unsupported("unrecognised statement")
+        self.k += 1
+        return self.interface_block(it, scope)
+
+    def st_import(self, it, scope):
+        self.note(it.line, f"'{it.text}' ignored (it only matters inside an interface block)")
+        return []
+
+    def interface_block(self, it, scope):
+        """An interface block describes procedures. Boreas finds procedures by name, so the block itself is
+        dropped, but each procedure it describes keeps its signature: `procedure(name) :: dummy` turns into
+        a procedure parameter with that signature."""
+        generic = None
+        if self.peek() is not None:
+            generic = self.rename(self.expect_name()) if self.peek().kind == "name" else "operator"
+        specifics = []
+        while self.i < len(self.items):
+            item = self.items[self.i]
+            self.i += 1
+            if item.comment is not None:
+                continue
+            try:
+                toks = self.tokens(item)
+            except Unsupported:
+                continue
+            if classify(toks) == ("end", "interface"):
+                break
+            if toks and toks[0].text == "module" and len(toks) > 1 and toks[1].text == "procedure":
+                specifics += [t.text for t in toks[2:] if t.kind == "name"]
+            elif self.unit_kind(toks) in ("function", "subroutine"):
+                self.interface_procedure(toks, item, scope)
+        self.cur_scope = scope
+        if generic is not None:
+            raise Unsupported(f"the generic interface '{generic}' (overloading) is not supported; "
+                              f"call the specific procedures by name")
+        self.note(it.line, "interface block dropped: Boreas finds procedures by name", once=True)
+        return []
+
+    def interface_procedure(self, toks, item, scope):
+        kind, name, dummies, result, ret_type = self.procedure_header(toks)
+        inner = Scope(kind, name, dummies)
+        inner.result, inner.ret_type = result, ret_type
+        self.parse_body(inner, {("end", kind)})
+        self.i += 1                                       # the `end function` / `end subroutine`
+        sig = self.interface_signature(inner)
+        if sig is not None:
+            scope.interfaces[name] = sig
+
+    def interface_signature(self, s):
+        """The ProcType of a procedure an interface block describes, or None when Boreas cannot say it
+        (optional or procedure arguments, an array result, intents a function cannot have)."""
+        is_sub = s.kind == "subroutine"
+        params = []
+        for d in s.dummies:
+            info = s.decls.get(d)
+            typ = implicit_type(d) if info is None else info.type
+            if d in s.proc_dummies or (info is not None and (info.optional or info.allocatable)):
+                return None
+            intent = None if info is None else info.intent
+            if not is_sub and intent not in (None, "in"):
+                return None
+            params.append((typ, intent or ("?" if is_sub else "in")))
+        ret = None
+        if not is_sub:
+            info = s.decls.get(s.result or s.name)
+            if info is not None and info.dims:
+                return None
+            ret = info.type if info is not None else (s.ret_type or implicit_type(s.name))
+        return ProcType(is_sub, tuple(params), ret, tuple(s.dummies))
+
+    def find_interface(self, scope, name):
+        """The signature an interface block gave `name`, looking outward through the enclosing scopes
+        and the modules this one uses."""
+        s = scope
+        while s is not None:
+            if name in s.interfaces:
+                return s.interfaces[name]
+            for modname, names, _ in s.uses:
+                mod = self.modules.get(modname)
+                if mod is not None and name in mod.interfaces and (names is None or name in names):
+                    return mod.interfaces[name]
+            s = s.host
+        return None
+
+    def st_procedure(self, it, scope):
+        """`procedure(name) :: dummy`: the dummy argument is a procedure with the signature `name` has."""
+        self.expect_op("(")
+        iface = self.rename(self.expect_name())
+        self.expect_op(")")
+        attrs = set()
+        while self.accept_op(","):
+            word = self.expect_name()
+            attrs.add(word)
+            if self.at_op("("):
+                self.skip_parens()
+        self.accept_op("::")
+        names = []
+        while self.peek() is not None:
+            names.append(self.rename(self.expect_name()))
+            if self.at_op("=>"):
+                raise Unsupported("a procedure variable with an initial value is not supported")
+            if not self.accept_op(","):
+                break
+        for n in names:
+            if "pointer" in attrs or n not in scope.dummies:
+                raise Unsupported(f"'{n}' is a procedure variable; Boreas can only pass procedures as arguments")
+            if "optional" in attrs:
+                raise Unsupported(f"'{n}' is an optional procedure argument, which is not supported")
+            sig = self.find_interface(scope, iface)
+            if sig is None:
+                raise Unsupported(f"the interface '{iface}' is not described by an interface block here")
+            scope.proc_dummies[n] = sig
+        return []
 
     def block_form(self, kind):
         if self.toks[-1].text == ")":              # nothing after the condition: a block construct
@@ -3119,6 +3244,7 @@ class FParser:
             rd = RecordDef(t.name, t.fields, t.module is not None and self.is_public(t.module, t.name), t.line)
             (modules[t.module.name].records if t.module is not None else records)[t.name] = rd
         unit = Unit(functions, program, modules, records, ieee=True)    # Fortran arithmetic is IEEE
+        self.add_intrinsic_wrappers(unit)
         self.link_uses(unit, built)
         self.check_saved(unit, built)
         self.infer_intents(unit)
@@ -3175,7 +3301,7 @@ class FParser:
             if isinstance(owner, Program):
                 owner.uses = self.make_uses(scope.uses, self.references(owner.body))
             else:
-                sig = {p[0] for p in owner.params} | ({owner.ret} if owner.ret else set())
+                sig = {n for p in owner.params for n in type_names(p[0])} | ({owner.ret} if owner.ret else set())
                 owner.uses = self.make_uses(scope.uses, self.references(owner.body) | sig)
                 if scope.module is not None:
                     by_module.setdefault(scope.module.name, []).append(owner)
@@ -3185,7 +3311,7 @@ class FParser:
             for r in mod.records.values():
                 refs |= self.references([fl.init for fl in r.fields]) | {fl.type for fl in r.fields}
             for f in by_module.get(name, []):
-                refs |= self.references(f.body) | {p[0] for p in f.params} | ({f.ret} if f.ret else set())
+                refs |= self.references(f.body) | {n for p in f.params for n in type_names(p[0])} | ({f.ret} if f.ret else set())
             mod.uses = self.make_uses(ms.uses, refs)
 
     def visible_procs(self, unit, f):
@@ -3283,7 +3409,9 @@ class FParser:
         params = []
         for d in s.dummies:
             info = s.decls.get(d)
-            if info is None:
+            if d in s.proc_dummies:
+                params.append([s.proc_dummies[d], d, "in"])
+            elif info is None:
                 typ = implicit_type(d)
                 if s.implicit_none:
                     self.note(line, f"dummy argument '{d}' has no declaration")
@@ -3391,7 +3519,7 @@ class FParser:
         self.converted = self.functions_to_subroutines(funcs)
         for f in funcs:                            # Boreas optional arguments are read-only
             for p in f.params:
-                if p[0].endswith("?") and p[2] != "in":
+                if is_optional(p[0]) and p[2] != "in":
                     p[0] = p[0][:-1]
                     msg = (f"argument '{p[1]}' is optional and modified; Boreas optional arguments are "
                            f"read-only, so it became a required '{p[2]}' argument")
@@ -3409,6 +3537,7 @@ class FParser:
                                           f"every field; it is 'inout' in Boreas")
                         self.note(self.fn_lines.get(id(f), 0), f"{f.name}: intent(out) record '{p[1]}' "
                                   f"is not fully assigned; made inout")
+        self.reconcile_callbacks(unit, funcs)
         for f in funcs:                            # writes that reach the caller are marked `update`
             modes = {p[1]: p[2] for p in f.params}
             for n in iter_nodes(f.body):
@@ -3418,6 +3547,121 @@ class FParser:
                     msg = f"loop variable '{n.var}' is a dummy argument; Boreas loop variables must be locals"
                     f.comments.append("TODO(convert): " + msg)
                     self.todo(n.line, msg)
+
+    def callback_sites(self, unit, funcs):
+        """Every call that passes a bare name to a procedure parameter: (owner, callee, index, the Var)."""
+        owners = [(f, self.visible_procs(unit, f)) for f in funcs]
+        if unit.program:
+            procs = dict(unit.functions)
+            for use in unit.program.uses:
+                src = unit.modules[use.module].functions
+                procs.update({n: src[n] for n in use.names if n in src})
+            owners.append((unit.program, procs))
+        sites = []
+        for owner, procs in owners:
+            for n in iter_nodes(owner.body):
+                if isinstance(n, (Call, Apply)) and n.name in procs:
+                    callee = procs[n.name]
+                    for i, a in enumerate(n.args):
+                        if isinstance(a, Var) and i < len(callee.params) and isinstance(callee.params[i][0], ProcType):
+                            sites.append((owner, procs, callee, i, a))
+        return sites
+
+    def add_intrinsic_wrappers(self, unit):
+        """An intrinsic passed to a procedure parameter (`call integrate(sin, a, b)`) cannot be passed as
+        itself, so a small function with the parameter's signature calls it, and that is passed."""
+        if not self.intrinsic_args:
+            return
+        funcs = self.all_functions(unit)
+        owners = [(f, self.visible_procs(unit, f)) for f in funcs]
+        if unit.program:
+            procs = dict(unit.functions)
+            for use in unit.program.uses:
+                src = unit.modules[use.module].functions
+                procs.update({n: src[n] for n in use.names if n in src})
+            owners.append((unit.program, procs))
+        done, made = set(), {}
+        for owner, procs in owners:
+            mod = next((m for m in unit.modules.values() if m.functions.get(owner.name) is owner), None)
+            home = mod.functions if mod is not None else unit.functions
+            for n in iter_nodes(owner.body):
+                if not isinstance(n, (Call, Apply)):
+                    continue
+                for i, a in enumerate(n.args):
+                    if id(a) not in self.intrinsic_args or id(a) in done:
+                        continue
+                    done.add(id(a))
+                    callee = procs.get(n.name)
+                    want = callee.params[i][0] if callee is not None and i < len(callee.params) else None
+                    if not isinstance(want, ProcType) or want.is_sub:
+                        self.todo(self.intrinsic_args[id(a)][1],
+                                  f"the intrinsic '{a.name}' is passed to '{n.name}', whose parameter is not a "
+                                  f"function with a known signature, so it cannot be wrapped")
+                        continue
+                    generic = SPECIFIC_NAMES.get(a.name, a.name)
+                    key = (id(home), generic, want)
+                    if key not in made:
+                        wrapper = generic + "_fn"
+                        while wrapper in home or wrapper in unit.functions:
+                            wrapper += "_"
+                        names = [(nm or f"x{k + 1}") for k, nm in enumerate(want.names or (None,) * len(want.params))]
+                        made[key] = home[wrapper] = Function(
+                            wrapper, [[t, nm, "in"] for (t, _), nm in zip(want.params, names)], want.ret,
+                            [Return(Apply(generic, [Var(nm) for nm in names], 0))], False,
+                            [f"note: calls the intrinsic '{generic}' so that it can be passed as a procedure"])
+                        self.note(self.intrinsic_args[id(a)][1], f"the intrinsic '{a.name}' is passed through the "
+                                  f"function '{wrapper}', which calls it")
+                    a.name = made[key].name
+        for id_, (node, line) in self.intrinsic_args.items():
+            if id_ not in done:
+                self.todo(line, f"the intrinsic '{node.name}' is passed as an argument, which is not translated")
+
+    def reconcile_callbacks(self, unit, funcs):
+        """An interface block often leaves argument intents out, but Boreas matches a passed procedure's
+        signature exactly. Each unspecified intent (`?`) takes the intent of the procedures actually passed;
+        what nothing decides becomes `in`. A mismatch that remains is a TODO."""
+        sites = self.callback_sites(unit, funcs)
+        for _ in range(3):                         # a callback passed on to another one settles in a few rounds
+            for owner, procs, callee, i, arg in sites:
+                want = callee.params[i][0]
+                passed = procs.get(arg.name)
+                if passed is not None:
+                    got = signature_of(passed)
+                else:
+                    dummy = next((p[0] for p in getattr(owner, "params", []) if p[1] == arg.name
+                                  and isinstance(p[0], ProcType)), None)
+                    if dummy is None:
+                        continue
+                    got = dummy
+                if got.is_sub != want.is_sub or len(got.params) != len(want.params):
+                    continue
+                new_want = self.adopt_intents(want, got)
+                if new_want != want:
+                    callee.params[i][0] = new_want
+                if passed is None:
+                    new_got = self.adopt_intents(got, new_want)
+                    for p in owner.params:
+                        if p[1] == arg.name:
+                            p[0] = new_got
+        for f in funcs:
+            for p in f.params:
+                if isinstance(p[0], ProcType) and any(i == "?" for _, i in p[0].params):
+                    p[0] = ProcType(p[0].is_sub, tuple((t, "in" if i == "?" else i) for t, i in p[0].params),
+                                    p[0].ret, p[0].names)
+        for owner, procs, callee, i, arg in sites:
+            passed = procs.get(arg.name)
+            if passed is not None and signature_of(passed) != callee.params[i][0]:
+                self.todo(self.fn_lines.get(id(owner), 0),
+                          f"'{arg.name}' passed to '{callee.name}' is {signature_of(passed)}, but '{callee.params[i][1]}' "
+                          f"is {callee.params[i][0]}")
+
+    @staticmethod
+    def adopt_intents(sig, other):
+        """`sig` with each unspecified intent (`?`) replaced by the one `other` has there."""
+        if not any(i == "?" for _, i in sig.params):
+            return sig
+        params = tuple((t, o[1] if i == "?" and o[1] != "?" else i) for (t, i), o in zip(sig.params, other.params))
+        return ProcType(sig.is_sub, params, sig.ret, sig.names)
 
     def localize_loop_counters(self, f):
         """`do 10 info = 1, n` where `info` is a dummy argument: the loop counts with a new local, and
@@ -3563,7 +3807,7 @@ class FParser:
         types = {d.name: d.type for d in owner.body if isinstance(d, Decl)}
         arrays = {d.name for d in owner.body if isinstance(d, Decl) and d.dims is not None}
         params = getattr(owner, "params", [])
-        types.update({p[1]: p[0].rstrip("?") for p in params})
+        types.update({p[1]: p[0].rstrip("?") for p in params if isinstance(p[0], str)})
         used = {n.name for n in iter_nodes(owner.body) if isinstance(n, (Var, Apply, Decl))}
         used |= {p[1] for p in params}
         temps = []
@@ -3891,7 +4135,7 @@ class FParser:
             for n in iter_nodes(node.body):
                 if isinstance(n, Apply) and n.name not in declared and n.name not in known:
                     what = "function"
-                elif isinstance(n, Call) and n.name not in procs:
+                elif isinstance(n, Call) and n.name not in procs and n.name not in declared:
                     what = "subroutine"
                 else:
                     continue
