@@ -625,7 +625,10 @@ report on stderr. Translations that change meaning are flagged, never silent:
   `function(real :: wr, real :: wi) -> logical :: select_`. A signature whose intents the interface leaves out
   takes them from the procedures the program passes. An intrinsic passed as an argument (`call integrate(dsin, ...)`)
   goes through a small generated function (`sin_fn`). Procedure variables and pointers, generic interfaces
-  (overloading) and `external` dummy arguments without an interface are TODOs.
+  (overloading) are TODOs. An `external` dummy argument (no interface) takes its signature from the procedures
+  callers pass to it (`subroutine integrate(f, ...)` called with `square` gets `function(real :: x) -> real :: f`);
+  it is a TODO when no call passes a known procedure, when callers disagree, or when the body uses it as a
+  function but a subroutine is passed.
 - Preprocessor lines (`#if`, `#ifdef`, `#ifndef`, `#elif`, `#else`, `#define`, `#include`) in any file are evaluated
   as a preprocessing build would: the converter keeps the branch the conditions pick, given the macros you pass
   with `--define NAME` or `--define NAME=VALUE` and those the file `#define`s; a name not defined counts as
