@@ -1,6 +1,6 @@
 """Convert every Fortran file under the given paths and rank the TODO reasons by frequency.
 
-    python3 tools/survey.py PATH [PATH ...] [--examples] [--together]
+    python3 tools/survey.py PATH [PATH ...] [--examples] [--together] [--define NAME[=VALUE]]...
 
 --together converts all the paths given as one program (its files ordered so that a module comes
 before the files that `use` it), so calls between its files resolve; use it for a library's sources (add the libraries it calls).
@@ -59,7 +59,7 @@ def in_dependency_order(items):
     return [(p, texts[p]) for p in ordered]
 
 
-def together(roots):
+def together(roots, defines=None):
     """Convert the Fortran files under `roots` as one program. Returns [(path, [(line, kind, message)])]
     with each file's own findings, or raises when the whole thing could not be converted."""
     items = []
@@ -67,7 +67,7 @@ def together(roots):
         with open(path, errors="replace") as f:
             items.append((path, f.read()))
     items = in_dependency_order(items)
-    _, findings, where = convert_files([(os.path.basename(p), t) for p, t in items])
+    _, findings, where = convert_files([(os.path.basename(p), t, os.path.dirname(p)) for p, t in items], defines)
     per_file = {p: [] for p, _ in items}
     for line, kind, msg in findings:
         n, local = where(line)
@@ -82,6 +82,15 @@ def reason(message):
 
 def main(argv):
     show = "--examples" in argv
+    defines, rest = {}, []
+    it = iter(argv)
+    for a in it:
+        if a == "--define":
+            name, _, value = next(it, "").partition("=")
+            defines[name] = value or "1"
+        else:
+            rest.append(a)
+    argv = rest
     paths = [a for a in argv if not a.startswith("--")]
     if not paths:
         sys.exit(__doc__)
@@ -89,7 +98,7 @@ def main(argv):
     files = clean = 0
     if "--together" in argv:
         try:
-            results = together(paths)
+            results = together(paths, defines)
         except Exception as e:               # one file the converter cannot read sinks the program
             key = reason(f"[fail] {type(e).__name__}: {e}")
             counts[key] += 1
@@ -107,7 +116,7 @@ def main(argv):
         files += 1
         try:
             with open(path, errors="replace") as f:
-                text, findings = convert(f.read(), os.path.basename(path))
+                text, findings = convert(f.read(), os.path.basename(path), defines, os.path.dirname(path))
             try:
                 parse(text)                  # the output must itself be valid Boreas
             except LangError as e:

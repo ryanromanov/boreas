@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass, fields, is_dataclass, replace
 
 from .fixedform import fixed_to_free, is_fixed_form
+from .preprocess import preprocess
 from .gotos import Goto, LabelMark, Structurer, child_lists
 from .lexer import LangError
 from .parser import *
@@ -3908,22 +3909,28 @@ def parse_fortran(src):
     return unit, p.top_comments, p.findings
 
 
-def convert(src, filename="input"):
+def convert(src, filename="input", defines=None, base_dir=None):
     """Fortran source -> (Boreas source, findings). Each finding is (line, kind, message).
-    A fixed-form file (by its extension: .f, .for, ...) is read as such."""
+    A fixed-form file (by its extension: .f, .for, ...) is read as such. Preprocessor lines are
+    evaluated first, with the macros in `defines` ({name: text}); `base_dir` is where `#include` looks."""
+    src, pre = preprocess(src, defines, base_dir)
     if is_fixed_form(filename):
         src = fixed_to_free(src)
-    return convert_free(src, filename)
+    return convert_free(src, filename, pre)
 
 
-def convert_files(sources):
+def convert_files(sources, defines=None):
     """Several source files that make up one program -> (Boreas source, findings, where). `sources` is a
-    list of (filename, text). The files are joined in order, so a finding's line number counts through
-    all of them; `where(line)` turns it back into (index of the file, line in that file)."""
-    parts, starts = [], []
-    for name, text in sources:
+    list of (filename, text), or (filename, text, directory for #include). The files are joined in order,
+    so a finding's line number counts through all of them; `where(line)` turns it back into (index of the
+    file, line in that file)."""
+    parts, starts, pre = [], [], []
+    for source in sources:
+        name, text = source[0], source[1]
+        text, found = preprocess(text, defines, source[2] if len(source) > 2 else None)
         free = fixed_to_free(text) if is_fixed_form(name) else text
         starts.append(sum(p.count("\n") for p in parts))
+        pre.extend((line + starts[-1], kind, msg) for line, kind, msg in found)
         parts.append(free if free.endswith("\n") else free + "\n")
 
     def where(line):
@@ -3932,12 +3939,15 @@ def convert_files(sources):
                 return n, line - starts[n]
         return 0, line
 
-    text, findings = convert_free("".join(parts), ", ".join(n for n, _ in sources))
+    text, findings = convert_free("".join(parts), ", ".join(s[0] for s in sources), pre)
     return text, findings, where
 
 
-def convert_free(src, label):
+def convert_free(src, label, before=()):
+    """`before` holds findings made ahead of the parse (the preprocessor's)."""
     unit, trailing, findings = parse_fortran(src)
+    findings = list(before) + findings
+    trailing = [f"TODO(convert): {msg}" for _, kind, msg in before if kind == "todo"] + list(trailing)
     todos = sum(1 for f in findings if f[1] == "todo")
     header = [f"Converted from {label} by `boreas convert`."]
     if todos:
