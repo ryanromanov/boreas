@@ -132,6 +132,8 @@ def main():
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help"):
         sys.exit(USAGE)
+    if not sys.stdout.isatty():                  # a pipe: show each line at once, as a terminal does
+        sys.stdout.reconfigure(line_buffering=True)
     try:
         if args[0] == "check":
             check_command(args[1:])
@@ -146,6 +148,8 @@ def main():
             sys.exit(USAGE)
     except LangError as e:
         sys.exit(f"error: {e}")
+    except KeyboardInterrupt:                    # Control-C or an editor's Stop button: leave quietly
+        sys.exit(130)                            # the shell's code for SIGINT
 
 
 if __name__ == "__main__":
