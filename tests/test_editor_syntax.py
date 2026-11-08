@@ -1,13 +1,13 @@
-"""The CotEditor/Graupel syntax highlights every keyword, type and built-in the language knows,
+"""The Graupel syntax highlights every keyword, type and built-in the language knows,
 so that adding one to the language without adding it to the editor syntax fails here."""
 import json, os, re, sys, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from boreas.interp import BUILTINS, ELEMENTAL
 from boreas.parser import KEYWORDS, TYPES
 
-HIGHLIGHTS = os.path.join(os.path.dirname(__file__), "..", "editors", "coteditor", "Boreas.cotsyntax",
+HIGHLIGHTS = os.path.join(os.path.dirname(__file__), "..", "editors", "graupel", "Boreas.cotsyntax",
                           "Regex", "Highlights.json")
-EDIT = os.path.join(os.path.dirname(__file__), "..", "editors", "coteditor", "Boreas.cotsyntax", "Edit.json")
+EDIT = os.path.join(os.path.dirname(__file__), "..", "editors", "graupel", "Boreas.cotsyntax", "Edit.json")
 
 
 def highlighted(*categories):

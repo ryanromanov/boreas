@@ -8,23 +8,23 @@ PARSE_ERROR, METHOD_NOT_FOUND, INVALID_REQUEST = -32700, -32601, -32600
 
 
 def diagnostics(src):
-    """The LSP diagnostics for a document: [] when it is clean, else one error. The range
-    runs from the error's column to the end of its line, or covers the line if the
-    error has no column."""
-    from .cli import check_source
-    err = check_source(src)
-    if err is None:
-        return []
-    line, col, msg = err
+    """The LSP diagnostics for a document, [] when it is clean. A range covers the name when
+    the error is about one; otherwise it runs from the error's column to the end of its line, or
+    covers the line if the error has no column."""
+    from .cli import check_errors
     lines = src.split("\n")
-    row = min(max((line or 1) - 1, 0), len(lines) - 1)
-    text = lines[row].rstrip("\r")
-    start = (col or 1) - 1
-    if start >= len(text):                # at the line's end: underline its last character
-        start = max(len(text) - 1, 0)
-    return [{"range": {"start": {"line": row, "character": start},
-                       "end": {"line": row, "character": len(text)}},
-             "severity": 1, "source": "boreas", "message": msg}]
+    found = []
+    for line, col, msg, length in check_errors(src):
+        row = min(max((line or 1) - 1, 0), len(lines) - 1)
+        text = lines[row].rstrip("\r")
+        start = (col or 1) - 1
+        if start >= len(text):            # at the line's end: underline its last character
+            start = max(len(text) - 1, 0)
+        end = start + length if length else len(text)
+        found.append({"range": {"start": {"line": row, "character": start},
+                                "end": {"line": row, "character": end}},
+                      "severity": 1, "source": "boreas", "message": msg})
+    return found
 
 
 class Server:

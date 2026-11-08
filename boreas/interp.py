@@ -952,7 +952,12 @@ class Interp:
         saved, self.scope = self.scope, scope          # initializers may call the module's functions
         env = dict(scope.consts)
         for d in mod.decls:
-            self.declare(d, env)
+            try:
+                self.declare(d, env)
+            except LangError as e:
+                if str(e).startswith("line "):
+                    raise
+                raise LangError(f"line {d.line}: {e}") from None
             if not d.const:
                 env[d.name][INTENT] = "module"            # shared and changeable, but only with `update`
             scope.consts[d.name] = env[d.name]
