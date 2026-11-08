@@ -22,6 +22,46 @@ def code_part(line):
     return STRING_RE.sub('""', line).split("!", 1)[0]
 
 
+def parameters(rest):
+    """The parameters of a procedure header, from the text after its name, as [(name, kind, type)].
+    Commas and `::` count only outside parentheses, so a procedure parameter such as
+    `function(real :: x) -> real :: f` is one parameter, `f`, and `x` is not one."""
+    found, depth, start, inside = [], 0, None, ""
+    for i, ch in enumerate(rest):
+        if ch == "(":
+            depth += 1
+            if depth == 1:
+                start = i + 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                inside = rest[start:i]
+                break
+    parts, depth, piece = [], 0, ""
+    for ch in inside:
+        depth += (ch == "(") - (ch == ")")
+        if ch == "," and depth == 0:
+            parts.append(piece)
+            piece = ""
+        else:
+            piece += ch
+    parts.append(piece)
+    for part in parts:
+        depth, split = 0, None
+        for i in range(len(part) - 1):
+            depth += (part[i] == "(") - (part[i] == ")")
+            if depth == 0 and part[i:i + 2] == "::":
+                split = i
+        if split is None:
+            continue
+        t = re.sub(r"^\s*(?:in|out|inout)\s+", "", part[:split], flags=re.I).strip()
+        name = re.match(r"\s*([A-Za-z_]\w*)", part[split + 2:])
+        if name and t:
+            kind = FUNCTION if re.match(r"(function|subroutine)\s*\(", t, re.I) else VARIABLE
+            found.append((name.group(1), kind, t))
+    return found
+
+
 def declarations(lines):
     """The names the lines declare, as [(name, kind, detail, scope)], and the fields of each
     record, as {record name: [(field, type)]}. `scope` is the index of the line that starts the
@@ -41,8 +81,8 @@ def declarations(lines):
         if m := PROCEDURE_RE.match(line):
             found.append((m.group(2), FUNCTION, line, None))
             scope = i
-            for t, name in DECL_RE.findall(m.group(3) or ""):
-                found.append((name, VARIABLE, t, scope))
+            for name, kind, t in parameters(m.group(3) or ""):
+                found.append((name, kind, t, scope))
             continue
         if PROGRAM_RE.match(line):
             scope = i
