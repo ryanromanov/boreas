@@ -5,6 +5,7 @@ import sys
 from .lexer import LangError
 from .parser import parse
 from .interp import Interp
+from .names import undeclared_names
 
 USAGE = """usage:
   boreas FILE.bor                    run a program
@@ -21,15 +22,16 @@ def run_source(src, out=print, args=(), stdin=None):
     return Interp(parse(src), out, args, stdin).run()
 
 
-def check_source(src):
-    """Parse and link without running. Returns None if clean, else (line, col, message);
-    line and col are None when the error does not carry them."""
+def check_errors(src):
+    """Parse, link and look for undeclared names without running. Returns a list of
+    (line, col, message, length). A parse or link error stops the check, so it comes alone, and
+    its line and col are None when it does not carry them; its length is always None."""
     try:
-        Interp(parse(src), lambda *a: None)
+        unit = parse(src)
+        return undeclared_names(unit, Interp(unit, lambda *a: None))
     except LangError as e:
         m = re.match(r"line (\d+): (.*)", str(e), re.S)
-        return (int(m.group(1)) if m else None, e.col, m.group(2) if m else str(e))
-    return None
+        return [(int(m.group(1)) if m else None, e.col, m.group(2) if m else str(e), None)]
 
 
 def check_command(args):
@@ -43,14 +45,14 @@ def check_command(args):
             src = f.read()
     except OSError as e:
         sys.exit(f"error: {e}")
-    err = check_source(src)
+    errors = check_errors(src)
     if as_json:
-        print(json.dumps({"file": path, "errors": [] if err is None else
-                          [{"line": err[0], "col": err[1], "message": err[2]}]}))
-    elif err:
-        line, col, msg = err
-        print(f"{path}:{line or 1}:{col or 1}: {msg}")
-    sys.exit(0 if err is None else 1)
+        print(json.dumps({"file": path, "errors": [{"line": line, "col": col, "message": msg}
+                                                    for line, col, msg, _ in errors]}))
+    else:
+        for line, col, msg, _ in errors:
+            print(f"{path}:{line or 1}:{col or 1}: {msg}")
+    sys.exit(1 if errors else 0)
 
 
 def convert_command(args):

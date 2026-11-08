@@ -1,7 +1,7 @@
 """`boreas check FILE [--json]`: parse and link without running."""
 import json, os, subprocess, sys, tempfile, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from boreas.cli import check_source
+from boreas.cli import check_errors
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 GOOD = 'program t\n  println("hi")\nend program\n'
@@ -64,9 +64,9 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(p.returncode, 1)
         self.assertIn("usage", p.stderr)
 
-    def test_check_source(self):
-        self.assertIsNone(check_source(GOOD))
-        line, col, msg = check_source("program t\n  println(1 +)\nend program\n")
+    def test_check_errors(self):
+        self.assertEqual(check_errors(GOOD), [])
+        ((line, col, _, _),) = check_errors("program t\n  println(1 +)\nend program\n")
         self.assertEqual((line, col), (2, 14))
 
 
