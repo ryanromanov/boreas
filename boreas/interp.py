@@ -1467,6 +1467,8 @@ class Interp:
         if k is Var:
             slot = self.lookup(e.name, env)
             v = slot[VALUE]
+            if isinstance(slot[TYPE], ProcType):
+                raise LangError(f"'{e.name}' is a procedure parameter; call it, or pass it on as an argument")
             if v is None and slot[IS_ARRAY]:
                 raise self.not_allocated(e.name)
             if v is None:
@@ -1687,6 +1689,11 @@ class Interp:
             if len(e.args) != 1 or not isinstance(e.args[0], Var):
                 raise LangError(f"line {e.line}: allocated() needs the name of an allocatable array")
             return self.allocatable(e.args[0].name, env, e.line)[VALUE] is not None
+        if e.name in env and isinstance(env[e.name][TYPE], ProcType):    # a call through a procedure parameter
+            fn = env[e.name][VALUE]
+            if fn.is_sub:
+                raise LangError(f"line {e.line}: '{e.name}' is a subroutine; use 'call {e.name}(...)'")
+            return self.call_function(fn, self.eval_args(fn, e.args, env, e.line), e.line)
         if e.name in env:  # indexing or slicing
             if not env[e.name][IS_ARRAY] and env[e.name][TYPE] == "string":
                 return self.read(self.resolve(e, env, e.line))
@@ -1698,8 +1705,8 @@ class Interp:
             return self.construct(rdef, e, env)
         if any(isinstance(a, NamedArg) for a in e.args):
             raise LangError(f"line {e.line}: named arguments are only for building records")
-        args = [self.eval(a, env) for a in e.args]
         f = self.scope.funcs.get(e.name)
+        args = self.eval_args(f, e.args, env, e.line)
         if f is not None:
             if f.is_sub:
                 raise LangError(f"line {e.line}: '{e.name}' is a subroutine; use 'call {e.name}(...)'")
@@ -1808,7 +1815,7 @@ class Interp:
             if isinstance(v, Record) and v.rdef.name == typ and v.rdef is not self.scopes[id(f)].records.get(typ):
                 raise LangError(f"line {line}: argument '{name}' is a {typ}, but not the {typ} that "
                                 f"{f.name} was written for (two records share that name)")
-            if v is not None and not is_arr:
+            if v is not None and not is_arr and not isinstance(typ, ProcType):
                 v = coerce(typ, v, f"line {line}: argument '{name}'")
             env[name] = [typ, v, is_arr, intent]
         return env
@@ -1827,7 +1834,7 @@ class Interp:
         """Check the argument count and fill in null for optional parameters left off the end."""
         most = len(f.params)
         least = most
-        while least and f.params[least - 1][0].endswith("?"):
+        while least and is_optional(f.params[least - 1][0]):
             least -= 1
         if not least <= len(args) <= most:
             count = str(most) if least == most else f"{least} to {most}"
@@ -1855,8 +1862,42 @@ class Interp:
             return Ref(slot, self.subscripts(slot[VALUE], a.args, env, line, a.name), a.name)
         return None
 
+    def eval_args(self, f, args, env, line):
+        """The values of a call's arguments; where `f` takes a procedure, the argument names one."""
+        out = []
+        for n, a in enumerate(args):
+            typ = f.params[n][0] if f is not None and n < len(f.params) else None
+            out.append(self.procedure_argument(f, n, a, env, line) if isinstance(typ, ProcType) else self.eval(a, env))
+        return out
+
+    def procedure_argument(self, f, n, a, env, line):
+        """The procedure a call passes for parameter `n` of `f`: a bare name (a variable of that name wins, so
+        it must itself be a procedure parameter), checked against the parameter's signature."""
+        want, pname = f.params[n][0], f.params[n][1]
+        where = f"line {line}: argument '{pname}' of {f.name}"
+        if not isinstance(a, Var):
+            raise LangError(f"{where} must be the name of a procedure")
+        if a.name in env:
+            slot = env[a.name]
+            if not isinstance(slot[TYPE], ProcType):
+                raise LangError(f"{where} must be a procedure, but '{a.name}' is a variable")
+            got, fn = slot[TYPE], slot[VALUE]
+        else:
+            fn = self.scope.funcs.get(a.name)
+            if fn is None:
+                if a.name in BUILTINS or a.name in ELEMENTAL:
+                    raise LangError(f"{where}: '{a.name}' is a built-in; write a small function that calls it "
+                                    f"and pass that")
+                raise LangError(f"{where}: '{a.name}' is not a procedure")
+            got = signature_of(fn)
+        if got != want:
+            raise LangError(f"{where} is {want}, but '{a.name}' is {got}")
+        return fn
+
     def call_subroutine(self, s, env):
         f = self.scope.funcs.get(s.name)
+        if s.name in env and isinstance(env[s.name][TYPE], ProcType):    # a call through a procedure parameter
+            f = env[s.name][VALUE]
         if f is None:
             raise LangError(f"line {s.line}: unknown subroutine '{s.name}'")
         if not f.is_sub:
@@ -1866,7 +1907,8 @@ class Interp:
         outs, values = [], []   # outs: (param index, reference)
         for n, ((typ, name, intent), a) in enumerate(zip(f.params, s.args)):
             if intent == "in":
-                values.append(self.eval(a, env))
+                values.append(self.procedure_argument(f, n, a, env, s.line) if isinstance(typ, ProcType)
+                              else self.eval(a, env))
                 continue
             ref = self.resolve(a, env, s.line)
             slot = ref[0]

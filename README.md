@@ -450,6 +450,35 @@ Parameters default to `in` and cannot be assigned. Functions only take
 `in` parameters. An output variable may not be passed twice in one call, and an
 `out` parameter must be assigned before the subroutine returns.
 
+## Procedure parameters (callbacks)
+
+A parameter can be a procedure. Its signature is written inline, like a header without the name; the
+parameter names are optional documentation:
+
+    function integrate(function(real :: x) -> real :: f, real :: a, real :: b) -> real
+      ...
+      total = total + f(a + i * h) * h        ! call it like any function
+    end function
+
+    subroutine run_all(subroutine(string, inout integer) :: report, inout integer :: n)
+      call report("done", n)
+    end subroutine
+
+    function square(real :: x) -> real
+      return x * x
+    end function
+
+    println(integrate(square, 0.0, 1.0))      ! pass the bare name of a procedure
+
+- The match is exact: the same number of parameters, the same types and modes, the same result type, and a
+  function for `function(...)`, a subroutine for `subroutine(...)`. The error names what differs.
+- Only `in` parameters can be procedures. Inside a signature only a subroutine may have `out` / `inout`
+  parameters, and no parameter may be optional (`?`) or another procedure.
+- A bare name that is also a variable means the variable, so it must itself be a procedure parameter (which
+  lets you pass a callback on to another procedure).
+- A built-in such as `sin` cannot be passed directly: write a small function that calls it and pass that.
+- A procedure cannot be stored in a variable yet, only passed as an argument.
+
 ## Modules
 
 A module groups constants and procedures. Everything in it is private unless
