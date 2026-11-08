@@ -529,7 +529,9 @@ A module variable can be `allocatable`; see Allocatable arrays above.
 
     boreas check FILE.bor [--json]
 
-Parses and checks a file without running it. Errors print as `file:line:col: message`
+Parses and checks a file without running it. Besides syntax errors it reports every name
+that is used but never declared, and every unknown function or subroutine. A syntax error
+stops the check, so it is reported alone. Errors print as `file:line:col: message`
 (column 1 when the error has no column) and the exit status is 1; a clean file prints
 nothing and exits 0. `--json` prints `{"file": ..., "errors": [{"line", "col", "message"}]}`.
 
@@ -537,10 +539,12 @@ nothing and exits 0. `--json` prints `{"file": ..., "errors": [{"line", "col", "
 
     boreas lsp
 
-Speaks the Language Server Protocol on stdin/stdout. For now it reports the errors
-`boreas check` finds as diagnostics (squiggles) when a document is opened or changed,
-one error at a time because the parser stops at the first. Point any editor with LSP
-support at that command for `.bor` files.
+Speaks the Language Server Protocol on stdin/stdout. It reports the errors `boreas check`
+finds as diagnostics when a document is opened or changed, and suggests completions:
+keywords, types, built-ins, the names declared in the file, and record fields after `.`.
+Point any editor with LSP support at that command for `.bor` files.
+[Graupel](https://github.com/ryanromanov/graupel), a Mac editor, finds it by itself;
+`editors/graupel` has its Run, Check and Convert scripts.
 
 ## Converting Fortran
 
