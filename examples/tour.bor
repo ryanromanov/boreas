@@ -1,0 +1,90 @@
+! A short tour of Boreas: output, reading text, optional values, callbacks and records.
+! Run it with:  boreas examples/tour.bor
+
+record reading
+  string :: label
+  real :: value
+end record
+
+! ---- Callbacks -------------------------------------------------------------
+! A parameter can be a procedure. Its signature is written inline (the names are
+! optional documentation) and the caller passes a bare procedure name.
+
+function integrate(function(real :: x) -> real :: f, real :: a, real :: b) -> real
+  integer :: steps = 1000
+  real :: h = (b - a) / steps
+  real :: total = 0.0
+  integer :: i
+  do i = 0, steps - 1
+    total = total + f(a + (i + 0.5) * h) * h
+  end do
+  return total
+end function
+
+function square(real :: x) -> real
+  return x * x
+end function
+
+function half(real :: x) -> real
+  return x / 2.0
+end function
+
+subroutine each(subroutine(string, real) :: show, string :: names, real :: values)
+  integer :: i
+  do i = 1, size(values)
+    call show(names(i), values(i))
+  end do
+end subroutine
+
+subroutine report(string :: name, real :: value)
+  println("-", name, "=", value)
+end subroutine
+
+! ---- Text in, numbers out --------------------------------------------------
+! to_real gives null for text that is not a number; `??` supplies a default.
+function parse_reading(string :: text) -> reading
+  string :: label = field(text, 1, ":") ?? "?"
+  real? :: value = to_real(field(text, 2, ":"))
+  return reading(label, value ?? 0.0)
+end function
+
+program tour
+  ! `print` stays on the line, `println` ends it. `write(file, ...)` goes to a file.
+  print("Boreas ")
+  println("tour")
+
+  println("integral of x^2 on [0, 1]:", fixed(integrate(square, 0.0, 1.0), 4))
+  println("integral of x/2 on [0, 4]:", fixed(integrate(half, 0.0, 4.0), 4))
+
+  ! Split a line into pieces; null marks a piece that is not a number.
+  string :: line = "  12  7  oops  30 "
+  integer :: total = 0
+  integer :: bad = 0
+  integer :: k
+  integer? :: n
+  do k = 1, size(fields(line))
+    n = to_integer(field(line, k))
+    if present(n) then
+      total = total + n
+    else
+      bad = bad + 1
+    end if
+  end do
+  println("sum of the numbers:", total)
+  println("pieces that were not numbers:", bad)
+
+  ! A whole-array assignment allocates the array.
+  allocatable real :: temps(:)
+  temps = [18.5, 21.0, 19.25]
+  println("temperatures:", temps)
+  println("mean:", fixed(sum(temps) / size(temps), 2))
+
+  ! A record is a value, read and written with a dot.
+  reading :: r = parse_reading("kitchen: 21.5")
+  println(r.label, "is", r.value)
+
+  string :: names(2) = ["morning", "evening"]
+  real :: values(2) = [r.value, 19.0]
+  println("each reading:")
+  call each(report, names, values)
+end program
