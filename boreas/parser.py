@@ -102,11 +102,38 @@ class Deallocate: name: str; line: int; update: bool = False
 @dataclass
 class Comment: text: str          # only produced by `boreas convert`; the interpreter skips it
 
+@dataclass(frozen=True)
+class ProcType:
+    """The type of a procedure parameter: `function(real :: x) -> real` or `subroutine(inout integer)`.
+    Passing a procedure needs an exact match on kind, parameter types and intents, and return type;
+    the names are documentation only, so they do not take part in comparing."""
+    is_sub: bool
+    params: tuple                                   # ((type, intent), ...)
+    ret: str | None
+    names: tuple = field(default=(), compare=False)    # one name or None per parameter
+
+    def __str__(self):
+        names = self.names or (None,) * len(self.params)
+        parts = [("" if intent == "in" else intent + " ") + typ + (f" :: {n}" if n else "")
+                 for (typ, intent), n in zip(self.params, names)]
+        head = ("subroutine" if self.is_sub else "function") + "(" + ", ".join(parts) + ")"
+        return head + (f" -> {self.ret}" if self.ret else "")
+
+
+def signature_of(f):
+    """The ProcType a procedure `f` has, for matching it against a procedure parameter."""
+    return ProcType(f.is_sub, tuple((t, i) for t, _, i in f.params), f.ret, tuple(n for _, n, _ in f.params))
+
+
+def is_optional(typ):
+    return isinstance(typ, str) and typ.endswith("?")
+
+
 @dataclass
 class Function:
     """A function or, when is_sub is set, a subroutine."""
     name: str
-    params: list          # [(type, name, intent)], intent in {"in", "out", "inout"}
+    params: list          # [(type, name, intent)], intent in {"in", "out", "inout"}; type is a ProcType for a callback
     ret: str | None
     body: list
     is_sub: bool = False
@@ -642,8 +669,13 @@ class Parser:
                     intent = self.next().text
                     if intent != "in" and not is_sub:
                         self.error("only subroutines may have out or inout parameters")
-                t = self.type_name()
-                if t.endswith("?") and intent != "in":
+                if self.at("function", "subroutine"):
+                    if intent != "in":
+                        self.error("a procedure parameter cannot be out or inout")
+                    t = self.proc_type()
+                else:
+                    t = self.type_name()
+                if is_optional(t) and intent != "in":
                     self.error("an optional ('?') parameter must be an 'in' parameter")
                 self.expect("::")
                 params.append((t, self.ident(), intent))
@@ -651,6 +683,35 @@ class Parser:
                     break
         self.expect(")")
         return params
+
+    def proc_type(self):
+        """`function(real, real :: y) -> logical` or `subroutine(inout integer)`: the signature of a callback."""
+        is_sub = self.next().text == "subroutine"
+        self.expect("(")
+        params, names = [], []
+        if not self.at(")"):
+            while True:
+                intent = "in"
+                if self.at("in", "out", "inout"):
+                    intent = self.next().text
+                    if intent != "in" and not is_sub:
+                        self.error("only a subroutine signature may have out or inout parameters")
+                if self.at("function", "subroutine"):
+                    self.error("a procedure signature cannot take a procedure")
+                t = self.type_name(anywhere=True)
+                if is_optional(t):
+                    self.error("a procedure signature cannot have an optional ('?') parameter")
+                params.append((t, intent))
+                names.append(self.ident() if self.accept("::") else None)
+                if not self.accept(","):
+                    break
+        self.expect(")")
+        ret = None
+        if not is_sub:
+            if not self.accept("->"):
+                self.error("a function signature needs its result type: function(real) -> real")
+            ret = self.type_name(anywhere=True)
+        return ProcType(is_sub, tuple(params), ret, tuple(names))
 
     def typed_ahead(self):
         """Does a `::` (after an optional `?`) follow the current token?"""

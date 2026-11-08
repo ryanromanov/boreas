@@ -47,7 +47,7 @@ class Walker:
             if not (e.name in self.variables or e.name in self.scope.funcs or e.name in self.scope.records
                     or e.name in BUILTINS or e.name in ELEMENTAL or e.name in ("present", "allocated")):
                 self.report(e.name, e.line, e.col, f"unknown function or array '{e.name}'")
-            self.expr(e.args)
+            self.arguments(e.args)
         elif isinstance(e, NamedArg):       # the name is a record field; only the value is looked up
             self.expr(e.value)
         elif isinstance(e, Slice):
@@ -66,6 +66,12 @@ class Walker:
             for arm in e.arms:
                 self.expr(arm.values)
                 self.expr(arm.value)
+
+    def arguments(self, args):
+        """A bare name that is a procedure (and no variable) is how a call passes a callback."""
+        for a in args:
+            if not (isinstance(a, Var) and a.name not in self.variables and a.name in self.scope.funcs):
+                self.expr(a)
 
     def statements(self, body):
         for s in body:
@@ -108,9 +114,9 @@ class Walker:
         elif isinstance(s, ExprStmt):
             self.expr(s.expr)
         elif isinstance(s, Call):
-            if s.name not in self.scope.funcs:
+            if s.name not in self.scope.funcs and s.name not in self.variables:
                 self.report(s.name, s.line, s.col, f"unknown subroutine '{s.name}'")
-            self.expr(s.args)
+            self.arguments(s.args)
         elif isinstance(s, Allocate):
             self.expr(s.dims)           # the parser has already checked the array's name
 
