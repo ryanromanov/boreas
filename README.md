@@ -542,6 +542,8 @@ nothing and exits 0. `--json` prints `{"file": ..., "errors": [{"line", "col", "
 Speaks the Language Server Protocol on stdin/stdout. It reports the errors `boreas check`
 finds as diagnostics when a document is opened or changed, and suggests completions:
 keywords, types, built-ins, the names declared in the file, and record fields after `.`.
+It also answers go to definition (a name's declaration in the file, including record fields
+and imported module names) and hover (the declaration, or "built-in function").
 Point any editor with LSP support at that command for `.bor` files.
 [Graupel](https://github.com/ryanromanov/graupel), a Mac editor, finds it by itself;
 `editors/graupel` has its Run, Check and Convert scripts.
