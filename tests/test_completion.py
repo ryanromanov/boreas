@@ -83,6 +83,39 @@ class CompletionTests(unittest.TestCase):
                                 "sortText": "0000"})
 
 
+class ProcedureParameterTests(unittest.TestCase):
+    SRC = """function integrate(function(real :: x) -> real :: f, real :: a, in real :: b) -> real
+  real :: total
+CURSOR
+end function
+
+subroutine each(subroutine(string, real) :: show, string :: names)
+  call s
+end subroutine
+"""
+
+    def items(self, line_text):
+        src = self.SRC.replace("CURSOR", line_text)
+        row = src.split("\n").index(line_text)
+        return {item["label"]: item for item in completions(src, row, len(line_text))}
+
+    def test_procedure_parameter_is_offered_as_a_function(self):
+        f = self.items("  return f")
+        self.assertNotIn("f", f)                     # the word already typed is not offered
+        item = self.items("  total = ")
+        self.assertEqual((item["f"]["kind"], item["f"]["detail"]), (3, "function(real :: x) -> real"))
+        self.assertEqual(item["b"]["detail"], "real")
+
+    def test_names_inside_its_signature_are_not_parameters(self):
+        self.assertNotIn("x", self.items("  total = "))
+
+    def test_unnamed_signature_parameters_do_not_hide_the_next_parameter(self):
+        src = self.SRC.replace("CURSOR", "  total = 0")
+        row = src.split("\n").index("  call s")
+        labels = [item["label"] for item in completions(src, row, len("  call s"))]
+        self.assertIn("show", labels)
+
+
 class ServerTests(unittest.TestCase):
     def test_initialize_advertises_completion_after_a_dot(self):
         (r,), _ = talk({"id": 1, "method": "initialize", "params": {}})
