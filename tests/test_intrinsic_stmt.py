@@ -25,7 +25,7 @@ class IntrinsicStatementTests(unittest.TestCase):
         src = ("subroutine s(r)\n  real :: r\n  intrinsic :: sin\n  call integrate(sin, r)\nend subroutine\n")
         _, findings = convert(src, "s.f90")
         todos = [m for _, k, m in findings if k == "todo"]
-        self.assertTrue(any("'sin' is passed as an argument" in m for m in todos), todos)
+        self.assertTrue(any("the intrinsic 'sin' is passed to 'integrate'" in m for m in todos), todos)
 
     def test_intrinsic_called_normally_is_not(self):
         src = "subroutine s(r)\n  real :: r\n  intrinsic :: sin\n  r = sin(r)\nend subroutine\n"
