@@ -4,7 +4,7 @@ completes names (see completion.py)."""
 import json
 import sys
 
-PARSE_ERROR, METHOD_NOT_FOUND, INVALID_REQUEST = -32700, -32601, -32600
+PARSE_ERROR, METHOD_NOT_FOUND, INVALID_REQUEST, INVALID_PARAMS = -32700, -32601, -32600, -32602
 
 
 def diagnostics(src):
@@ -82,7 +82,8 @@ class Server:
             return
         if method == "initialize":
             self.reply(id, {"capabilities": {"textDocumentSync": {"openClose": True, "change": 1},
-                                             "completionProvider": {"triggerCharacters": ["."]}},
+                                             "completionProvider": {"triggerCharacters": ["."]},
+                                             "definitionProvider": True, "hoverProvider": True},
                             "serverInfo": {"name": "boreas"}})
         elif method == "shutdown":
             self.shutting_down = True
@@ -106,6 +107,16 @@ class Server:
             pos = params["position"]
             src = self.docs.get(params["textDocument"]["uri"], "")
             self.reply(id, {"isIncomplete": False, "items": completions(src, pos["line"], pos["character"])})
+        elif method in ("textDocument/definition", "textDocument/hover"):
+            from .navigation import definition, hover
+            try:
+                pos = params["position"]
+                uri = params["textDocument"]["uri"]
+            except (KeyError, TypeError):
+                return self.error(id, INVALID_PARAMS, "position and textDocument are required")
+            src = self.docs.get(uri, "")
+            self.reply(id, definition(src, uri, pos["line"], pos["character"]) if method == "textDocument/definition"
+                       else hover(src, pos["line"], pos["character"]))
         elif id is not None:              # a request we do not support
             self.error(id, METHOD_NOT_FOUND, f"method not supported: {method}")
 
