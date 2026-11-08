@@ -366,6 +366,7 @@ class FParser:
         self.fn_lines = {}          # id(Function) -> line of its header
         self.types = {}             # derived type name -> TypeInfo, in source order
         self.cur_scope = None       # the scope of the statement being parsed
+        self.external_entries = {}  # id of a params entry for an `external` dummy -> (entry, line, procedure name)
         self.intrinsic_args = {}    # id of a Var naming an intrinsic that a call passes -> (Var, line)
         self.ended = None           # the label whose `do` loop just ended on its last statement
         self.unit_use = {}          # unit number -> {"read", "write"}: which way the program uses the file
@@ -1524,7 +1525,9 @@ class FParser:
 
     def st_external(self, it, scope):
         while self.peek() is not None:
-            self.k += 1
+            t = self.next()
+            if t.kind == "name" and self.rename(t.text) in scope.dummies:     # only a dummy needs a signature
+                scope.externals.add(self.rename(t.text))
         self.note(it.line, f"'{it.text}' ignored: Boreas finds procedures by name")
         return []
 
@@ -3411,6 +3414,10 @@ class FParser:
             info = s.decls.get(d)
             if d in s.proc_dummies:
                 params.append([s.proc_dummies[d], d, "in"])
+            elif d in s.externals:
+                placeholder, body_is_sub, counts = self.external_placeholder(s, d, body)
+                params.append([placeholder, d, "in"])
+                self.external_entries[id(params[-1])] = (params[-1], line, s.name, body_is_sub, counts)
             elif info is None:
                 typ = implicit_type(d)
                 if s.implicit_none:
@@ -3616,10 +3623,76 @@ class FParser:
             if id_ not in done:
                 self.todo(line, f"the intrinsic '{node.name}' is passed as an argument, which is not translated")
 
+    def external_placeholder(self, s, d, body):
+        """A dummy declared `external` has no signature in the Fortran; this records what the body shows
+        (a function used as a value or a subroutine called) until the callers have been looked at."""
+        uses = [n for n in iter_nodes(body) if isinstance(n, (Call, Apply)) and n.name == d]
+        is_sub = None
+        if any(isinstance(n, Call) for n in uses):
+            is_sub = True
+        elif uses:
+            is_sub = False
+        info = s.decls.get(d)
+        ret = None if is_sub is not False else (info.type if info is not None else implicit_type(d))
+        return ProcType(is_sub, (), ret, ()), is_sub, {len(n.args) for n in uses}
+
+    def resolve_externals(self, unit, funcs):
+        """Give every `external` dummy the signature of the procedures that callers pass to it (D45).
+        A TODO when no caller passes a procedure whose signature is known, or when callers disagree."""
+        if not self.external_entries:
+            return
+        pending = {k: v for k, v in self.external_entries.items()}
+        found = {}                                  # id(entry) -> signatures seen
+        sites = self.callback_sites(unit, funcs)
+        for _ in range(3):                          # a dummy passed on to another one settles in a few rounds
+            for owner, procs, callee, i, arg in sites:
+                entry = callee.params[i]
+                if id(entry) not in pending:
+                    continue
+                passed = procs.get(arg.name)
+                if passed is not None:
+                    sig = signature_of(passed)
+                else:
+                    dummy = next((p for p in getattr(owner, "params", []) if p[1] == arg.name
+                                  and isinstance(p[0], ProcType)), None)
+                    if dummy is None or id(dummy) in pending:
+                        continue
+                    sig = dummy[0]
+                found.setdefault(id(entry), [])
+                if sig not in found[id(entry)]:
+                    found[id(entry)].append(sig)
+            for k, sigs in found.items():
+                if len(sigs) == 1:
+                    self.external_entries[k][0][0] = sigs[0]
+                    pending.pop(k, None)
+        for k, (entry, line, proc, body_is_sub, counts) in self.external_entries.items():
+            name = entry[1]
+            sigs = found.get(k, [])
+            if len(sigs) > 1:
+                msg = (f"'{name}' of '{proc}' is passed procedures with different signatures "
+                       f"({' and '.join(str(x) for x in sigs)}); Boreas needs one")
+            elif not sigs:
+                msg = (f"'{name}' of '{proc}' is an external procedure argument and no call passes a procedure "
+                       f"whose signature is known, so its signature cannot be written")
+            else:
+                sig = sigs[0]
+                bad = [n for n in counts if n != len(sig.params)]
+                if body_is_sub not in (None, sig.is_sub):
+                    msg = f"'{name}' of '{proc}' is used as a {'function' if sig.is_sub else 'subroutine'} but is passed {sig}"
+                elif bad:
+                    msg = f"'{name}' of '{proc}' is called with {bad[0]} arguments but is passed {sig}"
+                else:
+                    continue
+            f = next((x for x in funcs if x.name == proc), None)
+            if f is not None:
+                f.comments.append("TODO(convert): " + msg)
+            self.todo(line, msg)
+
     def reconcile_callbacks(self, unit, funcs):
         """An interface block often leaves argument intents out, but Boreas matches a passed procedure's
         signature exactly. Each unspecified intent (`?`) takes the intent of the procedures actually passed;
         what nothing decides becomes `in`. A mismatch that remains is a TODO."""
+        self.resolve_externals(unit, funcs)
         sites = self.callback_sites(unit, funcs)
         for _ in range(3):                         # a callback passed on to another one settles in a few rounds
             for owner, procs, callee, i, arg in sites:
