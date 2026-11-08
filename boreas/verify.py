@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tempfile
 
+from .preprocess import has_directives
+
 DEFAULT_TIMEOUT = 10.0
 TOLERANCE = 1e-9
 PACKAGE_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -97,18 +99,22 @@ def run_limited(cmd, timeout, stdin_text="", **kw):
         return None
 
 
-def compile_original(gfortran, path, exe):
-    """Compile the original: `path` is one file, or a list of files that make up one program."""
+def compile_original(gfortran, path, exe, defines=None):
+    """Compile the original: `path` is one file, or a list of files that make up one program. Files with
+    preprocessor lines are built with the same macros the conversion used."""
     paths = [path] if isinstance(path, str) else list(path)
+    macros = []
+    if any(has_directives(open(p, errors="replace").read()) for p in paths):
+        macros = ["-cpp"] + [f"-D{n}={v}" for n, v in (defines or {}).items()]
     for flags in (["-std=f2018"], []):
-        r = subprocess.run([gfortran, *flags, *(os.path.abspath(p) for p in paths), "-o", exe], capture_output=True, text=True,
+        r = subprocess.run([gfortran, *flags, *macros, *(os.path.abspath(p) for p in paths), "-o", exe], capture_output=True, text=True,
                            errors="replace", cwd=os.path.dirname(exe))      # .mod files land in the scratch dir
         if r.returncode == 0:
             return
     raise VerifyError("could not compile the original with gfortran:\n" + r.stderr.rstrip())
 
 
-def verify(path, boreas_text, had_todos, timeout=DEFAULT_TIMEOUT, report=None, stdin_text=""):
+def verify(path, boreas_text, had_todos, timeout=DEFAULT_TIMEOUT, report=None, stdin_text="", defines=None):
     """Returns the exit status: 0 verified, 1 mismatch or converted program failed, 2 could not verify."""
     def say(msg):
         print(msg, file=report or sys.stderr)
@@ -120,7 +126,7 @@ def verify(path, boreas_text, had_todos, timeout=DEFAULT_TIMEOUT, report=None, s
     with tempfile.TemporaryDirectory() as tmp:
         exe = os.path.join(tmp, "original")
         try:
-            compile_original(gfortran, path, exe)
+            compile_original(gfortran, path, exe, defines)
         except VerifyError as e:
             say(f"error: {e}")
             return 2

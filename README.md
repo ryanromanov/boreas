@@ -587,6 +587,11 @@ report on stderr. Translations that change meaning are flagged, never silent:
   one-pass loop with `exit`, and jumps that cross each other become a small state machine (`select case
   fallthrough` in a loop). Computed `goto`, the arithmetic `if`, labelled `do` loops (a shared last statement
   too) and the `parameter` statement are translated; `common` and `block data` are TODOs.
+- Preprocessor lines (`#if`, `#ifdef`, `#ifndef`, `#elif`, `#else`, `#define`, `#include`) in any file are evaluated
+  as a preprocessing build would: the converter keeps the branch the conditions pick, given the macros you pass
+  with `--define NAME` or `--define NAME=VALUE` and those the file `#define`s; a name not defined counts as
+  undefined. `#include "file"` pulls in a file from the same directory. A condition it cannot evaluate keeps its
+  first branch and is a TODO, and `--verify` builds the original with `-cpp` and the same `-D` flags.
 - File input and output: `open(unit=9, file=name, status='replace')` becomes `unit_9 = open(name, "write")`,
   `write(9,*)` / `write(9,fmt)` become `writeln(unit_9, ...)`, `read(9,*)` takes its line from `read_line(unit_9)`,
   `read(9,'(A)')` reads a whole line, `close(9)` becomes `close unit_9`, and `inquire(file=f, exist=e)`

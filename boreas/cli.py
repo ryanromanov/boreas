@@ -10,8 +10,9 @@ USAGE = """usage:
   boreas FILE.bor                    run a program
   boreas check FILE.bor [--json]     parse and check without running; exit 1 on errors
   boreas lsp                         language server on stdin/stdout (errors as diagnostics)
-  boreas convert FILE.f90 [FILE...] [-o OUT]
-                                     convert Fortran (free or fixed form; several files make one program)
+  boreas convert [--define NAME[=VALUE]]... FILE.f90 [FILE...] [-o OUT]
+                                     convert Fortran (free or fixed form; several files make one program);
+                                     #if/#ifdef lines are evaluated with the macros you --define
   boreas convert --verify [--timeout SECONDS] [--input FILE] FILE.f90 [FILE...] [-o OUT]
                                      also run the original with gfortran and compare output"""
 
@@ -56,10 +57,17 @@ def check_command(args):
 def convert_command(args):
     from .fortran import convert_files
     paths, out_path, do_verify, timeout, input_path = [], None, False, None, None
+    defines = {}
     it = iter(args)
     for a in it:
         if a == "--verify":
             do_verify = True
+        elif a in ("--define", "-D"):
+            spec = next(it, None)
+            name, _, value = (spec or "").partition("=")
+            if not re.fullmatch(r"[A-Za-z_]\w*", name):
+                sys.exit("error: --define needs NAME or NAME=VALUE")
+            defines[name] = value if "=" in spec else "1"
         elif a == "--timeout":
             try:
                 timeout = float(next(it, None))
@@ -85,10 +93,10 @@ def convert_command(args):
     for path in paths:
         try:
             with open(path) as f:
-                sources.append((os.path.basename(path), f.read()))
+                sources.append((os.path.basename(path), f.read(), os.path.dirname(os.path.abspath(path))))
         except OSError as e:
             sys.exit(f"error: {e}")
-    text, findings, where = convert_files(sources)
+    text, findings, where = convert_files(sources, defines)
     path = paths[0] if len(paths) == 1 else ", ".join(paths)
     if out_path:
         with open(out_path, "w") as f:
@@ -115,7 +123,7 @@ def convert_command(args):
                     stdin_text = f.read()
             except OSError as e:
                 sys.exit(f"error: {e}")
-        sys.exit(verify(paths[0] if len(paths) == 1 else paths, text, bool(todos), timeout or DEFAULT_TIMEOUT, stdin_text=stdin_text))
+        sys.exit(verify(paths[0] if len(paths) == 1 else paths, text, bool(todos), timeout or DEFAULT_TIMEOUT, stdin_text=stdin_text, defines=defines))
 
 
 def main():
