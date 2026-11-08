@@ -245,6 +245,7 @@ class Info:
     allocatable: bool = False
     optional: bool = False
     length: int | None = None     # declared character length, when it is a known number
+    rank: int = 0                 # number of dimensions of a dummy whose shape was dropped
 
 
 class Scope:
@@ -257,6 +258,8 @@ class Scope:
         self.comments = []
         self.externals = set()
         self.interfaces = {}          # procedure name -> ProcType, from interface blocks
+        self.generics = {}            # generic name -> [specific procedure names], from generic interface blocks
+        self.elemental = False
         self.proc_dummies = {}        # dummy argument -> ProcType, for `procedure(name) :: dummy`
         self.import_renames = {}      # local name -> the name the module exports, from `use m, only: local => remote`
         self.intrinsics = set()       # names in an INTRINSIC statement
@@ -366,6 +369,11 @@ class FParser:
         self.fn_lines = {}          # id(Function) -> line of its header
         self.types = {}             # derived type name -> TypeInfo, in source order
         self.cur_scope = None       # the scope of the statement being parsed
+        self.generic_calls = {}     # id of an Apply/Call of a generic -> (node, generic, argument types, line)
+        self.unresolved_generics = set()
+        self.scope_of_procedure = {}
+        self.interface_scopes = {}  # procedure name -> the Scope an interface block gave it
+        self.header_elemental = False
         self.external_entries = {}  # id of a params entry for an `external` dummy -> (entry, line, procedure name)
         self.intrinsic_args = {}    # id of a Var naming an intrinsic that a call passes -> (Var, line)
         self.ended = None           # the label whose `do` loop just ended on its last statement
@@ -611,6 +619,8 @@ class FParser:
                 name, args = self.convert_intrinsic(name, args)
                 intrinsic = name in BUILTINS or name in ELEMENTAL
                 e = Apply(name if intrinsic else self.rename(name), args, self.line)
+                if not intrinsic:
+                    self.note_generic_call(e, e.name, args, self.line)
                 if name == "len" and len(args) == 1 and self.char_info(args[0]) is not None \
                         and name not in self.cur_scope.decls:
                     e = Num(self.char_info(args[0]).length)          # the declared length, not the text's
@@ -830,9 +840,12 @@ class FParser:
 
     def procedure_header(self, toks):
         self.toks, self.k = toks, 0
+        self.header_elemental = False
         ret_type = None
         while True:
             if self.at_name("pure", "impure", "elemental", "recursive", "module", "non_recursive"):
+                if self.at_name("elemental"):
+                    self.header_elemental = True
                 self.k += 1
             elif self.at_name(*TYPE_WORDS):
                 ret_type = self.type_spec()
@@ -866,6 +879,7 @@ class FParser:
         kind, name, dummies, result, ret_type = self.procedure_header(toks)
         scope = Scope(kind, name, dummies)
         scope.result, scope.ret_type = result, ret_type
+        scope.elemental = self.header_elemental
         if host is not None:
             scope.host = host
             scope.implicit_none = host.implicit_none       # internal procedures inherit it
@@ -1347,7 +1361,8 @@ class FParser:
                         init = self.fit_to_length(init, length)
                 scope.decls[name] = Info(typ, dims, dropped, attrs.get("intent"), init,
                                          bool(attrs.get("parameter")), line, bool(attrs.get("allocatable")),
-                                         bool(attrs.get("optional")), length)
+                                         bool(attrs.get("optional")), length,
+                                         len(specs) if dropped else 0)
                 if attrs.get("external"):
                     scope.externals.add(name)
                 if scope.kind == "module":
@@ -1433,6 +1448,11 @@ class FParser:
             scope.skipped |= {n for n in mod.skipped if self.is_public(mod, n)}
         else:
             for n in list(names):
+                if n in mod.generics and self.is_public(mod, n):       # a generic: its specifics are what exist
+                    names.remove(n)
+                    names += [sp for sp in mod.generics[n] if sp not in names]
+                    scope.generics[n] = list(mod.generics[n])
+                    continue
                 if n in exports:
                     continue
                 names.remove(n)
@@ -2253,7 +2273,11 @@ class FParser:
             self.expect_op(")")
         self.end_of_statement()
         made = self.intrinsic_call(name, args, it.line, scope)
-        return made if made is not None else [Call(name, args, it.line)]
+        if made is not None:
+            return made
+        call = Call(name, args, it.line)
+        self.note_generic_call(call, name, args, it.line)
+        return [call]
 
     def intrinsic_call(self, name, args, line, scope):
         """Intrinsic subroutines become something else in Boreas: assignments from a function, or nothing."""
@@ -2473,11 +2497,16 @@ class FParser:
             if toks and toks[0].text == "module" and len(toks) > 1 and toks[1].text == "procedure":
                 specifics += [t.text for t in toks[2:] if t.kind == "name"]
             elif self.unit_kind(toks) in ("function", "subroutine"):
-                self.interface_procedure(toks, item, scope)
+                specifics.append(self.interface_procedure(toks, item, scope))
         self.cur_scope = scope
+        if generic == "operator":
+            raise Unsupported("operator overloading (an interface for an operator) is not supported")
         if generic is not None:
-            raise Unsupported(f"the generic interface '{generic}' (overloading) is not supported; "
-                              f"call the specific procedures by name")
+            scope.generics.setdefault(generic, [])
+            scope.generics[generic] += [n for n in specifics if n not in scope.generics[generic]]
+            self.note(it.line, f"generic interface '{generic}' dropped: calls are rewritten to the specific "
+                               f"procedures", once=True)
+            return []
         self.note(it.line, "interface block dropped: Boreas finds procedures by name", once=True)
         return []
 
@@ -2485,11 +2514,14 @@ class FParser:
         kind, name, dummies, result, ret_type = self.procedure_header(toks)
         inner = Scope(kind, name, dummies)
         inner.result, inner.ret_type = result, ret_type
+        inner.elemental = self.header_elemental
         self.parse_body(inner, {("end", kind)})
         self.i += 1                                       # the `end function` / `end subroutine`
         sig = self.interface_signature(inner)
         if sig is not None:
             scope.interfaces[name] = sig
+        self.interface_scopes[name] = inner
+        return name
 
     def interface_signature(self, s):
         """The ProcType of a procedure an interface block describes, or None when Boreas cannot say it
@@ -2512,6 +2544,129 @@ class FParser:
                 return None
             ret = info.type if info is not None else (s.ret_type or implicit_type(s.name))
         return ProcType(is_sub, tuple(params), ret, tuple(s.dummies))
+
+    def find_generic(self, scope, name):
+        """The specific procedure names a generic interface gives `name`, looking outward through the
+        enclosing scopes and the modules this one uses, or None."""
+        s = scope
+        while s is not None:
+            if name in s.generics:
+                return s.generics[name]
+            for modname, names, _ in s.uses:
+                mod = self.modules.get(modname)
+                if mod is not None and name in mod.generics and (names is None or name in names):
+                    return mod.generics[name]
+            s = s.host
+        return None
+
+    INT_ORDER = ("int8", "int16", "integer", "int64")
+    REAL_ORDER = ("real32", "real")
+
+    def static_type(self, e):
+        """(type, rank) of an expression in the current scope, or None when it is not worked out. Only what a
+        generic call needs: literals, declared variables and array elements, conversions and arithmetic."""
+        if isinstance(e, Num):
+            if isinstance(e.value, int):
+                return ("integer", 0)
+            return ("real" if id(e) in self.double_literals else "real32", 0)
+        if isinstance(e, Str):
+            return ("string", 0)
+        if isinstance(e, Bool):
+            return ("logical", 0)
+        if isinstance(e, Var):
+            info = self.lookup_decl(e.name)
+            return None if info is None else (info.type, self.rank_of(info))
+        if isinstance(e, Apply):
+            info = self.lookup_decl(e.name)
+            if info is not None and self.rank_of(info) > 0:
+                return (info.type, sum(isinstance(a, Slice) for a in e.args))
+            if e.name in ("index", "len", "len_trim", "size", "count", "scan", "verify") and info is None:
+                return ("integer", 0)
+            if e.name in INT_KINDS.values() or e.name in ("real32", "real") and len(e.args) == 1:
+                inner = self.static_type(e.args[0])
+                return None if inner is None else (e.name, inner[1])
+            return None
+        if isinstance(e, Unary):
+            inner = self.static_type(e.operand)
+            return ("logical", inner[1]) if e.op == "not" and inner is not None else inner
+        if isinstance(e, Binary):
+            a, b = self.static_type(e.left), self.static_type(e.right)
+            if a is None or b is None:
+                return None
+            rank = max(a[1], b[1])
+            if e.op in ("==", "/=", "<", "<=", ">", ">=", "and", "or"):
+                return ("logical", rank)
+            if a[0] == b[0]:
+                return (a[0], rank)
+            for order in (self.REAL_ORDER, self.INT_ORDER):
+                if a[0] in order and b[0] in order:
+                    return (max(a[0], b[0], key=order.index), rank)
+            if (a[0] in self.REAL_ORDER and b[0] in self.INT_ORDER) or (b[0] in self.REAL_ORDER and a[0] in self.INT_ORDER):
+                return (a[0] if a[0] in self.REAL_ORDER else b[0], rank)
+            return None
+        if isinstance(e, ArrayLit) and e.items:
+            types = {self.static_type(x) for x in e.items}
+            if len(types) == 1 and None not in types:
+                t = types.pop()
+                return (t[0], 1)
+        return None
+
+    @staticmethod
+    def rank_of(info):
+        return len(info.dims) if info.dims is not None else info.rank
+
+    def note_generic_call(self, node, name, args, line):
+        """A call to a generic name is rewritten at the end, when every specific procedure is known."""
+        if self.find_generic(self.cur_scope, name) is not None:
+            self.generic_calls[id(node)] = (node, name, [self.static_type(a) for a in args], line,
+                                            self.cur_scope)
+
+    def specific_signature(self, name):
+        """[(type, rank, optional)] for a specific procedure's dummies, plus whether it is elemental, or None."""
+        s = self.scope_of_procedure.get(name) or self.interface_scopes.get(name)
+        if s is None:
+            return None
+        sig = []
+        for d in s.dummies:
+            info = s.decls.get(d)
+            if info is None or d in s.proc_dummies or d in s.externals:
+                sig.append((None, None, info is not None and info.optional))    # not known: matches anything
+            else:
+                sig.append((info.type, self.rank_of(info), info.optional))
+        return sig, s.elemental
+
+    def resolve_generics(self, unit):
+        """Replace each call to a generic name by the specific procedure the arguments select. Fortran picks
+        the one specific whose arguments agree in type, kind and rank, so ruling out every specific that a
+        known argument contradicts leaves the one Fortran would have called. With one specific there is
+        nothing to decide."""
+        for node, generic, types, line, scope in list(self.generic_calls.values()):
+            cands = self.find_generic(scope, generic) or []
+            keep = []
+            for c in cands:
+                got = self.specific_signature(c)
+                if got is None:
+                    keep.append(c)
+                    continue
+                sig, elemental = got
+                required = sum(1 for _, _, opt in sig if not opt)
+                if not required <= len(types) <= len(sig):
+                    continue
+                if all(t is None or sig[i][0] is None or (t[0] == sig[i][0] and (elemental or t[1] == sig[i][1]))
+                       for i, t in enumerate(types)):
+                    keep.append(c)
+            if len(cands) == 1:
+                keep = cands
+            if len(keep) == 1:
+                if keep[0] != generic:
+                    node.name = keep[0]
+                    self.note(line, f"'{generic}' is a generic interface; this call goes to '{keep[0]}'", once=True)
+            else:
+                shown = keep or cands
+                self.unresolved_generics.add(generic)
+                msg = (f"the call to the generic '{generic}' could not be matched to one of its procedures "
+                       f"({', '.join(shown)}); call the specific procedure by name")
+                self.todo(line, msg)
 
     def find_interface(self, scope, name):
         """The signature an interface block gave `name`, looking outward through the enclosing scopes
@@ -3222,6 +3377,12 @@ class FParser:
         self.merge_units()
         for r in self.raw:
             self.structure_gotos(r)
+        for ms in self.modules.values():           # a public generic needs its specifics reachable
+            for generic, specifics in ms.generics.items():
+                if self.is_public(ms, generic):
+                    for sp in specifics:
+                        if not self.is_public(ms, sp):
+                            ms.access[sp] = "public"
         proc_names = {r.scope.name for r in self.raw if r.kind != "program"}
         functions, program = {}, None
         modules = {name: self.build_module(ms) for name, ms in self.modules.items()}
@@ -3247,6 +3408,8 @@ class FParser:
             rd = RecordDef(t.name, t.fields, t.module is not None and self.is_public(t.module, t.name), t.line)
             (modules[t.module.name].records if t.module is not None else records)[t.name] = rd
         unit = Unit(functions, program, modules, records, ieee=True)    # Fortran arithmetic is IEEE
+        self.scope_of_procedure = {r.scope.name: r.scope for r in self.raw if r.kind != "program"}
+        self.resolve_generics(unit)
         self.add_intrinsic_wrappers(unit)
         self.link_uses(unit, built)
         self.check_saved(unit, built)
@@ -4206,6 +4369,8 @@ class FParser:
             known = set(procs) | set(BUILTINS) | set(ELEMENTAL) | set(self.types)
             seen = set()
             for n in iter_nodes(node.body):
+                if isinstance(n, (Apply, Call)) and n.name in self.unresolved_generics:
+                    continue                                    # already a TODO of its own
                 if isinstance(n, Apply) and n.name not in declared and n.name not in known:
                     what = "function"
                 elif isinstance(n, Call) and n.name not in procs and n.name not in declared:

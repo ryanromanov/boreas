@@ -626,11 +626,17 @@ report on stderr. Translations that change meaning are flagged, never silent:
   procedure it describes keeps its signature: `procedure(select_t) :: select` becomes the parameter
   `function(real :: wr, real :: wi) -> logical :: select_`. A signature whose intents the interface leaves out
   takes them from the procedures the program passes. An intrinsic passed as an argument (`call integrate(dsin, ...)`)
-  goes through a small generated function (`sin_fn`). Procedure variables and pointers, generic interfaces
-  (overloading) are TODOs. An `external` dummy argument (no interface) takes its signature from the procedures
+  goes through a small generated function (`sin_fn`). Procedure variables and pointers are TODOs. An `external` dummy argument (no interface) takes its signature from the procedures
   callers pass to it (`subroutine integrate(f, ...)` called with `square` gets `function(real :: x) -> real :: f`);
   it is a TODO when no call passes a known procedure, when callers disagree, or when the body uses it as a
   function but a subroutine is passed.
+- Generic interfaces (`interface to_text` / `module procedure int_text, real_text`): Boreas has no overloading, so the
+  converter drops the block and rewrites each call to the specific procedure, keeping the names the Fortran gave
+  (`to_text(k)` becomes `int_text(k)`). A generic with one specific needs no checking; with several, it rules out each
+  specific that a known argument contradicts in type, kind or rank (literals, declared variables and array
+  elements, conversions, and arithmetic on those; `k * 2 + 1` is an integer, `k * 2.5` a real). If it cannot narrow
+  the call to one, a TODO lists the candidates. A public generic makes its specifics public. Operator overloading
+  (`interface operator(+)`) is a TODO.
 - Preprocessor lines (`#if`, `#ifdef`, `#ifndef`, `#elif`, `#else`, `#define`, `#include`) in any file are evaluated
   as a preprocessing build would: the converter keeps the branch the conditions pick, given the macros you pass
   with `--define NAME` or `--define NAME=VALUE` and those the file `#define`s; a name not defined counts as
