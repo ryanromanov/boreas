@@ -7,6 +7,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 scripts="$HOME/Library/Application Scripts/com.ryanromanov.Graupel"
 if [ -d "$scripts" ]; then
   mkdir -p "$scripts/Boreas"
+  rm -f "$scripts/Boreas/Run.@r.sh"      # older installs: Graupel 0.2.0 has its own Run (Command-R)
   cp "$here"/Scripts/*.sh "$scripts/Boreas/"
   echo "installed scripts: $scripts/Boreas"
 else

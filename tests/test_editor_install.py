@@ -27,11 +27,17 @@ class InstallTests(unittest.TestCase):
         self.assertIn("scripts folder not found", output)
         self.assertFalse(os.path.exists(folder))
 
-    def test_run_output_goes_to_the_console(self):
-        with open(os.path.join(EDITOR, "Scripts", "Run.@r.sh")) as script:
-            text = script.read()
-        self.assertIn("XOutput=Discard", text)
-        self.assertIn(">&2", text)
+    def test_an_old_run_script_is_removed(self):
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        folder = os.path.join(home.name, "Library", "Application Scripts", "com.ryanromanov.Graupel", "Boreas")
+        os.makedirs(folder)
+        old = os.path.join(folder, "Run.@r.sh")
+        open(old, "w").close()
+        subprocess.run(["sh", os.path.join(EDITOR, "install.sh")], capture_output=True, text=True,
+                       env={**os.environ, "HOME": home.name}, check=True)
+        self.assertFalse(os.path.exists(old))
+        self.assertNotIn("Run.@r.sh", os.listdir(os.path.join(EDITOR, "Scripts")))
 
 
 if __name__ == "__main__":
