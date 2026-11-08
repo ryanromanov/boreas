@@ -17,6 +17,10 @@ PROGRAM_RE = re.compile(r"program\b", re.I)
 DECL_RE = re.compile(r"(?:\b(?:in|out|inout)\s+)?([A-Za-z_]\w*\??(?:\s*,\s*allocatable)?)\s*::\s*([A-Za-z_]\w*)", re.I)
 
 
+# the value before a dot: `p.`, `s.to.`, `pts(i).`
+CHAIN_RE = re.compile(r"([A-Za-z_]\w*(?:\([^()]*\))?(?:\.[A-Za-z_]\w*(?:\([^()]*\))?)*)\.$")
+
+
 def code_part(line):
     """The line without its strings and comment, so that nothing in them looks like code."""
     return STRING_RE.sub('""', line).split("!", 1)[0]
@@ -63,9 +67,10 @@ def parameters(rest):
 
 
 def declarations(lines):
-    """The names the lines declare, as [(name, kind, detail, scope)], and the fields of each
-    record, as {record name: [(field, type)]}. `scope` is the index of the line that starts the
-    enclosing procedure or program, or None for top-level names."""
+    """The names the lines declare, as [(name, kind, detail, scope, row)], and the fields of each
+    record, as {record name: [(field, type, row)]}. `scope` is the index of the line that starts the
+    enclosing procedure or program, or None for top-level names; `row` is the index of the line
+    that declares the name."""
     found, records, scope, record = [], {}, None, None
     for i, raw in enumerate(lines):
         line = code_part(raw).strip()
@@ -73,28 +78,28 @@ def declarations(lines):
             if re.match(r"end\s+record\b", line, re.I):
                 record = None
             else:
-                record.extend((name, t) for t, name in DECL_RE.findall(line))
+                record.extend((name, t, i) for t, name in DECL_RE.findall(line))
             continue
         if END_RE.match(line):
             scope = None
             continue
         if m := PROCEDURE_RE.match(line):
-            found.append((m.group(2), FUNCTION, line, None))
+            found.append((m.group(2), FUNCTION, line, None, i))
             scope = i
             for name, kind, t in parameters(m.group(3) or ""):
-                found.append((name, kind, t, scope))
+                found.append((name, kind, t, scope, i))
             continue
         if PROGRAM_RE.match(line):
             scope = i
             continue
         if m := BLOCK_RE.match(line):
             is_record = m.group(1).lower() == "record"
-            found.append((m.group(2), STRUCT if is_record else MODULE, m.group(1).lower(), None))
+            found.append((m.group(2), STRUCT if is_record else MODULE, m.group(1).lower(), None, i))
             if is_record:
                 record = records.setdefault(m.group(2).lower(), [])
             continue
         for t, name in DECL_RE.findall(line):
-            found.append((name, VARIABLE, t, scope))
+            found.append((name, VARIABLE, t, scope, i))
     return found, records
 
 
@@ -104,11 +109,12 @@ def base_type(t):
 
 
 def fields(chain, variables, records):
-    """The fields of the record that a chain like `s.to` or `pts(i)` names, or None."""
+    """The fields of the record that a chain like `s.to` or `pts(i)` names, as [(field, type, row)],
+    or None."""
     parts = [re.sub(r"\(.*", "", p).strip().lower() for p in chain.split(".")]
     t = variables.get(parts[0])
     for part in parts[1:]:
-        t = dict((f.lower(), ft) for f, ft in records.get(base_type(t or ""), [])).get(part)
+        t = dict((f.lower(), ft) for f, ft, _ in records.get(base_type(t or ""), [])).get(part)
     return records.get(base_type(t or ""))
 
 
@@ -157,15 +163,15 @@ def completions(src, line, character):
     visible = [d for d in found if d[3] is None or d[3] == scope]
 
     # a record field after a dot
-    if m := re.search(r"([A-Za-z_]\w*(?:\([^()]*\))?(?:\.[A-Za-z_]\w*(?:\([^()]*\))?)*)\.$", before[:len(before) - len(prefix)]):
-        variables = {name.lower(): detail for name, kind, detail, _ in visible if kind == VARIABLE}
-        for name, t in fields(m.group(1), variables, records) or []:
+    if m := CHAIN_RE.search(before[:len(before) - len(prefix)]):
+        variables = {name.lower(): detail for name, kind, detail, *_ in visible if kind == VARIABLE}
+        for name, t, _ in fields(m.group(1), variables, records) or []:
             add(name, VARIABLE, t)
         return items
     if before[:len(before) - len(prefix)].endswith("."):     # after a number, say
         return []
 
-    for name, kind, detail, _ in visible:
+    for name, kind, detail, *_ in visible:
         add(name, kind, detail)
     for name in sorted(TYPES):
         add(name, TYPE, "type")

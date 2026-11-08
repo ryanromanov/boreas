@@ -58,6 +58,10 @@ class DiagnosticsTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
+    def test_hover_without_a_position_is_an_invalid_params_error(self):
+        replies, _ = talk({"id": 8, "method": "textDocument/hover", "params": {}})
+        self.assertEqual(replies[0]["error"]["code"], -32602)
+
     def test_initialize_advertises_full_sync(self):
         (r,), status = talk({"id": 1, "method": "initialize", "params": {}})
         self.assertEqual(r["id"], 1)
@@ -77,7 +81,7 @@ class ServerTests(unittest.TestCase):
                          [("file:///a.bor", 1), ("file:///b.bor", 0)])
 
     def test_unknown_request_gets_an_error_but_unknown_notification_is_ignored(self):
-        replies, _ = talk({"id": 7, "method": "textDocument/hover", "params": {}}, {"method": "$/whatever"})
+        replies, _ = talk({"id": 7, "method": "textDocument/references", "params": {}}, {"method": "$/whatever"})
         self.assertEqual(len(replies), 1)
         self.assertEqual((replies[0]["id"], replies[0]["error"]["code"]), (7, -32601))
 
