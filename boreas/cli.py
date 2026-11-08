@@ -132,7 +132,7 @@ def main():
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help"):
         sys.exit(USAGE)
-    if not sys.stdout.isatty():                  # a pipe: show each line at once, as a terminal does
+    if hasattr(sys.stdout, "reconfigure") and not sys.stdout.isatty():    # a pipe: show each line at once
         sys.stdout.reconfigure(line_buffering=True)
     try:
         if args[0] == "check":
