@@ -36,6 +36,17 @@ class Unsupported(Exception):
     """Raised for Fortran this front end does not translate."""
 
 
+SUBMODULE_ORIGIN = "from submodule "
+
+
+def rename_outside_strings(text, pat, names):
+    """`text` with every whole-word match of `pat` swapped for names[match], except inside string literals."""
+    parts = re.split(r"('(?:[^']|'')*'|\"(?:[^\"]|\"\")*\")", text)
+    for k in range(0, len(parts), 2):
+        parts[k] = pat.sub(lambda m: names[m.group(1).lower()], parts[k])
+    return "".join(parts)
+
+
 # --- Lexing ------------------------------------------------------------
 @dataclass
 class Item:
@@ -800,6 +811,7 @@ class FParser:
         return None
 
     def parse(self):
+        self.merge_submodules()
         while self.i < len(self.items):
             it = self.items[self.i]
             start = self.i
@@ -837,6 +849,237 @@ class FParser:
                 self.top_comments.append(f"TODO(convert): {e}: {it.text}")
                 self.todo(it.line, f"{e}: {it.text}")
         return self.finalize()
+
+    def merge_submodules(self):
+        """Fortran splits a module into headers (the module) and bodies (its submodules) to save recompiling.
+        Boreas runs from source and has no use for the split, so each submodule's declarations and procedures
+        are moved into the parent module, which keeps one module per file (D49). A private procedure whose name
+        another part already uses is renamed with the submodule's name in front. Works on the statement list,
+        before parsing, so the parts may come in any order and from several files."""
+        units = self.top_level_units()
+        subs = [u for u in units if u["kind"] == "submodule"]
+        if not subs:
+            return
+        mods = {}
+        for u in units:
+            if u["kind"] == "module":
+                mods.setdefault(u["name"], u)
+        taken = {}                     # procedure name -> how many parts define it
+        for u in units:
+            if u["kind"] == "module" or u in subs:
+                for name in u["procs"]:
+                    taken[name] = taken.get(name, 0) + 1
+        by_root = {}
+        for u in subs:
+            if u["root"] in mods:
+                by_root.setdefault(u["root"], []).append(u)
+            else:
+                self.todo(self.items[u["start"]].line, f"submodule '{u['name']}': its parent module '{u['root']}' "
+                                                       f"was not given; convert them together")
+        drop, before_contains, before_end = set(), {}, {}
+        for root, parts in by_root.items():
+            m = mods[root]
+            spec, body = [], []
+            for u in parts:
+                items = self.renamed_private(u, taken)
+                inner = self.expand_module_procedures(items[u["start"] + 1:u["end"]], self.items[m["start"]:m["end"]])
+                k = self.contains_index(inner, 0, len(inner))
+                spec += inner[:k]
+                hidden = [f"{u['name']}_{n}" if self.is_clash(n, u, taken) else n
+                          for n, public in u["procs"].items() if not public]
+                if hidden:                                # a submodule's own procedures stay hidden from users
+                    spec.append(Item(items[u["start"]].line, "private :: " + ", ".join(hidden)))
+                if k < len(inner):
+                    body.append(Item(items[u["start"]].line, "", comment=f"{SUBMODULE_ORIGIN}{u['name']} (of {root})"))
+                    body += inner[k + 1:]
+                drop.update(range(u["start"], u["end"] + 1))
+            mc = self.contains_index(self.items, m["start"] + 1, m["end"])
+            if mc < m["end"]:
+                before_contains[mc] = spec
+            else:
+                body = spec + [Item(self.items[m["end"]].line, "contains")] + body
+            before_end[m["end"]] = body
+        out = []
+        for j, it in enumerate(self.items):
+            if j in drop:
+                continue
+            out.extend(before_contains.get(j, ()))
+            out.extend(before_end.get(j, ()))
+            out.append(it)
+        self.items = out
+
+    def expand_module_procedures(self, inner, parent):
+        """`module procedure NAME` ... `end procedure` takes its header and its dummy declarations from the
+        interface in the parent module. Write them out in full, as an ordinary function or subroutine."""
+        out, j = [], 0
+        while j < len(inner):
+            it = inner[j]
+            toks = None
+            if it.comment is None:
+                try:
+                    toks = self.tokens(it)
+                except Unsupported:
+                    toks = None
+            if not toks or len(toks) != 3 or toks[0].text != "module" or toks[1].text != "procedure":
+                out.append(it)
+                j += 1
+                continue
+            name, found = toks[2].text, self.interface_body(toks[2].text, parent)
+            if found is None:
+                out.append(it)
+                j += 1
+                continue
+            head, decls, kind = found
+            out.append(head)
+            out.extend(decls)
+            j += 1
+            while j < len(inner):
+                if inner[j].comment is None:
+                    try:
+                        lab = classify(self.tokens(inner[j]))
+                    except Unsupported:
+                        lab = None
+                    if lab is not None and lab[0] == "end" and lab[1] in ("procedure", None):
+                        break
+                out.append(inner[j])
+                j += 1
+            out.append(Item(inner[min(j, len(inner) - 1)].line, f"end {kind}"))
+            j += 1
+        return out
+
+    def interface_body(self, name, parent):
+        """(header, declarations, 'function' or 'subroutine') of the interface body for `name` in `parent`'s
+        statements, or None. `import` is dropped: it only means something inside an interface."""
+        for j, it in enumerate(parent):
+            if it.comment is not None:
+                continue
+            try:
+                toks = self.tokens(it)
+            except Unsupported:
+                continue
+            kind = self.unit_kind(toks)
+            if kind not in ("function", "subroutine") or not self.has_module_prefix(toks) \
+                    or self.procedure_name(toks) != name:
+                continue
+            decls = []
+            for k in range(j + 1, len(parent)):
+                inner = parent[k]
+                if inner.comment is None:
+                    try:
+                        tk = self.tokens(inner)
+                    except Unsupported:
+                        continue
+                    lab = classify(tk)
+                    if lab is not None and lab[0] == "end" and lab[1] in (kind, None):
+                        return it, decls, kind
+                    if tk and tk[0].text == "import":
+                        continue
+                decls.append(inner)
+        return None
+
+    def contains_index(self, items, lo, hi):
+        """Index of the first `contains` in items[lo:hi], or hi."""
+        for j in range(lo, hi):
+            if items[j].comment is None:
+                try:
+                    if classify(self.tokens(items[j])) == ("contains",):
+                        return j
+                except Unsupported:
+                    pass
+        return hi
+
+    def top_level_units(self):
+        """Every module and submodule in the statement list: kind, name, root module, the first and last
+        statement, and the names of the procedures it defines."""
+        units, i = [], 0
+        while i < len(self.items):
+            it = self.items[i]
+            toks = None
+            if it.comment is None:
+                try:
+                    toks = self.tokens(it)
+                except Unsupported:
+                    toks = None
+            if not toks or toks[0].kind != "name" or toks[0].text not in ("module", "submodule") \
+                    or self.unit_kind(toks) not in ("module", "submodule") \
+                    or (toks[0].text == "module" and len(toks) > 1 and toks[1].text == "procedure"):
+                i += 1
+                continue
+            kind = toks[0].text
+            names = [t.text for t in toks[1:] if t.kind == "name"]
+            if kind == "submodule":
+                if len(names) < 2:
+                    i += 1
+                    continue
+                name, root = names[-1], names[0]
+            else:
+                name = root = names[0] if names else "module"
+            end, procs, depth = None, {}, 0
+            for j in range(i + 1, len(self.items)):
+                jt = self.items[j]
+                if jt.comment is not None:
+                    continue
+                try:
+                    tk = self.tokens(jt)
+                except Unsupported:
+                    continue
+                lab = classify(tk)
+                if lab is not None and lab[0] == "end" and lab[1] in ("module", "submodule", None) and depth == 0:
+                    end = j
+                    break
+                if lab is not None and lab[0] == "end" and lab[1] in ("function", "subroutine"):
+                    depth -= 1
+                    continue
+                uk = self.unit_kind(tk)
+                if uk in ("function", "subroutine"):
+                    if depth == 0:
+                        procs[self.rename(self.procedure_name(tk))] = self.has_module_prefix(tk)
+                    depth += 1
+            if end is None:
+                i += 1
+                continue
+            units.append({"kind": kind, "name": name, "root": root, "start": i, "end": end, "procs": procs})
+            i = end + 1
+        return units
+
+    def has_module_prefix(self, toks):
+        """True for `module function f(...)`, with or without `pure` and the like in front."""
+        for t in toks:
+            if t.text in ("function", "subroutine"):
+                return False
+            if t.text == "module":
+                return True
+        return False
+
+    def procedure_name(self, toks):
+        """The name in a `function`/`subroutine` statement."""
+        depth = 0
+        for j, t in enumerate(toks):
+            if t.kind == "op" and t.text == "(":
+                depth += 1
+            elif t.kind == "op" and t.text == ")":
+                depth -= 1
+            elif depth == 0 and t.kind == "name" and t.text in ("function", "subroutine"):
+                return toks[j + 1].text
+        return ""
+
+    def is_clash(self, name, u, taken):
+        """A private procedure of a submodule that some other part also defines."""
+        return not u["procs"][name] and taken.get(name, 0) > 1
+
+    def renamed_private(self, u, taken):
+        """The statements of submodule `u` (as a list from the first statement of the submodule), with each
+        private procedure that another part also defines renamed to `<submodule>_<name>`."""
+        items = list(self.items[:u["end"] + 1])
+        clashes = {n: f"{u['name']}_{n}" for n in u["procs"] if self.is_clash(n, u, taken)}
+        if not clashes:
+            return items
+        pat = re.compile(r"(?<![\w%])(" + "|".join(map(re.escape, clashes)) + r")(?!\w)", re.I)
+        for j in range(u["start"] + 1, u["end"]):
+            it = items[j]
+            if it.comment is None:
+                items[j] = Item(it.line, rename_outside_strings(it.text, pat, clashes), None, None, it.label)
+        return items
 
     def procedure_header(self, toks):
         self.toks, self.k = toks, 0
@@ -904,6 +1147,8 @@ class FParser:
                                    "variables of the host are not visible to them")
             while True:
                 if self.items[self.i].comment is not None:
+                    if self.items[self.i].comment.startswith(SUBMODULE_ORIGIN):
+                        self.top_comments.append(self.items[self.i].comment)   # where a merged procedure came from
                     self.i += 1
                     continue
                 cur = self.items[self.i]
