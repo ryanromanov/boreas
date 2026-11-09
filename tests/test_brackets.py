@@ -3,19 +3,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 from test_callback_convert import converted, fortran_output
 from test_fortran import GFORTRAN, run_bor, todos
 from boreas.completion import completions
-from boreas.interp import Interp
+from boreas.cli import check_errors
 from boreas.lexer import LangError
 from boreas.navigation import hover
 from boreas.parser import parse
 from boreas.printer import to_source
 from boreas.verify import same_output
-
-
-def run_with_warnings(src):
-    out, warned = [], []
-    unit = parse(src)
-    Interp(unit, out.append, warn=warned.append).run()
-    return out, warned, unit.warnings
 
 
 class NewSyntaxTests(unittest.TestCase):
@@ -128,34 +121,41 @@ end program t
         self.assertEqual(to_source(parse(src)), src)
 
 
-class OldSyntaxTests(unittest.TestCase):
-    OLD = """function trace(real :: m) -> real
-  return m(1, 1)
-end function
-program t
-  real :: a(2, 2) = reshape([1.0, 2.0, 3.0, 4.0], [2, 2])
-  allocatable integer :: g(:)
-  allocate g(2)
-  g(1) = 4
-  println(trace(a), a(2, 2), g(1))
-end program"""
+class OldSyntaxIsAnErrorTests(unittest.TestCase):
+    def fails(self, src, message):
+        with self.assertRaises(LangError) as cm:
+            run_bor(src)
+        self.assertIn(message, str(cm.exception))
 
-    def test_still_runs_and_tells_about_each_use_once(self):
-        out, warned, parsed = run_with_warnings(self.OLD)
-        self.assertEqual(out, ["1.0 4.0 4"])
-        self.assertEqual(len(warned), len(set(warned)))
-        text = " ".join(warned) + " " + " ".join(m for _, m in parsed)
-        for hint in ("write a[...]", "write g[...]", "'m' of trace is an array", "real[...] :: a",
-                     "allocatable integer[] :: g", "allocate g[...]"):
-            self.assertIn(hint, text)
+    def test_declarations_and_allocate(self):
+        for body, hint in [("real :: v(3)", "write 'real[size] :: v'"),
+                           ("allocatable integer :: g(:)", "write 'allocatable integer[] :: g'"),
+                           ("allocatable integer :: g", "needs its rank"),
+                           ("allocatable integer[] :: g\n  allocate g(2)", "write 'allocate g[...]'")]:
+            with self.subTest(body=body):
+                self.fails(f"program t\n  {body}\nend program", hint)
 
-    def test_new_syntax_has_no_warnings(self):
-        _, warned, parsed = run_with_warnings("program t\n  real[2] :: a = [1.0, 2.0]\n  println(a[2])\nend program")
-        self.assertEqual((warned, parsed), ([], []))
+    def test_indexing_with_parentheses(self):
+        self.fails("program t\n  real[2] :: a = [1.0, 2.0]\n  println(a(2))\nend program",
+                   "index with brackets: write a[...], not a(...)")
+        self.fails('program t\n  string :: s = "hello"\n  println(s(2:3))\nend program', "write s[...]")
+        self.fails("record team\n  integer[3] :: tags\nend record\nprogram t\n  team :: tm\n  println(tm.tags(2))\nend program",
+                   "write tags[...]")
 
-    def test_calls_never_warn(self):
-        _, warned, parsed = run_with_warnings("program t\n  println(sqrt(4.0), max(1, 2))\nend program")
-        self.assertEqual((warned, parsed), ([], []))
+    def test_a_parameter_that_gets_an_array_must_say_so(self):
+        self.fails("function trace(real :: m) -> real\n  return 1.0\nend function\n"
+                   "program t\n  real[2, 2] :: a = 0.0\n  println(trace(a))\nend program",
+                   "'m' of trace is an array: declare it as real[,] :: m")
+
+    def test_check_finds_it_without_running(self):
+        found = check_errors("program t\n  real[2] :: a = [1.0, 2.0]\n  if false then\n    println(a(2))\n  end if\nend program")
+        self.assertEqual([(line, msg) for line, _, msg, _ in found],
+                         [(4, "index with brackets: write a[...], not a(...)")])
+        found = check_errors("function f(real[] :: v) -> real\n  return v(1)\nend function\nprogram t\nend program")
+        self.assertEqual([msg for _, _, msg, _ in found], ["index with brackets: write v[...], not v(...)"])
+
+    def test_calls_still_use_parentheses(self):
+        self.assertEqual(run_bor("program t\n  println(sqrt(4.0), max(1, 2))\nend program"), ["2.0 2"])
 
 
 class ConversionTests(unittest.TestCase):

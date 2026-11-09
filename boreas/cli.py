@@ -20,12 +20,7 @@ USAGE = """usage:
 
 def run_source(src, out=print, args=(), stdin=None):
     """Run a program; returns its exit code."""
-    unit = parse(src)
-    warn = lambda text: print(text, file=sys.stderr)
-    for line, message in unit.warnings:
-        if message not in {m for _, m in unit.warnings[:unit.warnings.index((line, message))]}:
-            warn(f"warning: line {line}: {message}")
-    return Interp(unit, out, args, stdin, warn).run()
+    return Interp(parse(src), out, args, stdin).run()
 
 
 def check_errors(src):

@@ -11,6 +11,25 @@ from .parser import (Allocate, Apply, ArrayLit, Assign, Binary, Call, Close, Dec
                      Unary, Var, sub_bodies)
 
 
+def indexable_in(body):
+    """The names a statement list declares as arrays or strings, which are indexed with brackets."""
+    names = set()
+    for s in body:
+        if isinstance(s, list):
+            names |= indexable_in(s)
+        elif isinstance(s, Decl):
+            if s.dims is not None or s.allocatable or s.type == "string":
+                names.add(s.name)
+        else:
+            for inner in sub_bodies(s):
+                names |= indexable_in(inner)
+    return names
+
+
+def indexable_params(params):
+    return {name for typ, name, _ in params if isinstance(typ, str) and (typ == "string" or typ.endswith("]"))}
+
+
 def declared_in(body):
     """Every name a statement list declares, at any depth."""
     names = set()
@@ -27,8 +46,9 @@ def declared_in(body):
 
 class Walker:
     """Checks one procedure or program body against what it can see."""
-    def __init__(self, scope, variables):
+    def __init__(self, scope, variables, indexable=()):
         self.scope, self.variables, self.errors = scope, variables, []
+        self.indexable = set(indexable)               # arrays and strings: written name[...], never name(...)
 
     def report(self, name, line, col, message):
         self.errors.append((line, col, message, len(name)))
@@ -44,7 +64,9 @@ class Walker:
         elif isinstance(e, Var):
             self.variable(e.name, e.line, e.col)
         elif isinstance(e, Apply):
-            if not (e.name in self.variables or e.name in self.scope.funcs or e.name in self.scope.records
+            if not e.bracket and e.name in self.indexable:
+                self.report(e.name, e.line, e.col, f"index with brackets: write {e.name}[...], not {e.name}(...)")
+            elif not (e.name in self.variables or e.name in self.scope.funcs or e.name in self.scope.records
                     or e.name in BUILTINS or e.name in ELEMENTAL or e.name in ("present", "allocated")):
                 self.report(e.name, e.line, e.col, f"unknown function or array '{e.name}'")
             self.arguments(e.args)
@@ -128,12 +150,13 @@ def undeclared_names(unit, interp):
         bodies += [(f, interp.scopes[id(f)]) for f in mod.functions.values()]
     errors = []
     for f, scope in bodies:
-        walker = Walker(scope, set(scope.consts) | {name for _, name, _ in f.params} | declared_in(f.body))
+        walker = Walker(scope, set(scope.consts) | {name for _, name, _ in f.params} | declared_in(f.body),
+                        indexable_in(f.body) | indexable_params(f.params))
         walker.statements(f.body)
         errors += walker.errors
     if unit.program:
         scope = interp.program_scope
-        walker = Walker(scope, set(scope.consts) | declared_in(unit.program.body))
+        walker = Walker(scope, set(scope.consts) | declared_in(unit.program.body), indexable_in(unit.program.body))
         walker.statements(unit.program.body)
         errors += walker.errors
     return sorted(errors, key=lambda err: err[:2])

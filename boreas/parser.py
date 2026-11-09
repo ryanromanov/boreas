@@ -166,7 +166,6 @@ class Unit:
     modules: dict = field(default_factory=dict)
     records: dict = field(default_factory=dict)    # top-level record types
     ieee: bool = False    # `use ieee`: real arithmetic follows IEEE (NaN, Infinity) instead of stopping
-    warnings: list = field(default_factory=list, compare=False)    # (line, message) for syntax on its way out
 
 
 def root_name(target):
@@ -436,7 +435,6 @@ class Parser:
         self.module_checks = []                     # one list per module being parsed: its procedures, checked at its end
         self.toks, self.i = lex(src), 0
         self.inside = []                  # enclosing "select" / "loop" constructs, innermost last
-        self.warnings = []                # (line, message): old syntax that still works
 
     @property
     def tok(self):
@@ -513,7 +511,7 @@ class Parser:
             self.skip_newlines()
         if not prog:
             raise LangError("no program found")
-        return Unit(funcs, prog, mods, recs, ieee, self.warnings)
+        return Unit(funcs, prog, mods, recs, ieee)
 
     def record_def(self, public):
         """`record point` / one `type :: name` line per field / `end record`."""
@@ -906,15 +904,15 @@ class Parser:
         if t.text == "deallocate":
             self.newline()
             return Deallocate(name, t.line, update)
-        if not self.at("[", "("):
+        if self.at("("):
+            self.error(f"arrays use brackets: write 'allocate {name}[...]'")
+        if not self.at("["):
             self.error("expected the extents, as in 'allocate a[n]'")
-        close = ")" if self.next().text == "(" else "]"
-        if close == ")":
-            self.warnings.append((t.line, f"arrays use brackets: write 'allocate {name}[...]'"))
+        self.next()
         dims = [self.expr()]
         while self.accept(","):
             dims.append(self.expr())
-        self.expect(close)
+        self.expect("]")
         self.newline()
         return Allocate(name, dims, t.line, update)
 
@@ -926,16 +924,14 @@ class Parser:
             dims = self.type_dims(allocatable)
         self.expect("::")
         name = self.ident()
+        if self.at("("):
+            if allocatable:
+                self.error(f"arrays use brackets: write 'allocatable {typ}[] :: {name}', "
+                           f"with a comma for each extra dimension")
+            self.error(f"arrays use brackets: write '{typ}[size] :: {name}'")
         if allocatable and dims is None:
-            dims = self.deferred_dims(name, typ)
-            self.warnings.append((line, f"arrays use brackets: write 'allocatable {typ}[{',' * (len(dims) - 1)}] :: {name}'"))
-        elif not allocatable and dims is None and self.at("("):
-            self.next()
-            dims = [self.expr()]
-            while self.accept(","):
-                dims.append(self.expr())
-            self.expect(")")
-            self.warnings.append((line, f"arrays use brackets: write '{typ}[...] :: {name}'"))
+            self.error(f"allocatable '{name}' needs its rank: write 'allocatable {typ}[] :: {name}', "
+                       f"with a comma for each extra dimension")
         if typ.endswith("?") and (dims is not None or allocatable):
             self.error(f"'{name}' is an array of optional values, which is not supported")
         init = self.expr() if self.accept("=") else None
@@ -967,23 +963,6 @@ class Parser:
         while self.accept(","):
             dims.append(self.expr())
         self.expect("]")
-        return dims
-
-    def deferred_dims(self, name, typ):
-        """The `(:, :)` after an allocatable name: one Slice per dimension, which fixes the rank."""
-        if not self.accept("("):
-            self.error(f"allocatable '{name}' needs its rank: write 'allocatable {typ}[] :: {name}', "
-                       f"with a comma for each extra dimension")
-        dims = []
-        while True:
-            if not self.at(":"):
-                self.error(f"allocatable '{name}' is declared with ':' for each dimension; "
-                           f"its sizes come from 'allocate'")
-            self.next()
-            dims.append(Slice(None, None))
-            if not self.accept(","):
-                break
-        self.expect(")")
         return dims
 
     def if_stmt(self):

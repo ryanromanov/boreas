@@ -224,13 +224,14 @@ there is no literal syntax (`cmplx(re)` or an integer or real value widens when 
 
 ## Arrays
 
-> **Bracket syntax (D51).** Arrays are indexed, declared and allocated with square brackets, and parentheses
-> only mean a call or grouping: `a[i]`, `m[i, j]`, `a[2:5]`, `real[3] :: v`, `allocate g[n, 2]`,
-> `allocatable real[,] :: m`, `t.tags[2]`, and `s[2:3]` for part of a string. A parameter says its rank:
-> `real[,] :: m` is a two-dimensional array, `real[] :: v` a one-dimensional one, and `real :: x` one number
-> (callback signatures use the same forms, `function(real[]) -> real`). The old forms (`a(i)`, `real :: v(3)`,
-> `allocate g(n)`, `allocatable real :: m(:, :)`, a bare `real :: m` parameter that takes an array) still run
-> for now and print a warning to stderr once; they will become errors.
+Arrays are indexed, declared and allocated with square brackets; parentheses only mean a call or grouping:
+`a[i]`, `m[i, j]`, `a[2:5]`, `real[3] :: v`, `allocate g[n, 2]`, `allocatable real[,] :: m` (a comma for each
+dimension after the first), `t.tags[2]` for a record's array field, and `s[2:3]` for part of a string. A
+parameter says its rank: `real[,] :: m` is a two-dimensional array, `real[] :: v` a one-dimensional one, and
+`real :: x` one number; the rank is checked when the call is made, and callback signatures use the same forms
+(`function(real[]) -> real`). The older Fortran-style spellings (`a(i)`, `real :: v(3)`, `allocate g(n)`,
+`allocatable real :: m(:, :)`, an array passed to a bare `real :: m`) are errors that name the bracket form;
+`boreas check` finds the indexing ones without running the program.
 
 Arrays have any number of dimensions, 1-based and stored column-major like
 Fortran. A scalar subscript drops that dimension; `:` keeps it.

@@ -488,8 +488,8 @@ class OneDeclarationPerLineTests(unittest.TestCase):
             run("integer :: x, y")
 
     def test_rejected_with_initializers_const_and_arrays(self):
-        for src in ("integer :: x = 1, y = 2", "const real :: a = 1.0, b = 2.0", "real :: v(3), w(2)",
-                    "allocatable real :: v(:), w(:)"):
+        for src in ("integer :: x = 1, y = 2", "const real :: a = 1.0, b = 2.0", "real[3] :: v, w[2]",
+                    "allocatable real[] :: v, w[:]"):
             with self.subTest(src=src):
                 with self.assertRaisesRegex(LangError, "declare one variable per line"):
                     run(src)
