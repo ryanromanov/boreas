@@ -105,8 +105,8 @@ class FixedLengthCharacterTests(unittest.TestCase):
 
     def test_array_elements_but_not_substrings(self):
         text, _ = self.text("  character(len=3) :: names(2)\n  character(len=9) :: s", "  names(1) = s\n  s(1:1) = 'x'")
-        self.assertIn("names(1) = left(s, 3)", text)
-        self.assertIn('s(1:1) = "x"', text)
+        self.assertIn("names[1] = left(s, 3)", text)
+        self.assertIn('s[1:1] = "x"', text)
 
     def test_comparisons_and_select_ignore_trailing_blanks(self):
         text, _ = self.text("  character(len=5) :: a", "  if (a == 'abc  ') print *, 1\n  select case (a)\n"

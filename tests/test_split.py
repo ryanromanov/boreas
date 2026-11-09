@@ -99,13 +99,13 @@ class AllocateOnAssignmentTests(unittest.TestCase):
 
     def test_a_scalar_still_needs_an_allocated_array(self):
         fails(self, self.D + "  a = 1", "not allocated")
-        self.assertEqual(run(self.D + "  allocate a(2)\n  a = 7\n  println(a)"), ["[7, 7]"])
+        self.assertEqual(run(self.D + "  allocate a[2]\n  a = 7\n  println(a)"), ["[7, 7]"])
 
     def test_the_rank_must_match(self):
         fails(self, self.D + "  a = reshape([1, 2, 3, 4], [2, 2])", "1 dimension")
 
     def test_two_dimensions(self):
-        body = "  allocatable integer :: m(:, :)\n  m = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n  println(shape(m))"
+        body = "  allocatable integer[,] :: m\n  m = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n  println(shape(m))"
         self.assertEqual(run(body), ["[2, 3]"])
 
     def test_the_copy_is_independent(self):
@@ -113,7 +113,7 @@ class AllocateOnAssignmentTests(unittest.TestCase):
         self.assertEqual(run(body), ["[1, 2]"])
 
     def test_a_module_variable_needs_update(self):
-        mod = "module m\n  public allocatable integer :: data(:)\n  public subroutine load()\n    {}\n  end subroutine\nend module\n"
+        mod = "module m\n  public allocatable integer[] :: data\n  public subroutine load()\n    {}\n  end subroutine\nend module\n"
         prog = "use m: data, load\ncall load()\nprintln(data)"
         self.assertEqual(run(prog, mod.format("update data = [1, 2]")), ["[1, 2]"])
         fails(self, prog, "update", mod.format("data = [1, 2]"))

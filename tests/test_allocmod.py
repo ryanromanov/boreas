@@ -9,12 +9,12 @@ from boreas.printer import to_source
 from boreas.verify import same_output
 
 STORE = """module store
-  public allocatable integer :: data(:)
+  public allocatable integer[] :: data
   public subroutine setup(integer :: k)
     integer :: i
-    update allocate data(k)
+    update allocate data[k]
     do i = 1, k
-      update data(i) = i * i
+      update data[i] = i * i
     end do
   end subroutine
   public function total() -> integer
@@ -45,7 +45,7 @@ class AllocatableModuleVariableTests(unittest.TestCase):
                          ["30", "126", "4"])
 
     def test_the_program_can_allocate_an_imported_array(self):
-        self.assertEqual(run(program("update allocate data(2)\nprintln(data)\nupdate deallocate data\nprintln(allocated(data))")),
+        self.assertEqual(run(program("update allocate data[2]\nprintln(data)\nupdate deallocate data\nprintln(allocated(data))")),
                          ["[0,", "0]", "false"])
 
     def test_allocate_without_update_is_an_error(self):
@@ -85,9 +85,9 @@ class AllocatableModuleVariableTests(unittest.TestCase):
             run(program("update deallocate data"))
 
     def test_prints_back_as_source(self):
-        text = to_source(parse(program("update allocate data(2)")))
-        self.assertIn("public allocatable integer :: data(:)", text)
-        self.assertIn("update allocate data(2)", text)
+        text = to_source(parse(program("update allocate data[2]")))
+        self.assertIn("public allocatable integer[] :: data", text)
+        self.assertIn("update allocate data[2]", text)
         self.assertIn("update deallocate data", text)
         parse(text)
 
@@ -102,11 +102,11 @@ class ConvertTests(unittest.TestCase):
 
     def test_allocation_gets_update_and_a_function_becomes_a_subroutine(self):
         text, _ = convert(read(fixture("allocmod.f90")), "allocmod.f90")
-        self.assertIn("public allocatable real32 :: cells(:, :)", text)
-        self.assertIn("update allocate cells(nx, ny)", text)
+        self.assertIn("public allocatable real32[,] :: cells", text)
+        self.assertIn("update allocate cells[nx, ny]", text)
         self.assertIn("update deallocate cells", text)
-        self.assertIn("update allocate cells(1, 1)", text)
-        self.assertIn("allocate tmp(3)", text)               # a local array is unchanged
+        self.assertIn("update allocate cells[1, 1]", text)
+        self.assertIn("allocate tmp[3]", text)               # a local array is unchanged
         self.assertIn("use grid: make, release, cells, ready", text)
 
     def test_a_module_procedure_sees_an_array_from_another_module(self):

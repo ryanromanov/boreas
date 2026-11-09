@@ -42,12 +42,12 @@ class FixtureTests(unittest.TestCase):
     def test_type_valued_functions_and_arrays_of_records_as_arguments(self):
         text = self.check("records3.f90")
         self.assertIn("public function add(v2 :: a, v2 :: b) -> v2", text)
-        self.assertIn("update vs(i).x = vs(i).x * k", text)
+        self.assertIn("update vs[i].x = vs[i].x * k", text)
 
     def test_types_in_a_program_are_hoisted_and_keep_their_defaults(self):
         text = self.check("records2.f90")
         self.assertTrue(text.index("record item") < text.index("program inventory"))
-        self.assertIn("integer :: counts(3) = 0", text)          # the parameter n was folded into the size
+        self.assertIn("integer[3] :: counts = 0", text)          # the parameter n was folded into the size
         self.assertIn("one = item(7)", text)
         self.assertIn("subroutine fill(out item :: it)", text)    # every field has a default: still out
 
@@ -59,7 +59,7 @@ class TypeTests(unittest.TestCase):
                "  print *, c%n, c%v, c%k\nend program\n")
         text, findings = conv(src)
         self.assertIn("integer :: n = 5", text)
-        self.assertIn("integer :: k(2) = [1, 2]", text)
+        self.assertIn("integer[2] :: k = [1, 2]", text)
         self.assertEqual(run_bor(text), ["5 true [1, 2]"])
         self.assertEqual(todos(findings), [])
 

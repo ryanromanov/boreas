@@ -27,6 +27,7 @@ class Slice: lo: object; hi: object
 class Apply:   # index, slice, or call
     name: str; args: list; line: int
     col: int = field(default=0, compare=False, repr=False)
+    bracket: bool = field(default=False, compare=False, repr=False)   # written name[...]: indexing, never a call
 @dataclass
 class Unary: op: str; operand: object
 @dataclass
@@ -42,8 +43,9 @@ class Decl:   # dims: list of exprs or None
     public: bool = False       # only meaningful for a module's constants
     allocatable: bool = False  # dims are then one `:` (a Slice) per dimension: the rank
 @dataclass
-class FieldAccess:    # base.field or base.field(subscripts) for an array field
+class FieldAccess:    # base.field or base.field[subscripts] for an array field
     base: object; field: str; args: object; line: int
+    bracket: bool = field(default=False, compare=False, repr=False)
 @dataclass
 class NamedArg: name: str; value: object     # `x = 1.0` inside a record constructor
 @dataclass
@@ -164,6 +166,7 @@ class Unit:
     modules: dict = field(default_factory=dict)
     records: dict = field(default_factory=dict)    # top-level record types
     ieee: bool = False    # `use ieee`: real arithmetic follows IEEE (NaN, Infinity) instead of stopping
+    warnings: list = field(default_factory=list, compare=False)    # (line, message) for syntax on its way out
 
 
 def root_name(target):
@@ -433,6 +436,7 @@ class Parser:
         self.module_checks = []                     # one list per module being parsed: its procedures, checked at its end
         self.toks, self.i = lex(src), 0
         self.inside = []                  # enclosing "select" / "loop" constructs, innermost last
+        self.warnings = []                # (line, message): old syntax that still works
 
     @property
     def tok(self):
@@ -509,7 +513,7 @@ class Parser:
             self.skip_newlines()
         if not prog:
             raise LangError("no program found")
-        return Unit(funcs, prog, mods, recs, ieee)
+        return Unit(funcs, prog, mods, recs, ieee, self.warnings)
 
     def record_def(self, public):
         """`record point` / one `type :: name` line per field / `end record`."""
@@ -674,7 +678,7 @@ class Parser:
                         self.error("a procedure parameter cannot be out or inout")
                     t = self.proc_type()
                 else:
-                    t = self.type_name()
+                    t = self.param_type()
                 if is_optional(t) and intent != "in":
                     self.error("an optional ('?') parameter must be an 'in' parameter")
                 self.expect("::")
@@ -698,7 +702,7 @@ class Parser:
                         self.error("only a subroutine signature may have out or inout parameters")
                 if self.at("function", "subroutine"):
                     self.error("a procedure signature cannot take a procedure")
-                t = self.type_name(anywhere=True)
+                t = self.param_type(anywhere=True)
                 if is_optional(t):
                     self.error("a procedure signature cannot have an optional ('?') parameter")
                 params.append((t, intent))
@@ -715,6 +719,24 @@ class Parser:
                 self.error("a procedure signature cannot return an array")
         return ProcType(is_sub, tuple(params), ret, tuple(names))
 
+    def param_type(self, anywhere=False):
+        """A parameter's type: a type, or an array of one with its rank (`real[]`, `real[,]`)."""
+        name = self.type_name(anywhere=anywhere)
+        if not self.at("["):
+            return name
+        if is_optional(name):
+            self.error("an array parameter cannot be optional ('?')")
+        return name + self.rank_suffix()
+
+    def rank_suffix(self):
+        """`[]`, `[,]`, ...: the brackets after a type, a comma for each dimension beyond the first."""
+        self.expect("[")
+        rank = 1
+        while self.accept(","):
+            rank += 1
+        self.expect("]")
+        return "[" + "," * (rank - 1) + "]"
+
     def result_type(self):
         """A function's result type: a type, or an array of one (`integer[]`, `real[,]`: a comma for each
         extra dimension). An array result's length is only known after the call."""
@@ -723,18 +745,21 @@ class Parser:
             return name
         if is_optional(name):
             self.error("an array result cannot be optional ('?')")
-        self.next()
-        rank = 1
-        while self.accept(","):
-            rank += 1
-        self.expect("]")
-        return name + "[" + "," * (rank - 1) + "]"
+        return name + self.rank_suffix()
 
-    def typed_ahead(self):
-        """Does a `::` (after an optional `?`) follow the current token?"""
-        j = self.i + 1
+    def typed_ahead(self, j=None):
+        """Does a `::` follow the type name at token j (the current token if j is None), after an optional `?`
+        and an optional `[...]`?"""
+        j = self.i + 1 if j is None else j + 1
         if self.toks[j].text == "?":
             j += 1
+        if self.toks[j].text == "[":
+            depth = 0
+            while self.toks[j].kind not in ("nl", "eof"):
+                depth += (self.toks[j].text == "[") - (self.toks[j].text == "]")
+                j += 1
+                if depth == 0:
+                    break
         return self.toks[j].text == "::"
 
     def type_name(self, anywhere=False):
@@ -777,7 +802,7 @@ class Parser:
         if t.kind == "ident" and t.text == "allocatable" and self.toks[self.i + 1].text == "const":
             self.error("an allocatable array cannot be 'const'")
         if t.kind == "ident" and t.text == "allocatable" and (self.toks[self.i + 1].text in TYPES
-                                                              or self.toks[self.i + 2].text == "::"):
+                                                              or self.typed_ahead(self.i + 1)):
             self.next()
             return self.decl(allocatable=True)
         if t.kind == "ident" and (t.text in TYPES or (t.text not in KEYWORDS and self.typed_ahead())):
@@ -874,36 +899,43 @@ class Parser:
         return ExprStmt(e)
 
     def allocation(self):
-        """`allocate a(n, m)` or `deallocate a`: one array per statement."""
+        """`allocate a[n, m]` or `deallocate a`: one array per statement."""
         update = bool(self.accept("update"))
         t = self.next()
         name = self.ident()
         if t.text == "deallocate":
             self.newline()
             return Deallocate(name, t.line, update)
-        if not self.at("("):
-            self.error("expected the extents, as in 'allocate a(n)'")
-        self.next()
+        if not self.at("[", "("):
+            self.error("expected the extents, as in 'allocate a[n]'")
+        close = ")" if self.next().text == "(" else "]"
+        if close == ")":
+            self.warnings.append((t.line, f"arrays use brackets: write 'allocate {name}[...]'"))
         dims = [self.expr()]
         while self.accept(","):
             dims.append(self.expr())
-        self.expect(")")
+        self.expect(close)
         self.newline()
         return Allocate(name, dims, t.line, update)
 
     def decl(self, const=False, allocatable=False):
         line = self.tok.line
         typ = self.type_name()
+        dims = None
+        if self.at("["):                               # real[3] :: v, real[2, 3] :: m, allocatable real[,] :: m
+            dims = self.type_dims(allocatable)
         self.expect("::")
         name = self.ident()
-        dims = None
-        if allocatable:
-            dims = self.deferred_dims(name)
-        elif self.accept("("):
+        if allocatable and dims is None:
+            dims = self.deferred_dims(name, typ)
+            self.warnings.append((line, f"arrays use brackets: write 'allocatable {typ}[{',' * (len(dims) - 1)}] :: {name}'"))
+        elif not allocatable and dims is None and self.at("("):
+            self.next()
             dims = [self.expr()]
             while self.accept(","):
                 dims.append(self.expr())
             self.expect(")")
+            self.warnings.append((line, f"arrays use brackets: write '{typ}[...] :: {name}'"))
         if typ.endswith("?") and (dims is not None or allocatable):
             self.error(f"'{name}' is an array of optional values, which is not supported")
         init = self.expr() if self.accept("=") else None
@@ -916,10 +948,32 @@ class Parser:
         self.newline()
         return Decl(typ, name, dims, init, line, const, allocatable=allocatable)
 
-    def deferred_dims(self, name):
+    def type_dims(self, allocatable):
+        """The `[...]` after a type in a declaration: sizes for a fixed array (`real[2, 3]`), or only commas
+        for an allocatable one (`real[,]`), where the rank is the number of commas plus one."""
+        self.expect("[")
+        if allocatable:
+            dims = [Slice(None, None)]
+            while self.accept(","):
+                dims.append(Slice(None, None))
+            if not self.at("]"):
+                self.error("an allocatable array is declared with no sizes, as in 'real[,]'; "
+                           "its sizes come from 'allocate'")
+            self.next()
+            return dims
+        if self.at("]", ","):
+            self.error("a fixed-size array needs a size, as in 'real[3]'; use 'allocatable' for one sized later")
+        dims = [self.expr()]
+        while self.accept(","):
+            dims.append(self.expr())
+        self.expect("]")
+        return dims
+
+    def deferred_dims(self, name, typ):
         """The `(:, :)` after an allocatable name: one Slice per dimension, which fixes the rank."""
         if not self.accept("("):
-            self.error(f"allocatable '{name}' needs one ':' per dimension, as in '{name}(:)'")
+            self.error(f"allocatable '{name}' needs its rank: write 'allocatable {typ}[] :: {name}', "
+                       f"with a comma for each extra dimension")
         dims = []
         while True:
             if not self.at(":"):
@@ -1185,35 +1239,40 @@ class Parser:
             e = Var(name, t.line, t.col)
             if self.accept("("):
                 e = Apply(name, self.call_args(), t.line, t.col)
-            while self.at("."):                    # record fields: p.x, pts(2).pos.y, p.v(3)
+            elif self.accept("["):
+                e = Apply(name, self.call_args("]"), t.line, t.col, True)
+            while self.at("."):                    # record fields: p.x, pts[2].pos.y, p.v[3]
                 self.next()
                 field = self.ident()
-                e = FieldAccess(e, field, self.call_args() if self.accept("(") else None, t.line)
+                if self.accept("["):
+                    e = FieldAccess(e, field, self.call_args("]"), t.line, True)
+                else:
+                    e = FieldAccess(e, field, self.call_args() if self.accept("(") else None, t.line)
             return e
         self.error("expected an expression")
 
-    def call_args(self):
-        """The arguments after an opening parenthesis, through the closing one."""
+    def call_args(self, close=")"):
+        """The arguments after an opening parenthesis (or bracket), through the closing one."""
         args = []
-        if not self.at(")"):
+        if not self.at(close):
             while True:
-                args.append(self.arg())
+                args.append(self.arg(close))
                 if not self.accept(","):
                     break
-        self.expect(")")
+        self.expect(close)
         named = [isinstance(a, NamedArg) for a in args]
         if named != sorted(named):
             self.error("positional arguments must come before named arguments")
         return args
 
-    def arg(self):
+    def arg(self, close=")"):
         if self.tok.kind == "ident" and self.toks[self.i + 1].text == "=" and self.toks[self.i + 1].kind == "op":
             name = self.next().text
             self.next()
             return NamedArg(name, self.expr())
         lo = None if self.at(":") else self.expr()
         if self.accept(":"):
-            hi = None if self.at(",", ")") else self.expr()
+            hi = None if self.at(",", close) else self.expr()
             return Slice(lo, hi)
         return lo
 

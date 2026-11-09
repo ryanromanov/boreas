@@ -161,7 +161,7 @@ class TranslationTests(unittest.TestCase):
     def test_parameter_becomes_const(self):
         text, findings = conv("integer, parameter :: n = 4, sq(2) = (/ 1, 4 /)\n  real, parameter :: half = 0.5\n"
                               "  integer :: k\n  k = n\n  print *, k, sq, half", "")
-        self.assertIn("  const integer :: n = 4\n  const integer :: sq(2) = [1, 4]", text)
+        self.assertIn("  const integer :: n = 4\n  const integer[2] :: sq = [1, 4]", text)
         self.assertIn("const real32 :: half = 0.5", text)
         self.assertFalse(any("ordinary variables" in f[2] for f in findings))
         self.assertEqual(run_bor(text), ["4 [1, 4] 0.5"])

@@ -620,7 +620,7 @@ class ConverterTests(unittest.TestCase):
 
     def test_case_variable_name_is_not_mistaken_for_a_case_line(self):
         text, _ = conv("  case(1) = 4\n  print *, case(1)", "  integer :: case(2)")
-        self.assertIn("case_(1) = 4", text)
+        self.assertIn("case_[1] = 4", text)
 
 
 if __name__ == "__main__":
