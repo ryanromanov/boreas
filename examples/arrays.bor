@@ -1,0 +1,40 @@
+! Building and rearranging arrays: generators, splicing and cshift.
+!
+! A generator makes an array from a loop: [value do i = lo, hi]. Its variable
+! exists only inside it. To mix a generator with other items, put it in
+! parentheses. A one-dimensional array inside a literal is spliced in.
+
+program arrays
+  integer :: n = 8
+
+  ! Generators.
+  println("squares:", [k * k do k = 1, 5])
+  println("evens:  ", [k do k = 2, 10, 2])
+  println("down:   ", [k do k = 10, 1, -3])
+
+  ! Splicing: pad a signal with zeros, or join two pieces.
+  real[3] :: signal = [1.0, 2.0, 3.0]
+  println("padded: ", [signal, (0.0 do k = 1, 2)])
+  println("joined: ", [signal, 9.0, signal])
+
+  ! Several values per step, and generators inside generators. The inner one
+  ! is written first, as in Fortran, and it is the one that varies fastest.
+  println("pairs:  ", [(k, -k do k = 1, 3)])
+  println("grid:   ", [(10 * row + col do col = 1, 3) do row = 1, 2])
+
+  ! cshift rotates an array: result[i] is a[i + shift], so a positive shift
+  ! moves elements toward the start.
+  integer[5] :: a = [1, 2, 3, 4, 5]
+  println("left 2: ", cshift(a, 2))
+  println("right 1:", cshift(a, -1))
+
+  ! An FFT puts zero frequency first; rotating by half the length centers it.
+  integer[8] :: bins = [(k do k = 0, 3), (k do k = -4, -1)]
+  println("fft order:   ", bins)
+  println("centered:    ", cshift(bins, n / 2))
+
+  ! A matrix rotates along one dimension at a time (dim 1 is the default).
+  integer[2, 3] :: m = reshape([1, 2, 3, 4, 5, 6], [2, 3])
+  println("rows swap:   ", cshift(m, 1))
+  println("columns left:", cshift(m, 1, 2))
+end program

@@ -621,9 +621,9 @@ class FParser:
             close = "]" if t.text == "[" else "/)"
             items = []
             if not self.at_op(close):
-                items.append(self.expr())
+                items.append(self.constructor_item())
                 while self.accept_op(","):
-                    items.append(self.expr())
+                    items.append(self.constructor_item())
             if not self.accept_op(close):
                 raise Unsupported("implied-do or malformed array constructor")
             return ArrayLit(items)
@@ -3202,8 +3202,18 @@ class FParser:
             return -e.operand.value
         return None
 
-    def implied_do(self):
-        """Parse `(expr, expr, var = lo, hi [, step])` at the current position, or put everything back."""
+    def constructor_item(self):
+        """One item of an array constructor: an expression, or an implied do (which becomes a Boreas generator)."""
+        loop = self.implied_do(self.constructor_item)
+        if loop is None:
+            return self.expr()
+        body, var, lo, hi, step = loop
+        return Gen(body, var, lo, hi, None if isinstance(step, Num) and step.value == 1 else step, self.line)
+
+    def implied_do(self, item=None):
+        """Parse `(expr, expr, var = lo, hi [, step])` at the current position, or put everything back.
+        `item` parses the expressions (an array constructor allows implied dos inside them)."""
+        item = item or self.expr
         start = self.k
         if not self.at_op("("):
             return None
@@ -3214,7 +3224,7 @@ class FParser:
                 nxt = self.peek(1)
                 if self.peek() is not None and self.peek().kind == "name" and nxt is not None and nxt.text == "=":
                     break
-                exprs.append(self.expr())
+                exprs.append(item())
                 if not self.accept_op(","):
                     self.k = start
                     return None

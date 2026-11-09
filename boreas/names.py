@@ -7,7 +7,7 @@ reported here should always be a real one. The interpreter still catches those c
 runs them."""
 from .interp import BUILTINS, ELEMENTAL
 from .parser import (Allocate, Apply, ArrayLit, Assign, Binary, Call, Close, Decl, Do, DoWhile,
-                     ExprStmt, FieldAccess, If, NamedArg, Print, Return, Select, SelectExpr, Slice, Stop,
+                     ExprStmt, FieldAccess, Gen, If, NamedArg, Print, Return, Select, SelectExpr, Slice, Stop,
                      Unary, Var, sub_bodies)
 
 
@@ -83,6 +83,13 @@ class Walker:
             self.expr([e.left, e.right])
         elif isinstance(e, ArrayLit):
             self.expr(e.items)
+        elif isinstance(e, Gen):                  # its variable exists only inside the generator
+            self.expr([e.lo, e.hi, e.step])
+            added = e.var not in self.variables
+            self.variables.add(e.var)
+            self.expr(e.body)
+            if added:
+                self.variables.discard(e.var)
         elif isinstance(e, SelectExpr):
             self.expr(e.subject)
             for arm in e.arms:

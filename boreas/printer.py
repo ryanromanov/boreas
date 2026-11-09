@@ -20,6 +20,13 @@ def prec(e):
     return ATOM
 
 
+def generator(g):
+    """`value, ... do i = lo, hi[, step]` (the caller adds any parentheses)."""
+    body = ", ".join(f"({generator(x)})" if isinstance(x, Gen) else expr(x) for x in g.body)
+    step = f", {expr(g.step)}" if g.step is not None else ""
+    return f"{body} do {g.var} = {expr(g.lo)}, {expr(g.hi)}{step}"
+
+
 def _args(args, bracket):
     """The arguments or subscripts of an Apply or FieldAccess, in the brackets or parentheses it was written with."""
     open_, close = ("[", "]") if bracket else ("(", ")")
@@ -50,7 +57,9 @@ def _expr(e):
     if k is Null:
         return "null"
     if k is ArrayLit:
-        return "[" + ", ".join(expr(x) for x in e.items) + "]"
+        if len(e.items) == 1 and isinstance(e.items[0], Gen) and len(e.items[0].body) == 1:
+            return "[" + generator(e.items[0]) + "]"            # shorthand: [value do i = 1, n]
+        return "[" + ", ".join(f"({generator(x)})" if isinstance(x, Gen) else expr(x) for x in e.items) + "]"
     if k is Slice:
         return (expr(e.lo) if e.lo is not None else "") + ":" + (expr(e.hi) if e.hi is not None else "")
     if k is Apply:

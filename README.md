@@ -243,6 +243,19 @@ Fortran. A scalar subscript drops that dimension; `:` keeps it.
 
 Operators work elementwise and need matching shapes (scalars broadcast).
 
+An array literal can contain one-dimensional arrays, which are spliced in: with `x = [1, 2, 3]`, `[x, 4]` is
+`[1, 2, 3, 4]` and `[0, x, x]` is `[0, 1, 2, 3, 1, 2, 3]`. A matrix in a literal is an error (build one with
+`reshape`).
+
+A **generator** builds an array from a loop, inside an array literal: `[i * i do i = 1, 4]` is `[1, 4, 9, 16]`,
+and `[i do i = 10, 1, -3]` is `[10, 7, 4, 1]` (the bounds and step work as in a `do` loop; an empty range gives
+an empty array). The variable exists only inside the generator, needs no declaration, and hides any variable of
+the same name. To mix a generator with other items, put it in parentheses: `[x, (0.0 do i = 1, n)]` is `x`
+followed by `n` zeros. The values before `do` can be several, and each may be a number or a one-dimensional
+array, which is spliced in: `[(x[k], y[k] do k = 1, n)]` is `x[1], y[1], x[2], y[2], ...`. Generators nest, inner
+one first, which is how Fortran writes it: `[(a[i, j] do i = 1, n) do j = 1, m]` lists a matrix column by column.
+A generator is only allowed directly inside an array literal.
+
 `cshift(a, shift)` rotates a one-dimensional array and `cshift(m, shift, dim)` the columns (`dim` 1, the
 default) or rows (`dim` 2) of a matrix. Elements pushed off one end come back at the other. It follows Fortran:
 `result[i]` is `a[i + shift]`, so a positive shift moves elements toward the start
@@ -632,6 +645,8 @@ report on stderr. Translations that change meaning are flagged, never silent:
   conditionally (after `.and.`/`.or.`, in an `else if` or `do while` condition) are TODOs.
 - `data a, b /1, 2/, c /3*0/` becomes initialisers on the declarations (arrays fill in column order, `n*value` repeats
   a value; a 2-D array uses `reshape`). Elements, sections and implied-do loops in a `data` list are TODOs.
+- Array constructors with implied-do loops become generators: `[x, (0.0, i=1, n)]` is `[x, (0.0 do i = 1, n)]`, and
+  `[(i*i, i=1, 4)]` is `[i * i do i = 1, 4]` (steps, nested loops and several values per step work too).
 - `character(len=n)` variables: assigning to one pads with blanks or cuts to `n` (`a = left(x, n)`; literals are
   padded in the converted source), comparisons and `select case` ignore trailing blanks (`trim(a) == "abc"`),
   and `len(a)` becomes `n`. Lengths that are not known numbers (`len=*`), record fields and function results

@@ -22,6 +22,12 @@ class Null: pass          # the absent value of an optional (`T?`) variable
 @dataclass
 class ArrayLit: items: list
 @dataclass
+class Gen:
+    """A generator inside an array literal: `(value do i = lo, hi, step)`. `body` holds one or more values
+    (scalars or one-dimensional arrays) that are spliced in for each i."""
+    body: list; var: str; lo: object; hi: object; step: object; line: int = 0
+    var_col: int = field(default=0, compare=False, repr=False)
+@dataclass
 class Slice: lo: object; hi: object
 @dataclass
 class Apply:   # index, slice, or call
@@ -1183,6 +1189,46 @@ class Parser:
             return Binary("**", base, self.unary())  # right-associative
         return base
 
+    def literal_item(self):
+        """One item of an array literal: an expression, or a parenthesized generator."""
+        if self.at("(") and self.generator_ahead():
+            self.next()
+            body = [self.literal_item()]
+            while self.accept(","):
+                body.append(self.literal_item())
+            g = self.generator_tail(body)
+            self.expect(")")
+            return g
+        return self.expr()
+
+    def generator_ahead(self):
+        """Is the "(" here the start of `(value do i = ...)`? Looks for a `do` before the matching ")"."""
+        depth, j = 0, self.i
+        while self.toks[j].kind not in ("nl", "eof"):
+            t = self.toks[j]
+            if t.text in ("(", "["):
+                depth += 1
+            elif t.text in (")", "]"):
+                depth -= 1
+                if depth == 0:
+                    return False
+            elif t.text == "do" and depth == 1:
+                return True
+            j += 1
+        return False
+
+    def generator_tail(self, body):
+        """`do i = lo, hi[, step]` after the values of a generator."""
+        line = self.expect("do").line
+        var_col = self.tok.col
+        var = self.ident()
+        self.expect("=")
+        lo = self.expr()
+        self.expect(",")
+        hi = self.expr()
+        step = self.expr() if self.accept(",") else None
+        return Gen(body, var, lo, hi, step, line, var_col)
+
     def primary(self):
         t = self.tok
         if t.kind == "int":
@@ -1199,14 +1245,20 @@ class Parser:
             return Null()
         if self.accept("("):
             e = self.expr()
+            if self.at("do"):
+                self.error("a generator belongs in an array literal: [(value do i = 1, n)]")
             self.expect(")")
             return e
         if self.accept("["):
             items = []
             if not self.at("]"):
-                items.append(self.expr())
+                items.append(self.literal_item())
                 while self.accept(","):
-                    items.append(self.expr())
+                    items.append(self.literal_item())
+                if self.at("do"):                      # shorthand: [value do i = 1, n]
+                    if len(items) != 1:
+                        self.error("with several items, write the generator in parentheses: [x, (0.0 do i = 1, n)]")
+                    items = [self.generator_tail(items)]
             self.expect("]")
             return ArrayLit(items)
         if self.at("select"):

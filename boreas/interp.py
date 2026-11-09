@@ -794,6 +794,10 @@ def iter_apply(e):
     elif isinstance(e, ArrayLit):
         for x in e.items:
             yield from iter_apply(x)
+    elif isinstance(e, Gen):
+        for x in (*e.body, e.lo, e.hi, e.step):
+            if x is not None:
+                yield from iter_apply(x)
 
 
 class Scope:
@@ -1342,6 +1346,39 @@ class Interp:
             raise LangError(f"line {line}: '{name}' is not declared" if line else f"'{name}' is not declared")
         return env[name]
 
+    def literal_values(self, items, env):
+        """The values of an array literal's items: a one-dimensional array or a generator is spliced in."""
+        out = []
+        for x in items:
+            if isinstance(x, Gen):
+                out.extend(self.generate(x, env))
+                continue
+            v = self.eval(x, env)
+            if isinstance(v, Array):
+                if v.rank != 1:
+                    raise LangError("array literals hold scalars and one-dimensional arrays; "
+                                    "use reshape() to build a matrix")
+                out.extend(v.data)
+            else:
+                out.append(v)
+        return out
+
+    def generate(self, g, env):
+        """`(value do i = lo, hi, step)`: i exists only here, and hides any variable of the same name."""
+        lo, hi = self.eval(g.lo, env), self.eval(g.hi, env)
+        step = self.eval(g.step, env) if g.step is not None else 1
+        for what, v in (("start", lo), ("end", hi), ("step", step)):
+            if not isinstance(v, int) or isinstance(v, bool):
+                raise LangError(f"line {g.line}: the {what} of a generator must be an integer, got {type_of(v)}")
+        if step == 0:
+            raise LangError(f"line {g.line}: generator step cannot be zero")
+        inner = dict(env)
+        out = []
+        for i in range(lo, hi + 1 if step > 0 else hi - 1, step):
+            inner[g.var] = ["integer", i, False, None]
+            out.extend(self.literal_values(g.body, inner))
+        return out
+
     # -- subscripts and references
     def subscripts(self, arr, args, env, line, name):
         if len(args) != arr.rank:
@@ -1503,9 +1540,7 @@ class Interp:
                 raise LangError(f"'{e.name}' is used before it is assigned")
             return v
         if k is ArrayLit:
-            items = [self.eval(x, env) for x in e.items]
-            if any(isinstance(x, Array) for x in items):
-                raise LangError("array literals hold scalars; use reshape() to build a matrix")
+            items = self.literal_values(e.items, env)
             return Array((len(items),), items)
         if k is FieldAccess:
             return self.field_value(e, env)
