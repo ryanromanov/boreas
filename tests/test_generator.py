@@ -77,6 +77,17 @@ class GeneratorTests(unittest.TestCase):
                 self.assertEqual(to_source(parse(again), []), again)
 
 
+class ExampleTests(unittest.TestCase):
+    def test_the_arrays_example_runs(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "examples", "arrays.bor")
+        with open(path) as f:
+            out = run_bor(f.read())
+        self.assertEqual(out[0], "squares: [1, 4, 9, 16, 25]")
+        self.assertIn("grid:    [11, 12, 13, 21, 22, 23]", out)
+        self.assertIn("centered:     [-4, -3, -2, -1, 0, 1, 2, 3]", out)
+        self.assertEqual(len(out), 13)
+
+
 class GeneratorConversionTests(unittest.TestCase):
     def check(self, src):
         text, findings = converted(src)
