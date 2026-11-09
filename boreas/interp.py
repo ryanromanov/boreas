@@ -286,6 +286,25 @@ def _transpose(a):
     return Array((c, r), out)
 
 
+def _cshift(a, shift, dim=1):
+    """Circular shift, Fortran's way: result[i] = a[i + shift], wrapping around the ends. A positive shift
+    moves the elements toward the start."""
+    _need_array("cshift", a, rank=(1, 2))
+    if not isinstance(shift, int) or isinstance(shift, bool):
+        raise LangError(f"cshift(): the shift must be an integer, got {type_of(shift)}")
+    if not isinstance(dim, int) or isinstance(dim, bool) or not 1 <= dim <= a.rank:
+        raise LangError(f"cshift(): dimension must be 1..{a.rank}")
+    n = a.shape[dim - 1]
+    if n == 0:
+        return a.copy()
+    stride = a.strides()[dim - 1]
+    out = []
+    for p in range(len(a.data)):
+        c = (p // stride) % n
+        out.append(a.data[p + (((c + shift) % n) - c) * stride])
+    return Array(a.shape, out)
+
+
 def _dot_product(a, b):
     _need_array("dot_product", a, rank=(1,))
     _need_array("dot_product", b, rank=(1,))
@@ -667,7 +686,7 @@ BUILTINS = {
     "nan": lambda: float("nan"), "infinity": lambda: kinds.INF,
     "open": None, "try_open": None, "exists": lambda name: os.path.exists(_need_string("exists", name)),
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
-    "transpose": _transpose, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
+    "transpose": _transpose, "cshift": _cshift, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
     "sum": _reduce("sum", sum), "maxval": _reduce("maxval", max), "minval": _reduce("minval", min),
     "any": _reduce("any", any), "all": _reduce("all", all),
     "max": max, "min": min, "product": _reduce("product", math.prod),
