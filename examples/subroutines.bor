@@ -21,7 +21,7 @@ subroutine circle(in real :: r, out real :: area, out real :: circumference)
   update circumference = 2.0 * 3.14159 * r
 end subroutine
 
-subroutine scale(in real :: k, inout real :: xs)
+subroutine scale(in real :: k, inout real[] :: xs)
   update xs = xs * k
 end subroutine
 
@@ -30,7 +30,7 @@ program demo
   integer :: y = 2
   real :: a
   real :: c
-  real :: v(3) = [1.0, 2.0, 3.0]
+  real[3] :: v = [1.0, 2.0, 3.0]
 
   call swap(x, y)
   println("after swap:", x, y)
@@ -41,6 +41,6 @@ program demo
   call scale(10.0, v)
   println("scaled:", v)
 
-  call swap_real(v(1), v(3))          ! array elements work too
+  call swap_real(v[1], v[3])          ! array elements work too
   println("swapped ends:", v)
 end program

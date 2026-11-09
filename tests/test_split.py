@@ -15,12 +15,12 @@ def fails(test, body, message, extra=""):
         run(body, extra)
 
 
-P = "  allocatable string :: p(:)\n"
+P = "  allocatable string[] :: p\n"
 
 
 class SplitTests(unittest.TestCase):
     def test_split_cuts_at_exactly_the_separator(self):
-        self.assertEqual(run(P + '  p = split("1.5,,3", ",")\n  println(size(p), p(1), p(3))\n  println(p(2) == "")'),
+        self.assertEqual(run(P + '  p = split("1.5,,3", ",")\n  println(size(p), p[1], p[3])\n  println(p[2] == "")'),
                          ["3 1.5 3", "true"])
 
     def test_split_on_a_blank_keeps_the_empty_pieces(self):
@@ -30,7 +30,7 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(run(P + '  p = split("a, b, c", ", ")\n  println(p)'), ["[a, b, c]"])
 
     def test_no_separator_gives_one_piece_and_an_empty_string_one_empty_piece(self):
-        self.assertEqual(run(P + '  p = split("abc", ",")\n  println(size(p), p(1))'), ["1 abc"])
+        self.assertEqual(run(P + '  p = split("abc", ",")\n  println(size(p), p[1])'), ["1 abc"])
         self.assertEqual(run(P + '  p = split("", ",")\n  println(size(p))'), ["1"])
 
     def test_fields_treats_a_run_of_blanks_as_one_gap(self):
@@ -80,12 +80,12 @@ class ToNumberTests(unittest.TestCase):
         fails(self, "  println(to_integer(3))", "needs a string")
 
     def test_a_row_of_numbers(self):
-        body = P + '  p = fields("1.5 2.0 3.7")\n  println(to_real(p(1)) + to_real(p(2)) + to_real(p(3)))'
+        body = P + '  p = fields("1.5 2.0 3.7")\n  println(to_real(p[1]) + to_real(p[2]) + to_real(p[3]))'
         self.assertEqual(run(body), ["7.2"])
 
 
 class AllocateOnAssignmentTests(unittest.TestCase):
-    D = "  allocatable integer :: a(:)\n"
+    D = "  allocatable integer[] :: a\n"
 
     def test_assignment_allocates(self):
         self.assertEqual(run(self.D + "  a = [1, 2, 3]\n  println(size(a), a)"), ["3 [1, 2, 3]"])
@@ -94,7 +94,7 @@ class AllocateOnAssignmentTests(unittest.TestCase):
         self.assertEqual(run(self.D + "  a = [1, 2, 3]\n  a = [9]\n  println(size(a), a)"), ["1 [9]"])
 
     def test_elements_take_the_array_type(self):
-        self.assertEqual(run("  allocatable real :: v(:)\n  v = [1, 2]\n  println(v)"), ["[1.0, 2.0]"])
+        self.assertEqual(run("  allocatable real[] :: v\n  v = [1, 2]\n  println(v)"), ["[1.0, 2.0]"])
         fails(self, self.D + "  a = [1.5, 2.5]", "integer")
 
     def test_a_scalar_still_needs_an_allocated_array(self):
@@ -109,7 +109,7 @@ class AllocateOnAssignmentTests(unittest.TestCase):
         self.assertEqual(run(body), ["[2, 3]"])
 
     def test_the_copy_is_independent(self):
-        body = self.D + "  integer :: b(2) = [1, 2]\n  a = b\n  b(1) = 9\n  println(a)"
+        body = self.D + "  integer[2] :: b = [1, 2]\n  a = b\n  b[1] = 9\n  println(a)"
         self.assertEqual(run(body), ["[1, 2]"])
 
     def test_a_module_variable_needs_update(self):

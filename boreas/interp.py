@@ -1376,12 +1376,12 @@ class Interp:
         return Ref(slot, self.subscripts(slot[VALUE], t.args, env, line, t.name), t.name)
 
     def substring_bounds(self, slot, args, env, line, name):
-        """The (lo, hi) of s(lo:hi), 1-based and inclusive, either end optional, as a one-entry subscript list."""
+        """The (lo, hi) of s[lo:hi], 1-based and inclusive, either end optional, as a one-entry subscript list."""
         text = slot[VALUE]
         if text is None:
             raise LangError(f"line {line}: '{name}' is used before it is assigned")
         if len(args) != 1 or not isinstance(args[0], Slice):
-            raise LangError(f"line {line}: '{name}' is a string; take part of it with {name}(lo:hi)")
+            raise LangError(f"line {line}: '{name}' is a string; take part of it with {name}[lo:hi]")
         lo = 1 if args[0].lo is None else self.eval(args[0].lo, env)
         hi = len(text) if args[0].hi is None else self.eval(args[0].hi, env)
         if type_of(lo) not in INT_RANGE or type_of(hi) not in INT_RANGE:
@@ -1842,8 +1842,8 @@ class Interp:
                                     f"{describe_array_type(typ)}, not {got}")
                 typ = typ[:typ.index("[")]
             elif is_arr and isinstance(typ, str):
-                self.deprecated(line, f"say that '{name}' of {f.name} is an array: declare it as {typ}[] :: {name} "
-                                      f"(a comma for each extra dimension)")
+                self.deprecated(line, f"say that '{name}' of {f.name} is an array: declare it as "
+                                      f"{typ}[{',' * (v.rank - 1)}] :: {name}")
             if isinstance(v, Record) and v.rdef.name == typ and v.rdef is not self.scopes[id(f)].records.get(typ):
                 raise LangError(f"line {line}: argument '{name}' is a {typ}, but not the {typ} that "
                                 f"{f.name} was written for (two records share that name)")

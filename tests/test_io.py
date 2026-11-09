@@ -25,13 +25,13 @@ class ReadTests(unittest.TestCase):
     """Input is a line from `read_line()`, cut up by `fields` and turned into numbers by `to_*`."""
 
     def test_reads_values_by_type(self):
-        body = ("  allocatable string :: p(:)\n  p = fields(read_line() ?? \"\")\n"
-                "  integer :: n = to_integer(p(1))\n  real :: x = to_real(p(2))\n  logical :: b = to_logical(p(3))\n"
-                "  string :: s = p(4)\n  real32 :: y = real32(to_real(p(5)))\n  println(n, x, b, s, y)")
+        body = ("  allocatable string[] :: p\n  p = fields(read_line() ?? \"\")\n"
+                "  integer :: n = to_integer(p[1])\n  real :: x = to_real(p[2])\n  logical :: b = to_logical(p[3])\n"
+                "  string :: s = p[4]\n  real32 :: y = real32(to_real(p[5]))\n  println(n, x, b, s, y)")
         self.assertEqual(run(body, "7 2.5d0 T hello 0.1\n")[0], ["7 2.5 true hello 0.1"])
 
     def test_commas_separate_values_when_asked(self):
-        body = ("  allocatable string :: p(:)\n  p = fields(read_line() ?? \"\", \",\")\n  println(size(p), p(1), to_integer(p(2)))")
+        body = ("  allocatable string[] :: p\n  p = fields(read_line() ?? \"\", \",\")\n  println(size(p), p[1], to_integer(p[2]))")
         self.assertEqual(run(body, "two, 5\n")[0], ["2 two 5"])
 
     def test_bad_input_stops_the_program(self):
@@ -41,7 +41,7 @@ class ReadTests(unittest.TestCase):
 
     def test_end_of_input_gives_null(self):
         self.assertEqual(run("  println(present(read_line()))", "")[0], ["false"])
-        fails(self, "  allocatable string :: p(:)\n  p = fields(read_line())", "needs a string", "")
+        fails(self, "  allocatable string[] :: p\n  p = fields(read_line())", "needs a string", "")
 
     def test_the_old_read_statement_is_gone(self):
         for src in ("integer :: n\nread n", "integer :: n\nupdate read n", "integer :: n\nread n status n"):

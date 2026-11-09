@@ -95,7 +95,7 @@ class IntegerWidthTests(unittest.TestCase):
         self.assertEqual(run("  int64 :: i\n  int64 :: s\n  do i = 1, 3\n    s = s + i\n  end do\n  println(s)"), ["6"])
 
     def test_array_of_int64(self):
-        self.assertEqual(run("  int64 :: a(2) = [3000000000, 1]\n  println(a, sum(a), a * 2)"),
+        self.assertEqual(run("  int64[2] :: a = [3000000000, 1]\n  println(a, sum(a), a * 2)"),
                          ["[3000000000, 1] 3000000001 [6000000000, 2]"])
 
     def test_sum_and_product_respect_the_width(self):
@@ -108,7 +108,7 @@ class IntegerWidthTests(unittest.TestCase):
         self.assertEqual(run(body), ["three"])
 
     def test_index_with_int64(self):
-        self.assertEqual(run("  int64 :: i = 2\n  integer :: a(3) = [10, 20, 30]\n  println(a(i))"), ["20"])
+        self.assertEqual(run("  int64 :: i = 2\n  integer[3] :: a = [10, 20, 30]\n  println(a[i])"), ["20"])
 
 
 class WrapTests(unittest.TestCase):
@@ -195,7 +195,7 @@ class Real32Tests(unittest.TestCase):
         self.assertEqual(run("  real32 :: x\n  println(x)"), ["0.0"])
 
     def test_array_of_real32(self):
-        self.assertEqual(run("  real32 :: a(3) = [0.1, 0.2, 0.3]\n  println(sum(a), a * 2.0, maxval(a))"),
+        self.assertEqual(run("  real32[3] :: a = [0.1, 0.2, 0.3]\n  println(sum(a), a * 2.0, maxval(a))"),
                          [f"{one('real32(0.1) + real32(0.2) + real32(0.3)')} [0.2, 0.4, 0.6] 0.3"])
 
     def test_real_function_widens(self):

@@ -15,18 +15,18 @@ program demo
   integer :: i
   integer :: count = 0
   real :: total = 0.0
-  real :: xs(5)
-  integer :: ys(5) = [1, 2, 3, 4, 5]
+  real[5] :: xs
+  integer[5] :: ys = [1, 2, 3, 4, 5]
 
   do i = 1, 5
-    xs(i) = square(real(i))
-    total = total + xs(i)
+    xs[i] = square(real(i))
+    total = total + xs[i]
   end do
   println("squares:", xs)
   println("total =", total)
 
   ys = ys * 2 + 1                 ! whole-array arithmetic
-  println("ys =", ys, " middle =", ys(2:4))
+  println("ys =", ys, " middle =", ys[2:4])
 
   do i = 1, 20
     if mod(i, 3) == 0 then

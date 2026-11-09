@@ -1,35 +1,35 @@
 ! Multidimensional arrays are stored column-major, like Fortran: the first
 ! subscript varies fastest, so reshape fills down the columns.
 
-function trace(real :: m) -> real
+function trace(real[,] :: m) -> real
   integer :: i
   real :: t = 0.0
   do i = 1, size(m, 1)
-    t = t + m(i, i)
+    t = t + m[i, i]
   end do
   return t
 end function
 
-subroutine normalize_rows(inout real :: m)
+subroutine normalize_rows(inout real[,] :: m)
   integer :: i
   do i = 1, size(m, 1)
-    update m(i, :) = m(i, :) / sum(m(i, :))      ! every row now sums to 1
+    update m[i, :] = m[i, :] / sum(m[i, :])      ! every row now sums to 1
   end do
 end subroutine
 
 program demo
-  real :: a(2, 3) = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
-  real :: sq(2, 2) = reshape([2.0, 0.0, 0.0, 3.0], [2, 2])
+  real[2, 3] :: a = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
+  real[2, 2] :: sq = reshape([2.0, 0.0, 0.0, 3.0], [2, 2])
 
   println("a =", a)
   println("shape", shape(a), " rows", size(a, 1), " cols", size(a, 2))
-  println("first row:", a(1, :))
-  println("second column:", a(:, 2))
+  println("first row:", a[1, :])
+  println("second column:", a[:, 2])
   println("transpose:", transpose(a))
   println("a * a':", matmul(a, transpose(a)))
   println("trace:", trace(sq))
 
-  a(2, :) = 0.0                           ! assign a whole row
+  a[2, :] = 0.0                           ! assign a whole row
   println("after zeroing row 2:", a)
 
   call normalize_rows(sq)

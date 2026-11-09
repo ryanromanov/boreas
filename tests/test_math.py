@@ -87,7 +87,7 @@ class FunctionTests(unittest.TestCase):
                     value(expr)
 
     def test_functions_apply_to_every_element(self):
-        out = run_bor("program t\n  real :: x(3) = [0.5, -2.5, 3.5]\n  println(nint(x), floor(x))\n"
+        out = run_bor("program t\n  real[3] :: x = [0.5, -2.5, 3.5]\n  println(nint(x), floor(x))\n"
                       "  println(sign(1.0, x))\n  println(atan2(x, 1.0))\nend program\n")
         self.assertEqual(out[0], "[1, -3, 4] [0, -3, 3]")
         self.assertEqual(out[1], "[1.0, -1.0, 1.0]")

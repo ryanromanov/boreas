@@ -8,11 +8,11 @@ from boreas.printer import to_source
 from boreas.verify import same_output
 
 FREQ = """function frequencies(integer :: n) -> integer[]
-  allocatable integer :: out(:)
-  allocate out(n)
+  allocatable integer[] :: out
+  allocate out[n]
   integer :: i
   do i = 1, n
-    out(i) = i - 1
+    out[i] = i - 1
   end do
   return out
 end function
@@ -25,19 +25,19 @@ def program(funcs, body):
 
 class ArrayResultTests(unittest.TestCase):
     def test_assign_to_an_allocatable_and_use_in_expressions(self):
-        src = program(FREQ, "  allocatable integer :: f(:)\n  f = frequencies(5)\n  println(f)\n"
+        src = program(FREQ, "  allocatable integer[] :: f\n  f = frequencies(5)\n  println(f)\n"
                             "  println(sum(frequencies(4)), size(frequencies(0)))")
         self.assertEqual(run_bor(src), ["[0, 1, 2, 3, 4]", "6 0"])
 
     def test_assign_to_a_fixed_array_and_compute_with_it(self):
-        src = program(FREQ, "  integer :: v(3)\n  v = frequencies(3)\n  println(v, frequencies(3) + 1)")
+        src = program(FREQ, "  integer[3] :: v\n  v = frequencies(3)\n  println(v, frequencies(3) + 1)")
         self.assertEqual(run_bor(src), ["[0, 1, 2] [1, 2, 3]"])
 
     def test_two_dimensions(self):
         src = program("""function grid(integer :: n) -> real[,]
-  allocatable real :: g(:, :)
-  allocate g(n, 2)
-  g(1, 1) = 1.5
+  allocatable real[,] :: g
+  allocate g[n, 2]
+  g[1, 1] = 1.5
   return g
 end function""", "  println(grid(2))")
         self.assertEqual(run_bor(src), ["[[1.5, 0.0], [0.0, 0.0]]"])
@@ -54,14 +54,14 @@ function names() -> string[]
   return ["a", "bc"]
 end function
 function pts() -> pt[]
-  pt :: a(2)
-  a(2).x = 7
+  pt[2] :: a
+  a[2].x = 7
   return a
 end function
 program t
-  pt :: p(2)
+  pt[2] :: p
   p = pts()
-  println(names(), size(names()), p(2).x)
+  println(names(), size(names()), p[2].x)
 end program
 """
         self.assertEqual(run_bor(src), ["[a, bc] 2 7"])
@@ -77,7 +77,7 @@ end program
                 self.assertIn(message, str(cm.exception))
 
     def test_returning_an_unallocated_array_is_an_error(self):
-        src = program("function f() -> integer[]\n  allocatable integer :: a(:)\n  return a\nend function",
+        src = program("function f() -> integer[]\n  allocatable integer[] :: a\n  return a\nend function",
                       "  println(f())")
         with self.assertRaises(LangError) as cm:
             run_bor(src)

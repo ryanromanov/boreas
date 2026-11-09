@@ -41,7 +41,7 @@ def program(body):
 
 class AllocatableModuleVariableTests(unittest.TestCase):
     def test_allocated_in_one_procedure_and_used_in_another(self):
-        self.assertEqual(run(program("call setup(4)\nprintln(total())\nupdate data(2) = 100\nprintln(total(), size(data))")),
+        self.assertEqual(run(program("call setup(4)\nprintln(total())\nupdate data[2] = 100\nprintln(total(), size(data))")),
                          ["30", "126", "4"])
 
     def test_the_program_can_allocate_an_imported_array(self):
@@ -65,7 +65,7 @@ class AllocatableModuleVariableTests(unittest.TestCase):
 
     def test_extent_count_and_allocatable_checks(self):
         with self.assertRaisesRegex(LangError, "1 dimension.*2 extent"):     # an import is only checked when it runs
-            run(program("update allocate data(2, 2)"))
+            run(program("update allocate data[2, 2]"))
         own = STORE.replace("update deallocate data", "update allocate data(1, 1)")
         with self.assertRaisesRegex(LangError, "1 dimension.*2 extent"):
             parse(own + "program p\nend program p")
@@ -74,7 +74,7 @@ class AllocatableModuleVariableTests(unittest.TestCase):
         with self.assertRaisesRegex(LangError, "not allocatable"):
             parse(src)
         with self.assertRaisesRegex(LangError, "not an allocatable array"):          # an import: found when it runs
-            run("module m\n  public integer :: n\nend module\nprogram p\n  use m: n\n  update allocate n(2)\nend program p")
+            run("module m\n  public integer :: n\nend module\nprogram p\n  use m: n\n  update allocate n[2]\nend program p")
 
     def test_use_before_allocate_and_double_allocate_are_errors(self):
         with self.assertRaisesRegex(LangError, "not allocated"):

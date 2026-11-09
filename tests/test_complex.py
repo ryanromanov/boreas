@@ -105,7 +105,7 @@ class ComplexValueTests(unittest.TestCase):
 
 
 class ComplexArrayTests(unittest.TestCase):
-    DECL = "  complex :: a(2) = [cmplx(1.0, 1.0), cmplx(2.0, 0.0)]\n"
+    DECL = "  complex[2] :: a = [cmplx(1.0, 1.0), cmplx(2.0, 0.0)]\n"
 
     def test_array_of_complex(self):
         self.assertEqual(run(self.DECL + "  println(a)"), ["[(1.0, 1.0), (2.0, 0.0)]"])
@@ -120,16 +120,16 @@ class ComplexArrayTests(unittest.TestCase):
 
     def test_dot_product_conjugates_its_first_argument(self):
         self.assertEqual(run(self.DECL + "  println(dot_product(a, a))"), ["(6.0, 0.0)"])
-        out = run("  complex :: a(1) = [cmplx(0.0, 1.0)]\n  complex :: b(1) = [cmplx(1.0, 0.0)]\n"
+        out = run("  complex[1] :: a = [cmplx(0.0, 1.0)]\n  complex[1] :: b = [cmplx(1.0, 0.0)]\n"
                   "  println(dot_product(a, b))")
         self.assertEqual(out, ["(0.0, -1.0)"])
 
     def test_matmul_does_not_conjugate(self):
-        out = run("  complex :: m(1, 1) = reshape([cmplx(0.0, 1.0)], [1, 1])\n  println(matmul(m, m))")
+        out = run("  complex[1, 1] :: m = reshape([cmplx(0.0, 1.0)], [1, 1])\n  println(matmul(m, m))")
         self.assertEqual(out, ["[[(-1.0, 0.0)]]"])
 
     def test_max_of_complex_is_an_error(self):
-        fails(self, "  complex :: a(2) = [cmplx(1.0, 1.0), cmplx(2.0, 0.0)]\n  println(maxval(a))")
+        fails(self, "  complex[2] :: a = [cmplx(1.0, 1.0), cmplx(2.0, 0.0)]\n  println(maxval(a))")
 
 
 class ComplexStructureTests(unittest.TestCase):
