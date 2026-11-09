@@ -97,8 +97,8 @@ class ConvertTests(unittest.TestCase):
             "program p\n  integer :: a, b, ios\n  read(*,*) a\n  read *, a, b\n  read(5,*,iostat=ios) a\n"
             "  stop 'bye'\nend program\n")
         self.assertEqual(todos(findings), [])
-        self.assertIn('read_parts = fields(read_line() ?? "", ",")\n  a = to_integer(read_parts(1))\n', text)
-        self.assertIn("  b = to_integer(read_parts(2))\n", text)
+        self.assertIn('read_parts = fields(read_line() ?? "", ",")\n  a = to_integer(read_parts[1])\n', text)
+        self.assertIn("  b = to_integer(read_parts[2])\n", text)
         self.assertIn("ios_line = read_line()", text)
         self.assertNotIn("ios =", text)
         self.assertEqual(len([f for f in findings if f[1] == "note" and f[2].startswith("read:")]), 1)
@@ -173,7 +173,7 @@ class ConvertTests(unittest.TestCase):
             "program p\n  integer :: k\n  call get(k)\n  print *, k\nend program\n")
         self.assertEqual(todos(findings), [])
         self.assertIn("subroutine get(out integer :: n)", text)
-        self.assertIn("update n = to_integer(read_parts(1))", text)
+        self.assertIn("update n = to_integer(read_parts[1])", text)
 
     def test_stop_forms(self):
         text, _ = convert("program p\n  integer :: i\n  i = 1\n  if (i == 1) stop 3\n  print *, i\nend program\n")

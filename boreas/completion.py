@@ -14,11 +14,11 @@ PROCEDURE_RE = re.compile(r"(?:(?:public|private)\s+)?(function|subroutine)\s+([
 END_RE = re.compile(r"end\s+(function|subroutine|program)\b", re.I)
 BLOCK_RE = re.compile(r"(?:(?:public|private)\s+)?(record|module)\s+([A-Za-z_]\w*)\s*$", re.I)
 PROGRAM_RE = re.compile(r"program\b", re.I)
-DECL_RE = re.compile(r"(?:\b(?:in|out|inout)\s+)?([A-Za-z_]\w*\??(?:\s*,\s*allocatable)?)\s*::\s*([A-Za-z_]\w*)", re.I)
+DECL_RE = re.compile(r"(?:\b(?:in|out|inout)\s+)?([A-Za-z_]\w*\??(?:\[[^\]]*\])?(?:\s*,\s*allocatable)?)\s*::\s*([A-Za-z_]\w*)", re.I)
 
 
-# the value before a dot: `p.`, `s.to.`, `pts(i).`
-CHAIN_RE = re.compile(r"([A-Za-z_]\w*(?:\([^()]*\))?(?:\.[A-Za-z_]\w*(?:\([^()]*\))?)*)\.$")
+# the value before a dot: `p.`, `s.to.`, `pts[i].` (and the old `pts(i).`)
+CHAIN_RE = re.compile(r"([A-Za-z_]\w*(?:\([^()]*\)|\[[^\[\]]*\])?(?:\.[A-Za-z_]\w*(?:\([^()]*\)|\[[^\[\]]*\])?)*)\.$")
 
 
 def code_part(line):
@@ -43,7 +43,7 @@ def parameters(rest):
                 break
     parts, depth, piece = [], 0, ""
     for ch in inside:
-        depth += (ch == "(") - (ch == ")")
+        depth += (ch in "([") - (ch in ")]")
         if ch == "," and depth == 0:
             parts.append(piece)
             piece = ""
@@ -53,7 +53,7 @@ def parameters(rest):
     for part in parts:
         depth, split = 0, None
         for i in range(len(part) - 1):
-            depth += (part[i] == "(") - (part[i] == ")")
+            depth += (part[i] in "([") - (part[i] in ")]")
             if depth == 0 and part[i:i + 2] == "::":
                 split = i
         if split is None:
@@ -111,7 +111,7 @@ def base_type(t):
 def fields(chain, variables, records):
     """The fields of the record that a chain like `s.to` or `pts(i)` names, as [(field, type, row)],
     or None."""
-    parts = [re.sub(r"\(.*", "", p).strip().lower() for p in chain.split(".")]
+    parts = [re.sub(r"[(\[].*", "", p).strip().lower() for p in chain.split(".")]
     t = variables.get(parts[0])
     for part in parts[1:]:
         t = dict((f.lower(), ft) for f, ft, _ in records.get(base_type(t or ""), [])).get(part)

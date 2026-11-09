@@ -181,7 +181,7 @@ class ConvertComplexTests(unittest.TestCase):
         text, findings = convert("program p\n  integer :: i\n  integer :: a(3)\n"
                                  "  print *, (a(i), i = 1, 3)\nend program\n")
         self.assertEqual(todos(findings), [])
-        self.assertIn("println(a(1), a(2), a(3))", text)             # unrolled, not read as a complex literal
+        self.assertIn("println(a[1], a[2], a[3])", text)             # unrolled, not read as a complex literal
         _, findings = convert("program p\n  integer :: i, n\n  integer :: a(3)\n  n = 3\n"
                               "  print *, (a(i), i = 1, n)\nend program\n")
         self.assertEqual(len(todos(findings)), 1)

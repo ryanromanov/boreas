@@ -90,7 +90,7 @@ class ConvertFormatTests(unittest.TestCase):
     def test_implied_do_and_arrays_under_a_format(self):
         text, findings = self.text("  write(*,'(3I3)') (v(n), n = 1, 3)\n  write(*,'(3I3)') v")
         self.assertEqual(todos(findings), [])
-        self.assertEqual(text.count("right(v(1), 3) + right(v(2), 3) + right(v(3), 3)"), 2)
+        self.assertEqual(text.count("right(v[1], 3) + right(v[2], 3) + right(v[3], 3)"), 2)
 
     def test_more_values_than_descriptors_start_a_new_line(self):
         text, _ = self.text("  write(*,'(I3)') 1, 2, 3")

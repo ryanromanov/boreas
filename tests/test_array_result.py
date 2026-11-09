@@ -157,7 +157,7 @@ end program
     def test_the_three_fortran_shapes(self):
         text = self.check(self.SHAPES)
         self.assertIn("function freq(integer :: n) -> integer[]", text)
-        self.assertIn("function doubled(real32 :: x) -> real32[]", text)
+        self.assertIn("function doubled(real32[] :: x) -> real32[]", text)
         self.assertIn("function ident(integer :: n) -> real32[,]", text)
         self.assertIn("allocate r", text)
 

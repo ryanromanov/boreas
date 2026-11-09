@@ -18,7 +18,7 @@ class DoConcurrentTests(unittest.TestCase):
         text, todos = conv("  do concurrent (i = 1:n, j = 1:n)\n    c(i, j) = a(i, j)\n  end do\n")
         self.assertEqual(todos, [])
         self.assertIn("! was do concurrent", text)
-        self.assertIn("  do i = 1, n\n    do j = 1, n\n      update c(i, j) = a(i, j)\n    end do\n  end do", text)
+        self.assertIn("  do i = 1, n\n    do j = 1, n\n      update c[i, j] = a[i, j]\n    end do\n  end do", text)
         parse(text + MAIN)
 
     def test_stride(self):
@@ -27,7 +27,7 @@ class DoConcurrentTests(unittest.TestCase):
 
     def test_mask_becomes_an_if(self):
         text, _ = conv("  do concurrent (i = 1:n, a(i, 1) > 0.0)\n    c(i, 1) = a(i, 1)\n  end do\n")
-        self.assertIn("do i = 1, n\n    if a(i, 1) > 0.0 then\n      update c(i, 1) = a(i, 1)", text)
+        self.assertIn("do i = 1, n\n    if a[i, 1] > 0.0 then\n      update c[i, 1] = a[i, 1]", text)
 
     def test_type_spec_in_the_header(self):
         text, todos = conv("  do concurrent (integer :: k = 1:n)\n    c(k, 1) = 0.0\n  end do\n")

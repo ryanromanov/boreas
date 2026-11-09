@@ -20,6 +20,12 @@ def prec(e):
     return ATOM
 
 
+def _args(args, bracket):
+    """The arguments or subscripts of an Apply or FieldAccess, in the brackets or parentheses it was written with."""
+    open_, close = ("[", "]") if bracket else ("(", ")")
+    return open_ + ", ".join(expr(a) for a in args) + close
+
+
 def expr(e, need=0):
     s = _expr(e)
     return f"({s})" if prec(e) < need else s
@@ -48,11 +54,11 @@ def _expr(e):
     if k is Slice:
         return (expr(e.lo) if e.lo is not None else "") + ":" + (expr(e.hi) if e.hi is not None else "")
     if k is Apply:
-        return f"{e.name}(" + ", ".join(expr(a) for a in e.args) + ")"
+        return f"{e.name}{_args(e.args, e.bracket)}"
     if k is NamedArg:
         return f"{e.name} = {expr(e.value)}"
     if k is FieldAccess:
-        args = "" if e.args is None else "(" + ", ".join(expr(a) for a in e.args) + ")"
+        args = "" if e.args is None else _args(e.args, e.bracket)
         return f"{expr(e.base, ATOM)}.{e.field}{args}"
     if k is Unary:
         sep = " " if e.op == "not" else ""
@@ -87,14 +93,17 @@ def _params(f):
 
 
 def _decl_head(d):
-    return ("public " if d.public else "") + ("const " if d.const else "") \
+    """`public const allocatable real[,]`: modifiers, then the type with its brackets: sizes for a fixed array,
+    only commas (the rank) for an allocatable one."""
+    head = ("public " if d.public else "") + ("const " if d.const else "") \
         + ("allocatable " if d.allocatable else "") + d.type
+    if d.dims is not None:
+        head += "[" + (",".join("" for _ in d.dims) if d.allocatable else ", ".join(expr(x) for x in d.dims)) + "]"
+    return head
 
 
 def _decl_entity(d):
     s = d.name
-    if d.dims is not None:
-        s += "(" + ", ".join(expr(x) for x in d.dims) + ")"
     if d.init is not None:
         s += " = " + expr(d.init)
     return s
@@ -187,7 +196,7 @@ def stmt(s, depth):
     if k is DoWhile:
         return [f"{pad}{_label(s)}do while {expr(s.cond)}"] + stmts(s.body, depth + 1) + [pad + _end_do(s)]
     if k is Allocate:
-        return [f"{pad}{'update ' if s.update else ''}allocate {s.name}(" + ", ".join(expr(x) for x in s.dims) + ")"]
+        return [f"{pad}{'update ' if s.update else ''}allocate {s.name}[" + ", ".join(expr(x) for x in s.dims) + "]"]
     if k is Deallocate:
         return [f"{pad}{'update ' if s.update else ''}deallocate {s.name}"]
     if k is Decl:

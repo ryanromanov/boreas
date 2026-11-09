@@ -322,8 +322,8 @@ def base_type(typ):
 def type_names(typ):
     """The type names a parameter type mentions (a procedure parameter mentions its signature's)."""
     if isinstance(typ, ProcType):
-        return {t for t, _ in typ.params} | ({typ.ret} if typ.ret else set())
-    return {typ}
+        return {base_type(t) for t, _ in typ.params} | ({typ.ret} if typ.ret else set())
+    return {base_type(typ)}
 
 
 def iter_nodes(obj):
@@ -2780,7 +2780,7 @@ class FParser:
         params = []
         for d in s.dummies:
             info = s.decls.get(d)
-            typ = implicit_type(d) if info is None else info.type
+            typ = implicit_type(d) if info is None else self.dummy_type(info)
             if d in s.proc_dummies or (info is not None and (info.optional or info.allocatable)):
                 return None
             intent = None if info is None else info.intent
@@ -3662,6 +3662,7 @@ class FParser:
         self.resolve_generics(unit)
         self.add_intrinsic_wrappers(unit)
         self.link_uses(unit, built)
+        self.mark_indexing(unit, built)
         self.check_saved(unit, built)
         self.infer_intents(unit)
         self.mark_module_writes(unit)
@@ -3671,6 +3672,57 @@ class FParser:
             while program.body and isinstance(program.body[-1], Stop) and program.body[-1].code is None:
                 program.body.pop()
         return unit
+
+    @staticmethod
+    def indexable(info):
+        """Is a name with this declaration written `name[...]`: an array, or a string (a substring)?"""
+        return info.dims is not None or info.allocatable or info.rank > 0 or info.type == "string"
+
+    def indexable_names(self, scope):
+        """Every name `scope` can index: its own variables, those of the procedures and module around it,
+        and the ones it imports."""
+        names, s = set(), scope
+        while s is not None:
+            names |= {n for n, i in s.decls.items() if self.indexable(i)}
+            if s.module is not None and s.module is not s:
+                names |= {n for n, i in s.module.decls.items() if self.indexable(i)}
+            for modname, only, _ in s.uses:
+                other = self.modules.get(modname)
+                if other is not None:
+                    vis = self.visible(other)
+                    names |= {n for n in vis if (only is None or n in only)
+                              and (n in other.decls and self.indexable(other.decls[n])
+                                   or n not in other.decls and self.indexable_origin(vis[n], n))}
+            names -= s.externals
+            s = s.host
+        return names - set(self.scope_of_procedure)       # `character :: grade` can declare the type of a function
+
+    def indexable_origin(self, modname, name):
+        mod = self.modules.get(modname)
+        return mod is not None and name in mod.decls and self.indexable(mod.decls[name])
+
+    def mark_indexing(self, unit, built):
+        """Boreas writes an array element as `a[i]`, and keeps `f(x)` for calls. Fortran writes both with
+        parentheses, so mark each name the code declares (or imports) as an array or a string, and every
+        field with subscripts."""
+        for owner, scope in built:
+            names = self.indexable_names(scope)
+            for n in iter_nodes(owner.body):
+                if isinstance(n, Apply) and n.name in names:
+                    n.bracket = True
+                elif isinstance(n, FieldAccess) and n.args is not None:
+                    n.bracket = True
+        for name, ms in self.modules.items():
+            names = self.indexable_names(ms)
+            for n in iter_nodes([d.init for d in unit.modules[name].decls]):
+                if isinstance(n, Apply) and n.name in names:
+                    n.bracket = True
+                elif isinstance(n, FieldAccess) and n.args is not None:
+                    n.bracket = True
+        for rd in list(unit.records.values()) + [r for m in unit.modules.values() for r in m.records.values()]:
+            for n in iter_nodes([f.init for f in rd.fields]):
+                if isinstance(n, FieldAccess) and n.args is not None:
+                    n.bracket = True
 
     def all_functions(self, unit):
         return list(unit.functions.values()) + [f for m in unit.modules.values() for f in m.functions.values()]
@@ -3842,11 +3894,18 @@ class FParser:
                 msg = f"argument '{d}' is an optional array; Boreas optional arguments are single values"
                 self.todo(line, msg)
                 s.comments.append("TODO(convert): " + msg)
-                params.append([info.type, d, info.intent])
+                params.append([self.dummy_type(info), d, info.intent])
             else:
-                params.append([info.type + "?" if info.optional else info.type, d, info.intent])
+                params.append([self.dummy_type(info) + ("?" if info.optional else ""), d, info.intent])
         fn = Function(s.name, params, ret, decls + self.local_decls(s, body, proc_names) + body, is_sub, list(s.comments))
         return fn
+
+    @staticmethod
+    def dummy_type(info):
+        """A dummy argument's Boreas type: `real[,]` for a two-dimensional array (its rank is all Boreas keeps)."""
+        if info.shape_dropped and info.rank:
+            return info.type + "[" + "," * (info.rank - 1) + "]"
+        return info.type
 
     def array_result(self, scope, result, info, body, line):
         """A function result that is an array: `-> real[]` (one comma more per extra dimension). The result is

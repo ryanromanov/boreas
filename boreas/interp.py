@@ -835,8 +835,9 @@ def read_value(typ, token):
 
 
 class Interp:
-    def __init__(self, unit, out=print, args=(), stdin=None):
+    def __init__(self, unit, out=print, args=(), stdin=None, warn=None):
         self.unit, self.out = unit, out
+        self.warn, self.warned = warn, set()     # warn(text) is told once about each use of syntax on its way out
         kinds.set_ieee(getattr(unit, "ieee", False))
         self.input = LineInput(stdin)
         self.pending = ""                 # text written with `write` that is waiting for its newline
@@ -1349,6 +1350,12 @@ class Interp:
         if not isinstance(v, int) or isinstance(v, bool):
             raise LangError(f"line {line}: array index must be integer")
 
+    def deprecated(self, line, message):
+        """Tell the caller (once per message) about syntax that still works but is going away."""
+        if self.warn is not None and message not in self.warned:
+            self.warned.add(message)
+            self.warn(f"warning: line {line}: {message}")
+
     def resolve(self, t, env, line):
         """Turn a variable, array element, array section or record field into a reference."""
         if isinstance(t, FieldAccess):
@@ -1360,6 +1367,8 @@ class Interp:
             raise self.not_allocated(t.name, line)
         if isinstance(t, Var):
             return Ref(slot, None, t.name)
+        if not t.bracket and (slot[IS_ARRAY] or slot[TYPE] == "string"):
+            self.deprecated(line, f"index with brackets: write {t.name}[...], not {t.name}(...)")
         if not slot[IS_ARRAY]:
             if slot[TYPE] == "string":
                 return Ref(slot, self.substring_bounds(slot, t.args, env, line, t.name), t.name)
@@ -1418,6 +1427,8 @@ class Interp:
             return Ref(slot, None, name, ref.root, ref.rsubs, fpath)
         if not slot[IS_ARRAY]:
             raise LangError(f"line {line}: field '{name}' is not an array")
+        if not t.bracket:
+            self.deprecated(line, f"index with brackets: write {t.field}[...], not {t.field}(...)")
         return Ref(slot, self.subscripts(slot[VALUE], t.args, env, line, name), name, ref.root, ref.rsubs, fpath)
 
     def read(self, ref):
@@ -1694,6 +1705,13 @@ class Interp:
             if len(e.args) != 1 or not isinstance(e.args[0], Var):
                 raise LangError(f"line {e.line}: allocated() needs the name of an allocatable array")
             return self.allocatable(e.args[0].name, env, e.line)[VALUE] is not None
+        if e.bracket:
+            if e.name in env and (env[e.name][IS_ARRAY] or env[e.name][TYPE] == "string"):
+                return self.read(self.resolve(e, env, e.line))
+            if e.name in env:
+                raise LangError(f"line {e.line}: '{e.name}' is not an array" +
+                                (f"; call it with parentheses: {e.name}(...)" if isinstance(env[e.name][TYPE], ProcType) else ""))
+            raise LangError(f"line {e.line}: '{e.name}' is not an array; call a function with parentheses: {e.name}(...)")
         if e.name in env and isinstance(env[e.name][TYPE], ProcType):    # a call through a procedure parameter
             fn = env[e.name][VALUE]
             if fn.is_sub:
@@ -1817,6 +1835,15 @@ class Interp:
         env = dict(self.scopes[id(f)].consts)
         for (typ, name, intent), v in zip(f.params, values):
             is_arr = isinstance(v, Array)
+            if isinstance(typ, str) and typ.endswith("]"):          # real[] / real[,]: an array of that rank
+                if v is not None and (not is_arr or v.rank != typ.count(",") + 1):
+                    got = f"a {v.rank}-dimensional array" if is_arr else f"a {type_of(v)}"
+                    raise LangError(f"line {line}: argument '{name}' of {f.name} must be "
+                                    f"{describe_array_type(typ)}, not {got}")
+                typ = typ[:typ.index("[")]
+            elif is_arr and isinstance(typ, str):
+                self.deprecated(line, f"say that '{name}' of {f.name} is an array: declare it as {typ}[] :: {name} "
+                                      f"(a comma for each extra dimension)")
             if isinstance(v, Record) and v.rdef.name == typ and v.rdef is not self.scopes[id(f)].records.get(typ):
                 raise LangError(f"line {line}: argument '{name}' is a {typ}, but not the {typ} that "
                                 f"{f.name} was written for (two records share that name)")
@@ -1929,6 +1956,7 @@ class Interp:
                 continue
             ref = self.resolve(a, env, s.line)
             slot = ref[0]
+            typ = typ[:typ.index("[")] if isinstance(typ, str) and typ.endswith("]") else typ
             if ref.root[INTENT] in ("in", "const"):
                 what = "an 'in' parameter" if ref.root[INTENT] == "in" else "a constant"
                 part = "part of " if ref.fpath else ""

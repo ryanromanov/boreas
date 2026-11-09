@@ -22,7 +22,7 @@ class EquivalenceTests(unittest.TestCase):
     def test_scalar_becomes_an_array_element(self):
         text, findings = conv("x = 4\n  print *, v(3)", "integer :: v(5), x\n  equivalence (v(3), x)")
         self.assertEqual(todos(findings), [])
-        self.assertIn("v(3) = 4", text)
+        self.assertIn("v[3] = 4", text)
 
     def test_array_overlapping_at_an_offset_shifts_its_subscripts(self):
         text, findings = conv("w(2) = 9\n  print *, v(5)", "integer :: v(6), w(2)\n  equivalence (v(4), w(1))")

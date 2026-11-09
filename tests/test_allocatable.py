@@ -29,7 +29,7 @@ class ParseTests(unittest.TestCase):
 
     def test_allocatable_declaration_errors(self):
         for body, msg in [("allocatable integer :: a(3)", "':' for each dimension"),
-                          ("allocatable integer :: a", "needs one ':'"),
+                          ("allocatable integer :: a", "needs its rank"),
                           ("allocatable integer :: a(:) = [1]", "initializer"),
                           ("const allocatable integer :: a(:)", "cannot be 'const'"),
                           ("allocatable const integer :: a(:)", "cannot be 'const'"),
@@ -97,7 +97,7 @@ println(r, b, '[' + s(1) + ']')""".replace("'", '"'))
         self.assertEqual(out, ["true 0 0"])
 
     def test_two_dimensional_and_shape(self):
-        out = run("""allocatable integer :: m(:, :)
+        out = run("""allocatable integer[,] :: m
 integer :: i
 integer :: j
 allocate m(2, 3)
@@ -114,7 +114,7 @@ println(transpose(m))""")
 
     def test_slices_of_allocated_arrays(self):
         out = run("""allocatable integer :: a(:)
-allocatable integer :: m(:, :)
+allocatable integer[,] :: m
 allocate a(5)
 a(2:4) = [7, 8, 9]
 println(a(2:), a(:2), a(3))
@@ -218,7 +218,7 @@ class RuntimeErrorTests(unittest.TestCase):
         self.fails("allocate a(true)", "non-negative integers")
 
     def test_extent_of_an_undeclared_value_is_the_default_zero(self):
-        self.fails("integer :: n\nallocate a(n)\nprintln(a(1))", "out of bounds")
+        self.fails("integer :: n\nallocate a[n]\nprintln(a(1))", "out of bounds")
 
     def test_bounds_after_allocation(self):
         self.fails("allocate a(2)\nprintln(a(3))", "out of bounds")
@@ -281,10 +281,10 @@ end program t
     def test_round_trip_is_stable(self):
         once = to_source(parse(self.SRC))
         self.assertEqual(to_source(parse(once)), once)
-        self.assertIn("  allocatable integer :: a(:)\n  allocatable integer :: b(:, :)\n", once)
-        self.assertIn("  allocatable real :: r(:)\n", once)
+        self.assertIn("  allocatable integer[] :: a\n  allocatable integer[,] :: b\n", once)
+        self.assertIn("  allocatable real[] :: r\n", once)
         self.assertIn("  integer :: n\n", once)           # plain declarations are not merged with these
-        self.assertIn("  allocate b(n, 2 * n)\n", once)
+        self.assertIn("  allocate b[n, 2 * n]\n", once)
         self.assertIn("    deallocate a\n", once)
 
     def test_printed_program_runs(self):
@@ -299,24 +299,24 @@ class ConvertTests(unittest.TestCase):
         text, findings = conv("", "  real, allocatable :: a(:)\n  integer, allocatable, dimension(:,:) :: m\n"
                                   "  real, allocatable :: x(:), y(:, :, :)")
         self.assertEqual(todos(findings), [])
-        self.assertIn("allocatable real32 :: a(:)", text)
-        self.assertIn("allocatable integer :: m(:, :)", text)
-        self.assertIn("x(:)", text)
-        self.assertIn("y(:, :, :)", text)
+        self.assertIn("allocatable real32[] :: a", text)
+        self.assertIn("allocatable integer[,] :: m", text)
+        self.assertIn("allocatable real32[] :: x", text)
+        self.assertIn("allocatable real32[,,] :: y", text)
 
     def test_allocate_forms(self):
         text, findings = conv("  n = 3\n  allocate(a(n))\n  allocate(m(n, 1:n + 1))\n  allocate(a(1:n))",
                               "  integer :: n\n  integer, allocatable :: a(:), m(:, :)")
         self.assertEqual(todos(findings), [])
-        self.assertIn("allocate a(n)\n", text)
-        self.assertIn("allocate m(n, n + 1)\n", text)
-        self.assertEqual(text.count("allocate a(n)"), 2)
+        self.assertIn("allocate a[n]\n", text)
+        self.assertIn("allocate m[n, n + 1]\n", text)
+        self.assertEqual(text.count("allocate a[n]"), 2)
 
     def test_several_objects_become_several_statements(self):
         text, findings = conv("  allocate(a(2), m(2, 3))\n  deallocate(a, m)",
                               "  integer, allocatable :: a(:), m(:, :)")
         self.assertEqual(todos(findings), [])
-        for line in ("allocate a(2)\n", "allocate m(2, 3)\n", "deallocate a\n", "deallocate m\n"):
+        for line in ("allocate a[2]\n", "allocate m[2, 3]\n", "deallocate a\n", "deallocate m\n"):
             self.assertIn("  " + line, text)
 
     def test_allocated_intrinsic(self):
