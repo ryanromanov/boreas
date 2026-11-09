@@ -637,6 +637,13 @@ report on stderr. Translations that change meaning are flagged, never silent:
   elements, conversions, and arithmetic on those; `k * 2 + 1` is an integer, `k * 2.5` a real). If it cannot narrow
   the call to one, a TODO lists the candidates. A public generic makes its specifics public. Operator overloading
   (`interface operator(+)`) is a TODO.
+- Submodules: Fortran splits a module into headers (the module) and bodies (its submodules) to save recompiling,
+  which a program that runs from source does not need. Give the converter the parent and its submodules together
+  (`boreas convert fftpack.f90 fftpack_fft.f90 ...`, in any order) and it moves each submodule's declarations and
+  procedures into the parent module, one module in one file, with a `! from submodule NAME (of PARENT)` comment at
+  each merged part. A submodule's own (non-`module`) procedures stay private; one whose name another part also uses
+  is renamed with the submodule's name in front (`check` becomes `circ_check`). A `module procedure NAME ... end
+  procedure` body gets its header and dummy declarations from the interface in the parent.
 - Preprocessor lines (`#if`, `#ifdef`, `#ifndef`, `#elif`, `#else`, `#define`, `#include`) in any file are evaluated
   as a preprocessing build would: the converter keeps the branch the conditions pick, given the macros you pass
   with `--define NAME` or `--define NAME=VALUE` and those the file `#define`s; a name not defined counts as
