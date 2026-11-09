@@ -645,6 +645,8 @@ report on stderr. Translations that change meaning are flagged, never silent:
   conditionally (after `.and.`/`.or.`, in an `else if` or `do while` condition) are TODOs.
 - `data a, b /1, 2/, c /3*0/` becomes initialisers on the declarations (arrays fill in column order, `n*value` repeats
   a value; a 2-D array uses `reshape`). Elements, sections and implied-do loops in a `data` list are TODOs.
+- Array constructors with implied-do loops become generators: `[x, (0.0, i=1, n)]` is `[x, (0.0 do i = 1, n)]`, and
+  `[(i*i, i=1, 4)]` is `[i * i do i = 1, 4]` (steps, nested loops and several values per step work too).
 - `character(len=n)` variables: assigning to one pads with blanks or cuts to `n` (`a = left(x, n)`; literals are
   padded in the converted source), comparisons and `select case` ignore trailing blanks (`trim(a) == "abc"`),
   and `len(a)` becomes `n`. Lengths that are not known numbers (`len=*`), record fields and function results
