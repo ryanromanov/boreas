@@ -135,6 +135,11 @@ def coerce(typ, value, what):
     raise LangError(f"{what}: cannot assign {got} to {typ}")
 
 
+def describe_array_type(typ):
+    """'integer[,]' -> 'a 2-dimensional integer array'."""
+    return f"a {typ.count(',') + 1}-dimensional {typ[:typ.index('[')]} array"
+
+
 def fmt_shape(shape):
     return "(" + ", ".join(str(n) for n in shape) + ")"
 
@@ -1849,7 +1854,19 @@ class Interp:
             return None
         if value is None:
             raise LangError(f"function {f.name} must return a {f.ret}")
+        if f.ret.endswith("]"):
+            return self.array_result(f, value)
         return coerce(f.ret, value, f"function {f.name}")
+
+    def array_result(self, f, value):
+        """The array a function declared `-> integer[]` returns: the right rank, each element of the element type."""
+        elem, rank = f.ret[:f.ret.index("[")], f.ret.count(",") + 1
+        if not isinstance(value, Array):
+            raise LangError(f"function {f.name} must return {describe_array_type(f.ret)}, not {type_of(value)}")
+        if value.rank != rank:
+            raise LangError(f"function {f.name} must return {describe_array_type(f.ret)}, "
+                            f"not a {value.rank}-dimensional array")
+        return Array(value.shape, [coerce(elem, x, f"function {f.name}") for x in value.data])
 
     def reference_of(self, a, env, line):
         """Best-effort (slot, subs) for an argument that names a variable."""

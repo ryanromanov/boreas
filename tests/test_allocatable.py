@@ -365,7 +365,7 @@ end program p
         self.assertIn("TODO(convert): uses 'a'", text)      # the body that touches it is not translated
         self.assertNotIn("update a(1)", text)
 
-    def test_allocatable_function_result_is_a_todo(self):
+    def test_allocatable_function_result_is_an_array_result(self):
         src = """function make(n)
   implicit none
   integer, intent(in) :: n
@@ -377,8 +377,9 @@ program p
   print *, 1
 end program p
 """
-        _, findings = convert(src)
-        self.assertTrue(any("returns an array" in f[2] for f in todos(findings)))
+        text, findings = convert(src)
+        self.assertEqual(todos(findings), [])
+        self.assertIn("function make(integer :: n) -> integer[]", text)
 
     def test_allocatable_scalars_components_and_pointers_stay_todos(self):
         for decl in ("integer, allocatable :: s", "integer, pointer :: p(:)", "integer, allocatable :: w(3)"):

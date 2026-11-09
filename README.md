@@ -359,6 +359,28 @@ importer sees it, allocating or freeing it is a write and says so with `update`,
 (a function cannot): `update allocate data(n)`, `update deallocate data`, `update data(i) = x`.
 Reading needs nothing special. `allocate` on a local array never takes `update`.
 
+## Functions that return arrays
+
+A function can return an array whose length is only known when it runs. Write `[]` after the element type in
+the result (a comma for each extra dimension: `[,]` is two dimensions) and `return` an array:
+
+    function frequencies(integer :: n) -> integer[]
+      allocatable integer :: out(:)
+      allocate out(n)
+      do i = 1, n
+        out(i) = i - 1
+      end do
+      return out
+    end function
+
+    allocatable integer :: f(:)
+    f = frequencies(8)              ! allocates f, as with split
+    println(sum(frequencies(4)))
+
+Any element type works (numbers, complex, strings, records), and each element is converted to it
+(`return [1, 2]` from a `-> real[]` function gives reals). The rank has to match, and the array
+returned must be allocated. Procedure signatures (`function(real) -> real`) cannot return arrays yet.
+
 ## Records
 
 A record groups named fields. Records are defined at the top level or inside a module, one
@@ -644,6 +666,10 @@ report on stderr. Translations that change meaning are flagged, never silent:
   each merged part. A submodule's own (non-`module`) procedures stay private; one whose name another part also uses
   is renamed with the submodule's name in front (`check` becomes `circ_check`). A `module procedure NAME ... end
   procedure` body gets its header and dummy declarations from the interface in the parent.
+- A function result that is an array becomes `-> real[]` (`[,]` for two dimensions). An allocatable result is kept
+  as an allocatable local; a fixed-size one (`real :: y(size(x))`, `integer, dimension(n) :: out`) becomes an
+  allocatable local allocated to that size at the top of the function, with a note. A function that returns an
+  array and also changes its arguments or module variables is a TODO, since it cannot become a subroutine.
 - Preprocessor lines (`#if`, `#ifdef`, `#ifndef`, `#elif`, `#else`, `#define`, `#include`) in any file are evaluated
   as a preprocessing build would: the converter keeps the branch the conditions pick, given the macros you pass
   with `--define NAME` or `--define NAME=VALUE` and those the file `#define`s; a name not defined counts as
