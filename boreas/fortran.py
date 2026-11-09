@@ -314,6 +314,11 @@ class TypeInfo:
         return self.scope if self.scope.kind == "module" else None
 
 
+def base_type(typ):
+    """The element type of an array result type: 'real[,]' -> 'real'."""
+    return typ.split("[")[0]
+
+
 def type_names(typ):
     """The type names a parameter type mentions (a procedure parameter mentions its signature's)."""
     if isinstance(typ, ProcType):
@@ -3712,7 +3717,7 @@ class FParser:
             if isinstance(owner, Program):
                 owner.uses = self.make_uses(scope.uses, self.references(owner.body))
             else:
-                sig = {n for p in owner.params for n in type_names(p[0])} | ({owner.ret} if owner.ret else set())
+                sig = {n for p in owner.params for n in type_names(p[0])} | ({base_type(owner.ret)} if owner.ret else set())
                 owner.uses = self.make_uses(scope.uses, self.references(owner.body) | sig)
                 if scope.module is not None:
                     by_module.setdefault(scope.module.name, []).append(owner)
@@ -3722,7 +3727,7 @@ class FParser:
             for r in mod.records.values():
                 refs |= self.references([fl.init for fl in r.fields]) | {fl.type for fl in r.fields}
             for f in by_module.get(name, []):
-                refs |= self.references(f.body) | {n for p in f.params for n in type_names(p[0])} | ({f.ret} if f.ret else set())
+                refs |= self.references(f.body) | {n for p in f.params for n in type_names(p[0])} | ({base_type(f.ret)} if f.ret else set())
             mod.uses = self.make_uses(ms.uses, refs)
 
     def visible_procs(self, unit, f):
@@ -3811,9 +3816,9 @@ class FParser:
             if info is None:
                 s.decls[result] = info = Info(implicit_type(s.name), None, False, None, None, False, line)
                 self.note(line, f"result of '{s.name}' has no declared type; assumed {info.type}")
-            if info.dims:
-                self.todo(line, f"function '{s.name}' returns an array; Boreas functions return scalars only")
             ret = info.type
+            if info.dims:
+                ret = self.array_result(s, result, info, body, line)
             self.fix_returns(body, result)
             body.append(Return(Var(result)))
         decls = self.implicit_decls(s, body, proc_names | {s.name}, line)
@@ -3842,6 +3847,17 @@ class FParser:
                 params.append([info.type + "?" if info.optional else info.type, d, info.intent])
         fn = Function(s.name, params, ret, decls + self.local_decls(s, body, proc_names) + body, is_sub, list(s.comments))
         return fn
+
+    def array_result(self, scope, result, info, body, line):
+        """A function result that is an array: `-> real[]` (one comma more per extra dimension). The result is
+        an allocatable local; a fixed-size one is allocated at the top of the body, with the size Fortran gave."""
+        rank = len(info.dims)
+        if not info.allocatable:
+            extents = info.dims
+            info.dims, info.allocatable = [Slice(None, None) for _ in extents], True
+            body.insert(0, Allocate(result, extents, line))
+            self.note(line, f"array result '{result}' of '{scope.name}' is allocated at the start of the function")
+        return info.type + "[" + "," * (rank - 1) + "]"
 
     def unique(self, base, scope, body):
         names = set(scope.decls) | set(scope.dummies) | {n.name for n in iter_nodes(body) if isinstance(n, (Var, Apply))}
@@ -4262,6 +4278,12 @@ class FParser:
             if not (isinstance(last, Return) and isinstance(last.value, Var)):
                 continue
             result, ret = last.value.name, f.ret
+            if ret is not None and ret.endswith("]"):
+                what = "its arguments" if any(p[2] != "in" for p in f.params) else "module variables"
+                msg = f"function '{f.name}' returns an array and changes {what}; it cannot become a subroutine"
+                self.todo(self.fn_lines.get(id(f), 0), msg)
+                f.body = [Comment("TODO(convert): " + msg)]       # the body would not be valid in a function
+                continue
             f.body = [d for d in f.body[:-1] if not (isinstance(d, Decl) and d.name == result)]
             for n in iter_nodes(f.body):
                 if isinstance(n, Return) and isinstance(n.value, Var) and n.value.name == result:

@@ -640,7 +640,7 @@ class Parser:
         params = self.params(is_sub)
         ret = None
         if not is_sub and self.accept("->"):
-            ret = self.type_name(anywhere=True)
+            ret = self.result_type()
         self.newline()
         uses = self.uses()
         body = self.block(kind)
@@ -711,7 +711,24 @@ class Parser:
             if not self.accept("->"):
                 self.error("a function signature needs its result type: function(real) -> real")
             ret = self.type_name(anywhere=True)
+            if self.at("["):
+                self.error("a procedure signature cannot return an array")
         return ProcType(is_sub, tuple(params), ret, tuple(names))
+
+    def result_type(self):
+        """A function's result type: a type, or an array of one (`integer[]`, `real[,]`: a comma for each
+        extra dimension). An array result's length is only known after the call."""
+        name = self.type_name(anywhere=True)
+        if not self.at("["):
+            return name
+        if is_optional(name):
+            self.error("an array result cannot be optional ('?')")
+        self.next()
+        rank = 1
+        while self.accept(","):
+            rank += 1
+        self.expect("]")
+        return name + "[" + "," * (rank - 1) + "]"
 
     def typed_ahead(self):
         """Does a `::` (after an optional `?`) follow the current token?"""
