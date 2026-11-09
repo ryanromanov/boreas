@@ -1503,9 +1503,16 @@ class Interp:
                 raise LangError(f"'{e.name}' is used before it is assigned")
             return v
         if k is ArrayLit:
-            items = [self.eval(x, env) for x in e.items]
-            if any(isinstance(x, Array) for x in items):
-                raise LangError("array literals hold scalars; use reshape() to build a matrix")
+            items = []
+            for x in e.items:
+                v = self.eval(x, env)
+                if isinstance(v, Array):                      # a one-dimensional array is spliced in
+                    if v.rank != 1:
+                        raise LangError("array literals hold scalars and one-dimensional arrays; "
+                                        "use reshape() to build a matrix")
+                    items.extend(v.data)
+                else:
+                    items.append(v)
             return Array((len(items),), items)
         if k is FieldAccess:
             return self.field_value(e, env)

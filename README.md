@@ -243,6 +243,10 @@ Fortran. A scalar subscript drops that dimension; `:` keeps it.
 
 Operators work elementwise and need matching shapes (scalars broadcast).
 
+An array literal can contain one-dimensional arrays, which are spliced in: with `x = [1, 2, 3]`, `[x, 4]` is
+`[1, 2, 3, 4]` and `[0, x, x]` is `[0, 1, 2, 3, 1, 2, 3]`. A matrix in a literal is an error (build one with
+`reshape`).
+
 `cshift(a, shift)` rotates a one-dimensional array and `cshift(m, shift, dim)` the columns (`dim` 1, the
 default) or rows (`dim` 2) of a matrix. Elements pushed off one end come back at the other. It follows Fortran:
 `result[i]` is `a[i + shift]`, so a positive shift moves elements toward the start
