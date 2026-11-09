@@ -242,7 +242,12 @@ Fortran. A scalar subscript drops that dimension; `:` keeps it.
     println(matmul(m, transpose(m)))
 
 Operators work elementwise and need matching shapes (scalars broadcast).
-Built in: `size`, `shape`, `reshape`, `matmul`, `transpose`, `dot_product`,
+
+`cshift(a, shift)` rotates a one-dimensional array and `cshift(m, shift, dim)` the columns (`dim` 1, the
+default) or rows (`dim` 2) of a matrix. Elements pushed off one end come back at the other. It follows Fortran:
+`result[i]` is `a[i + shift]`, so a positive shift moves elements toward the start
+(`cshift([1, 2, 3, 4, 5], 2)` is `[3, 4, 5, 1, 2]`) and a negative one toward the end.
+Built in: `size`, `shape`, `reshape`, `matmul`, `transpose`, `cshift`, `dot_product`,
 `sum`, `product`, `maxval`, `minval`, `any`, `all`, `max`, `min`, plus these, which apply to every
 element of an array:
 

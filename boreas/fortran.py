@@ -225,6 +225,9 @@ def is_case_line(toks):
 ISO_KINDS = {"int8": 1, "int16": 2, "int32": 4, "int64": 8, "real32": 4, "real64": 8, "real128": 16}
 INT_KINDS = {1: "int8", 2: "int16", 4: "integer", 8: "int64"}
 REAL_KINDS = {4: "real32", 8: "real"}
+# Fortran lets an intrinsic's arguments be passed by name; Boreas built-ins are positional, so the converter
+# puts them in this order. (Looking into keyword arguments for Boreas parameters is on the list: see D52.)
+INTRINSIC_PARAMS = {"cshift": ["array", "shift", "dim"]}
 KIND_ARGUMENT = {"real", "int", "cmplx", "dble", "dcmplx", "float", "sngl", "nint", "floor", "ceiling"}
 
 
@@ -764,7 +767,27 @@ class FParser:
                 if not self.accept_op(","):
                     break
         self.expect_op(")")
+        if any(isinstance(a, NamedArg) and a.name != "kind" for a in args) and fname in INTRINSIC_PARAMS:
+            args = self.positional_order(fname, args)
         return args
+
+    def positional_order(self, fname, args):
+        """Boreas built-ins take positional arguments only, so `cshift(array = a, shift = 2)` becomes
+        `cshift(a, 2)`. A parameter left out in the middle cannot be skipped."""
+        names = INTRINSIC_PARAMS[fname]
+        slots = {}
+        for n, a in enumerate(args):
+            if isinstance(a, NamedArg) and a.name in names:
+                key, value = names.index(a.name), a.value
+            else:
+                key, value = n, a
+            if key in slots:
+                raise Unsupported(f"argument given twice in {fname}()")
+            slots[key] = value
+        top = max(slots)
+        if any(k not in slots for k in range(top + 1)):
+            raise Unsupported(f"{fname}() with an argument left out before a later one")
+        return [slots[k] for k in range(top + 1)]
 
     def argument(self, fname):
         t, t2 = self.peek(), self.peek(1)
@@ -776,6 +799,9 @@ class FParser:
             if self.rename(fname) in self.types:             # a structure constructor: point(x = 1.0)
                 self.k += 2
                 return NamedArg(self.rename(t.text), self.expr())
+            if fname in INTRINSIC_PARAMS and t.text in INTRINSIC_PARAMS[fname]:
+                self.k += 2
+                return NamedArg(t.text, self.expr())
             raise Unsupported(f"keyword argument '{t.text}=' in {fname}()")
         lo = None if self.at_op(":") else self.expr()
         if isinstance(lo, Var) and lo.name in self.cur_scope.intrinsics:
