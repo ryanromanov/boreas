@@ -43,7 +43,7 @@ class BasicTests(unittest.TestCase):
 
     def test_declared_record_can_be_printed_and_used_at_once(self):
         self.assertEqual(run("point :: p\nprintln(p)"), ["point(x=0.0, y=0.0)"])
-        self.assertEqual(run("point :: pts(2)\nprintln(pts(2).y)"), ["0.0"])
+        self.assertEqual(run("point[2] :: pts\nprintln(pts[2].y)"), ["0.0"])
 
     def test_assignment_copies(self):
         body = "point :: p = point(1.0, 2.0)\npoint :: q\nq = p\nq.x = 9.0\nprintln(p.x, q.x)"
@@ -95,15 +95,15 @@ class BasicTests(unittest.TestCase):
 
 
 class NestedTests(unittest.TestCase):
-    DEFS = POINT + "record segment\n  point :: a\n  point :: b\n  integer :: tags(3)\nend record\n"
+    DEFS = POINT + "record segment\n  point :: a\n  point :: b\n  integer[3] :: tags\nend record\n"
 
     def test_nested_record_and_array_field(self):
-        body = ("segment :: s\ns.a = point(1.0, 2.0)\ns.b.x = 5.0\ns.b.y = 6.0\ns.tags(2) = 7\n"
+        body = ("segment :: s\ns.a = point(1.0, 2.0)\ns.b.x = 5.0\ns.b.y = 6.0\ns.tags[2] = 7\n"
                 "println(s.a.x, s.b.y, s.tags)")
         self.assertEqual(run(body, defs=self.DEFS), ["1.0 6.0 [0, 7, 0]"])
 
     def test_array_field_whole_assignment_and_construction(self):
-        body = "segment :: s\ns.tags = [1, 2, 3]\nprintln(s.tags(3))"
+        body = "segment :: s\ns.tags = [1, 2, 3]\nprintln(s.tags[3])"
         self.assertEqual(run(body, defs=self.DEFS), ["3"])
         fails("segment :: s\ns.tags = [1, 2]", "shape mismatch", defs=self.DEFS)
         body = "segment :: s = segment(tags = [4, 5, 6])\nprintln(s.tags)"
@@ -115,34 +115,34 @@ class NestedTests(unittest.TestCase):
         self.assertEqual(run(body, defs=self.DEFS), ["1.0 9.0"])
 
     def test_array_field_index_out_of_bounds(self):
-        fails("segment :: s\ns.tags(4) = 1", "out of bounds", defs=self.DEFS)
+        fails("segment :: s\ns.tags[4] = 1", "out of bounds", defs=self.DEFS)
 
     def test_array_of_records_elements_are_independent(self):
-        body = ("point :: pts(3)\ninteger :: i\ndo i = 1, 3\n  pts(i).x = i * 1.0\n  pts(i).y = pts(i).x * 2.0\n"
-                "end do\nprintln(pts(2), pts(3).y)")
+        body = ("point[3] :: pts\ninteger :: i\ndo i = 1, 3\n  pts[i].x = i * 1.0\n  pts[i].y = pts[i].x * 2.0\n"
+                "end do\nprintln(pts[2], pts[3].y)")
         self.assertEqual(run(body), ["point(x=2.0, y=4.0) 6.0"])
 
     def test_array_initializer_with_record_values(self):
-        body = "point :: pts(2) = [point(1.0, 2.0), point(3.0, 4.0)]\npts(1).x = 0.0\nprintln(pts(1).x, pts(2).x)"
+        body = "point[2] :: pts = [point(1.0, 2.0), point(3.0, 4.0)]\npts[1].x = 0.0\nprintln(pts[1].x, pts[2].x)"
         self.assertEqual(run(body), ["0.0 3.0"])
 
     def test_array_of_records_whole_assignment_copies(self):
-        body = "point :: a(2)\npoint :: b(2)\na(1).x = 1.0\nb = a\na(1).x = 5.0\nprintln(b(1).x)"
+        body = "point[2] :: a\npoint[2] :: b\na[1].x = 1.0\nb = a\na[1].x = 5.0\nprintln(b[1].x)"
         self.assertEqual(run(body), ["1.0"])
 
     def test_element_assignment_copies(self):
-        body = "point :: pts(2)\npoint :: p = point(1.0, 2.0)\npts(1) = p\npts(1).x = 9.0\nprintln(p.x, pts(1).x)"
+        body = "point[2] :: pts\npoint :: p = point(1.0, 2.0)\npts[1] = p\npts[1].x = 9.0\nprintln(p.x, pts[1].x)"
         self.assertEqual(run(body), ["1.0 9.0"])
 
     def test_array_field_of_records(self):
-        defs = POINT + "record line\n  point :: ends(2)\nend record\n"
-        self.assertEqual(run("line :: l\nl.ends(2).y = 4.0\nprintln(l.ends(2).y)", defs=defs), ["4.0"])
+        defs = POINT + "record line\n  point[2] :: ends\nend record\n"
+        self.assertEqual(run("line :: l\nl.ends[2].y = 4.0\nprintln(l.ends[2].y)", defs=defs), ["4.0"])
 
     def test_slice_of_records_needs_one_element(self):
-        fails("point :: a(2)\nprintln(a(1:2).x)", "pick one element")
+        fails("point[2] :: a\nprintln(a[1:2].x)", "pick one element")
 
     def test_allocatable_records_are_rejected(self):
-        fails("allocatable point :: a(:)", "allocatable arrays of records are not supported")
+        fails("allocatable point[] :: a", "allocatable arrays of records are not supported")
 
 
 class DefinitionTests(unittest.TestCase):
@@ -158,7 +158,7 @@ class DefinitionTests(unittest.TestCase):
         fails("println(1)", "two fields called 'x'", defs="record r\n  real :: x\n  real :: x\nend record\n")
 
     def test_field_array_size_must_be_literal(self):
-        fails("println(1)", "literal size", defs="record r\n  real :: v(n)\nend record\n")
+        fails("println(1)", "literal size", defs="record r\n  real[n] :: v\nend record\n")
 
     def test_name_clashes(self):
         fails("println(1)", "same name as a procedure", "function point() -> integer\n return 1\nend function")
@@ -198,7 +198,7 @@ class FieldDefaultTests(unittest.TestCase):
                          ["config(count=1, scale=3.0, verbose=true, name=x)"])
 
     def test_every_new_record_gets_the_default(self):
-        body = "config :: cs(3)\ncs(2).count = 9\nprintln(cs(1).count, cs(2).count, cs(3).count)"
+        body = "config[3] :: cs\ncs[2].count = 9\nprintln(cs[1].count, cs[2].count, cs[3].count)"
         self.assertEqual(run(body, defs=self.CFG), ["5 9 5"])
 
     def test_defaults_are_per_instance(self):
@@ -219,9 +219,9 @@ class FieldDefaultTests(unittest.TestCase):
                          ["point(x=1.0, y=2.0) point(x=0.0, y=0.0)"])
 
     def test_array_field_defaults(self):
-        defs = "record r\n  integer :: v(3) = 7\n  integer :: w(3) = [1, 2, 3]\n  integer :: z(2)\nend record\n"
+        defs = "record r\n  integer[3] :: v = 7\n  integer[3] :: w = [1, 2, 3]\n  integer[2] :: z\nend record\n"
         self.assertEqual(run("r :: x\nprintln(x.v, x.w, x.z)", defs=defs), ["[7, 7, 7] [1, 2, 3] [0, 0]"])
-        fails("println(1)", "has shape \\(2\\)", defs="record r\n  integer :: v(3) = [1, 2]\nend record\n")
+        fails("println(1)", "has shape \\(2\\)", defs="record r\n  integer[3] :: v = [1, 2]\nend record\n")
 
     def test_copies_keep_values_and_defaults_do_not_alias(self):
         body = "config :: a\nconfig :: b = a\nb.count = 0\nprintln(a.count, b.count)"
@@ -261,7 +261,7 @@ class FieldDefaultTests(unittest.TestCase):
 
     def test_default_can_call_built_in_functions(self):
         defs = ("record r\n  real :: a = sqrt(16.0)\n  real :: b = abs(-2.5) * 2.0\n  integer :: n = mod(17, 5)\n"
-                "  real :: s = sum([1.0, 2.0, 3.0])\n  integer :: v(3) = reshape([1, 2, 3], [3])\nend record\n")
+                "  real :: s = sum([1.0, 2.0, 3.0])\n  integer[3] :: v = reshape([1, 2, 3], [3])\nend record\n")
         self.assertEqual(run("r :: x\nprintln(x.a, x.b, x.n, x.s, x.v)", defs=defs), ["4.0 5.0 2 6.0 [1, 2, 3]"])
 
     def test_default_can_use_earlier_module_constants(self):
@@ -329,10 +329,10 @@ class ProcedureTests(unittest.TestCase):
         fails("point :: p\nupdate p.x = 1.0", "'update' is for out and inout parameters")
 
     def test_update_works_through_nested_fields_and_elements(self):
-        defs = POINT + "record line\n  point :: ends(2)\nend record\n"
-        sub = "subroutine f(inout line :: l)\n  update l.ends(2).y = 9.0\nend subroutine"
-        self.assertEqual(run("line :: l\nl.ends(1) = point(0.0, 0.0)\nl.ends(2) = point(0.0, 0.0)\n"
-                             "call f(l)\nprintln(l.ends(2).y)", sub, defs), ["9.0"])
+        defs = POINT + "record line\n  point[2] :: ends\nend record\n"
+        sub = "subroutine f(inout line :: l)\n  update l.ends[2].y = 9.0\nend subroutine"
+        self.assertEqual(run("line :: l\nl.ends[1] = point(0.0, 0.0)\nl.ends[2] = point(0.0, 0.0)\n"
+                             "call f(l)\nprintln(l.ends[2].y)", sub, defs), ["9.0"])
 
     def test_function_returns_a_copy(self):
         f = "function mk(real :: a) -> point\n  point :: r = point(a, a)\n  return r\nend function"
@@ -366,7 +366,7 @@ class ProcedureTests(unittest.TestCase):
 
     def test_distinct_array_elements_do_not_alias(self):
         swap = "subroutine swap(inout real :: a, inout real :: b)\nend subroutine"
-        body = "point :: a(2)\na(1) = point(1.0, 1.0)\na(2) = point(2.0, 2.0)\ncall swap(a(1).x, a(2).x)"
+        body = "point[2] :: a\na[1] = point(1.0, 1.0)\na[2] = point(2.0, 2.0)\ncall swap(a[1].x, a[2].x)"
         run(body, swap)
 
     def test_const_record(self):
@@ -427,10 +427,10 @@ end module
 
 
 class PrinterTests(unittest.TestCase):
-    SRC = (POINT + "record seg\n  point :: a\n  integer :: tags(2)\nend record\n"
+    SRC = (POINT + "record seg\n  point :: a\n  integer[2] :: tags\nend record\n"
            "module m\n  public record q\n    real :: z\n  end record\nend module\n"
-           "program t\n  point :: p = point(1.0, y = 2.0)\n  seg :: s\n  p.x = 3.0\n  s.a.y = p.x\n  s.tags(2) = 1\n"
-           "  println(p.x + s.tags(2), p)\nend program\n")
+           "program t\n  point :: p = point(1.0, y = 2.0)\n  seg :: s\n  p.x = 3.0\n  s.a.y = p.x\n  s.tags[2] = 1\n"
+           "  println(p.x + s.tags[2], p)\nend program\n")
 
     def test_round_trip_is_stable(self):
         text = to_source(parse(self.SRC))

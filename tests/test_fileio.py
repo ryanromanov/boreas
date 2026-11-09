@@ -32,7 +32,7 @@ class FileTests(unittest.TestCase):
     def test_write_then_read_back(self):
         body = ('  file :: f = open("PATH", "write")\n  writeln(f, "Range:", 3.5)\n  write(f, "x")\n'
                 '  write(f, "y")\n  writeln(f, "")\n  close f\n'
-                '  file :: g = open("PATH", "read")\n  allocatable string :: p(:)\n  p = fields(read_line(g) ?? \"\")\n  println(p(1), to_real(p(2)))\n'
+                '  file :: g = open("PATH", "read")\n  allocatable string[] :: p\n  p = fields(read_line(g) ?? \"\")\n  println(p[1], to_real(p[2]))\n'
                 '  close g')
         self.assertEqual(self.run_body(body), ["Range: 3.5"])
         with open(self.path) as f:
@@ -52,9 +52,9 @@ class FileTests(unittest.TestCase):
 
     def test_end_of_file_is_null(self):
         self.write_file("1 2\nx\n")
-        body = ('  file :: f = open("PATH", "read")\n  allocatable string :: p(:)\n'
-                '  p = fields(read_line(f) ?? "")\n  println(to_integer(p(1)), to_integer(p(2)))\n'
-                '  p = fields(read_line(f) ?? "")\n  println(to_integer(p(1)) ?? -1)\n'
+        body = ('  file :: f = open("PATH", "read")\n  allocatable string[] :: p\n'
+                '  p = fields(read_line(f) ?? "")\n  println(to_integer(p[1]), to_integer(p[2]))\n'
+                '  p = fields(read_line(f) ?? "")\n  println(to_integer(p[1]) ?? -1)\n'
                 '  println(present(read_line(f)))')
         self.assertEqual(self.run_body(body), ["1 2", "-1", "false"])
 

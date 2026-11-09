@@ -20,7 +20,7 @@ Currently a tree-walking interpreter written in Python.
     end function
 
     program demo
-      integer :: ys(3) = [1, 2, 3]
+      integer[3] :: ys = [1, 2, 3]
       println("squares:", ys * ys, square(2.5))
     end program
 
@@ -30,7 +30,7 @@ Each variable is declared on its own line, with an optional initial value:
 
     integer :: i
     integer :: count = 0
-    real :: v(3) = [1.0, 2.0, 3.0]
+    real[3] :: v = [1.0, 2.0, 3.0]
 
 A variable you don't give a value starts at its type's default: `0` for `integer`, `0.0` for `real`,
 `0.0 + 0.0i` for `complex`, `false` for `logical` and `""` for `string`. Arrays and records start that way element by element
@@ -79,8 +79,8 @@ Integers and reals come in fixed widths, named by their size:
 
 ## Strings and the system
 
-A `string` is text of any length. Join with `+`. Take part of one with `s(lo:hi)`, counting from 1 and
-including both ends (either end may be left off). Assign to part of a string with `s(lo:hi) = text`; the
+A `string` is text of any length. Join with `+`. Take part of one with `s[lo:hi]`, counting from 1 and
+including both ends (either end may be left off). Assign to part of a string with `s[lo:hi] = text`; the
 text must have exactly that many characters. `len(s)` is the length, `trim(s)` removes trailing blanks (`len_trim(s)` is the length without them), `achar(n)` the character with code
 `n` and `iachar(c)` the code of a one-character string.
 
@@ -98,9 +98,9 @@ Strings can use `"` or `'` quotes, so `'say "hi"'` works.
 Input is a line of text: `read_line()` returns the next whole line from the keyboard as a `string?` (`null`
 at the end of input), and `read_line(f)` does the same for a file. Cut it up and turn the pieces into numbers:
 
-    allocatable string :: p(:)
+    allocatable string[] :: p
     p = fields(read_line() ?? "")         ! "  1.5   2.0 3.7 " -> ["1.5", "2.0", "3.7"]
-    x = to_real(p(1)) ?? 0.0              ! null when the text is not a number
+    x = to_real(p[1]) ?? 0.0              ! null when the text is not a number
     p = split("a,,b", ",")                ! ["a", "", "b"]: cuts at exactly the separator
     p = fields("3, 4.5", ",")             ! ["3", "4.5"]: blanks and commas both separate
 
@@ -197,7 +197,7 @@ like Fortran's `F8.2`. Integer division by zero and turning NaN into an integer 
 ## Constants
 
     const real :: pi = 3.14159
-    const integer :: primes(3) = [2, 3, 5]
+    const integer[3] :: primes = [2, 3, 5]
 
 A `const` needs a value and can never be assigned, used as a `do` variable, or
 passed as an `out`/`inout` argument. Fortran's `parameter` converts to `const`.
@@ -230,15 +230,14 @@ there is no literal syntax (`cmplx(re)` or an integer or real value widens when 
 > `real[,] :: m` is a two-dimensional array, `real[] :: v` a one-dimensional one, and `real :: x` one number
 > (callback signatures use the same forms, `function(real[]) -> real`). The old forms (`a(i)`, `real :: v(3)`,
 > `allocate g(n)`, `allocatable real :: m(:, :)`, a bare `real :: m` parameter that takes an array) still run
-> for now and print a warning to stderr once; they will become errors. The examples below still use the
-> old forms until they are rewritten.
+> for now and print a warning to stderr once; they will become errors.
 
 Arrays have any number of dimensions, 1-based and stored column-major like
 Fortran. A scalar subscript drops that dimension; `:` keeps it.
 
-    real :: m(2, 3) = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
-    println(m(1, :), m(:, 2), m(1:2, 2:3))    ! row, column, block
-    m(2, :) = 0.0                          ! sections can be assigned
+    real[2, 3] :: m = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
+    println(m[1, :], m[:, 2], m[1:2, 2:3])    ! row, column, block
+    m[2, :] = 0.0                          ! sections can be assigned
     println(matmul(m, transpose(m)))
 
 Operators work elementwise and need matching shapes (scalars broadcast).
@@ -263,10 +262,10 @@ from inside an inner one:
 
     outer: do i = 1, n
       do j = 1, n
-        if grid(i, j) == target then
+        if grid[i, j] == target then
           exit outer          ! leave the whole nest
         end if
-        if skip(j) then
+        if skip[j] then
           cycle outer         ! next i
         end if
       end do
@@ -344,12 +343,12 @@ Arrays whose size is only known at run time are declared `allocatable` with one 
 dimension (the number of colons is the rank), given a size with `allocate`, and freed with
 `deallocate`:
 
-    allocatable integer :: a(:)
-    allocatable real :: m(:, :)
+    allocatable integer[] :: a
+    allocatable real[,] :: m
     n = 5
     println(allocated(a))          ! false
-    allocate a(n)               ! elements start at 0 / 0.0 / false / ""
-    allocate m(n, 2 * n)
+    allocate a[n]               ! elements start at 0 / 0.0 / false / ""
+    allocate m[n, 2 * n]
     println(allocated(a), size(a)) ! true 5
     deallocate a                ! may be allocated again, with any size
 
@@ -363,9 +362,9 @@ scalar value is only accepted once the array is allocated. A fixed-size array mu
 cannot themselves be `allocatable`, so a callee cannot allocate its caller's array. A leftover
 allocation is freed at the end of its scope.
 
-A module can hold an allocatable array too (`public allocatable integer :: data(:)`). Because every
+A module can hold an allocatable array too (`public allocatable integer[] :: data`). Because every
 importer sees it, allocating or freeing it is a write and says so with `update`, in a subroutine
-(a function cannot): `update allocate data(n)`, `update deallocate data`, `update data(i) = x`.
+(a function cannot): `update allocate data[n]`, `update deallocate data`, `update data[i] = x`.
 Reading needs nothing special. `allocate` on a local array never takes `update`.
 
 ## Functions that return arrays
@@ -374,15 +373,15 @@ A function can return an array whose length is only known when it runs. Write `[
 the result (a comma for each extra dimension: `[,]` is two dimensions) and `return` an array:
 
     function frequencies(integer :: n) -> integer[]
-      allocatable integer :: out(:)
-      allocate out(n)
+      allocatable integer[] :: out
+      allocate out[n]
       do i = 1, n
-        out(i) = i - 1
+        out[i] = i - 1
       end do
       return out
     end function
 
-    allocatable integer :: f(:)
+    allocatable integer[] :: f
     f = frequencies(8)              ! allocates f, as with split
     println(sum(frequencies(4)))
 
@@ -407,8 +406,8 @@ field per line, with no default values:
     println(p.x + q.y, p)
 
 - A record is a value: assigning one, passing it, or returning it copies it, so two variables never
-  share fields. Records can hold other records and fixed-size array fields (`integer :: tags(3)`,
-  with a literal size), and you can make arrays of records (`point :: pts(10)`).
+  share fields. Records can hold other records and fixed-size array fields (`integer[3] :: tags`,
+  with a literal size), and you can make arrays of records (`point[10] :: pts`).
 - Fields start at their type's default value (see Declarations), nested records and array fields
   included, so `point :: p` is a usable zero point. A field may declare its own default with a
   constant expression (literals, `const` names from the same module, arithmetic, array literals,

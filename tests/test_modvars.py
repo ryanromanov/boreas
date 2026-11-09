@@ -67,8 +67,8 @@ class ModuleVariableTests(unittest.TestCase):
 
     def test_arrays_and_records(self):
         src = ("module bank\n  record acct\n    integer :: total\n  end record\n"
-               "  public integer :: slots(3)\n  public acct :: main\n"
-               "  public subroutine put(integer :: i)\n    update slots(i) = i * 10\n"
+               "  public integer[3] :: slots\n  public acct :: main\n"
+               "  public subroutine put(integer :: i)\n    update slots[i] = i * 10\n"
                "    update main.total = main.total + i\n  end subroutine\nend module\n")
         self.assertEqual(run("  use bank: slots, main, put\n  call put(2)\n  call put(3)\n  println(slots, main.total)", src),
                          ["[0, 20, 30] 5"])

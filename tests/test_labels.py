@@ -99,11 +99,11 @@ end program t
 end module m
 program t
   use m: pi2
-  integer :: a(4)
+  integer[4] :: a
   integer :: s
   a = [1, 2, 3, 4]
   lo: do s = 1, 1
-    println(a(2:3), pi2)
+    println(a[2:3], pi2)
   end do lo
 end program t
 """

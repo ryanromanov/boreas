@@ -98,7 +98,7 @@ class Call:
     name: str; args: list; line: int
     col: int = field(default=0, compare=False, repr=False)
 @dataclass
-class Allocate: name: str; dims: list; line: int; update: bool = False   # allocate a(n, m): one extent per dimension
+class Allocate: name: str; dims: list; line: int; update: bool = False   # allocate a[n, m]: one extent per dimension
 @dataclass
 class Deallocate: name: str; line: int; update: bool = False
 @dataclass

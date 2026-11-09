@@ -227,7 +227,7 @@ class ErrorTests(unittest.TestCase):
     def test_name_must_be_a_const_at_run_time(self):
         fails("integer :: n = 2\nselect case 2\ncase n\nprintln(1)\nend select", "'n' is not a scalar const")
         fails("select case 2\ncase nope\nprintln(1)\nend select", "not declared")
-        fails("const integer :: a(2) = 1\nselect case 2\ncase a\nprintln(1)\nend select", "not a scalar const")
+        fails("const integer[2] :: a = 1\nselect case 2\ncase a\nprintln(1)\nend select", "not a scalar const")
 
     def test_two_defaults(self):
         with self.assertRaisesRegex(LangError, "'case default' appears more than once"):
