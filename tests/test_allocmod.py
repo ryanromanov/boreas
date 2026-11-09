@@ -50,26 +50,26 @@ class AllocatableModuleVariableTests(unittest.TestCase):
 
     def test_allocate_without_update_is_an_error(self):
         with self.assertRaisesRegex(LangError, "module variable.*write 'update allocate"):
-            parse(program("allocate data(3)"))
+            parse(program("allocate data[3]"))
         with self.assertRaisesRegex(LangError, "write 'update deallocate data'"):
             parse(program("deallocate data"))
 
     def test_update_on_a_local_array_is_an_error(self):
         with self.assertRaisesRegex(LangError, "'update' is for module variables, but 'a' is a local array"):
-            parse("program p\nallocatable integer :: a(:)\nupdate allocate a(3)\nend program p")
+            parse("program p\nallocatable integer[] :: a\nupdate allocate a[3]\nend program p")
 
     def test_a_function_cannot_allocate_a_module_variable(self):
-        src = STORE.replace("return sum(data)", "update allocate data(1)\n    return 0")
+        src = STORE.replace("return sum(data)", "update allocate data[1]\n    return 0")
         with self.assertRaisesRegex(LangError, "a function cannot allocate the module variable 'data'"):
             parse(src + "program p\nend program p")
 
     def test_extent_count_and_allocatable_checks(self):
         with self.assertRaisesRegex(LangError, "1 dimension.*2 extent"):     # an import is only checked when it runs
             run(program("update allocate data[2, 2]"))
-        own = STORE.replace("update deallocate data", "update allocate data(1, 1)")
+        own = STORE.replace("update deallocate data", "update allocate data[1, 1]")
         with self.assertRaisesRegex(LangError, "1 dimension.*2 extent"):
             parse(own + "program p\nend program p")
-        src = ("module m\n  public integer :: n\n  public subroutine s()\n    update allocate n(2)\n  end subroutine\n"
+        src = ("module m\n  public integer :: n\n  public subroutine s()\n    update allocate n[2]\n  end subroutine\n"
                "end module\nprogram p\nend program p")
         with self.assertRaisesRegex(LangError, "not allocatable"):
             parse(src)

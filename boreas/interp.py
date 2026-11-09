@@ -835,9 +835,8 @@ def read_value(typ, token):
 
 
 class Interp:
-    def __init__(self, unit, out=print, args=(), stdin=None, warn=None):
+    def __init__(self, unit, out=print, args=(), stdin=None):
         self.unit, self.out = unit, out
-        self.warn, self.warned = warn, set()     # warn(text) is told once about each use of syntax on its way out
         kinds.set_ieee(getattr(unit, "ieee", False))
         self.input = LineInput(stdin)
         self.pending = ""                 # text written with `write` that is waiting for its newline
@@ -1350,12 +1349,6 @@ class Interp:
         if not isinstance(v, int) or isinstance(v, bool):
             raise LangError(f"line {line}: array index must be integer")
 
-    def deprecated(self, line, message):
-        """Tell the caller (once per message) about syntax that still works but is going away."""
-        if self.warn is not None and message not in self.warned:
-            self.warned.add(message)
-            self.warn(f"warning: line {line}: {message}")
-
     def resolve(self, t, env, line):
         """Turn a variable, array element, array section or record field into a reference."""
         if isinstance(t, FieldAccess):
@@ -1368,7 +1361,7 @@ class Interp:
         if isinstance(t, Var):
             return Ref(slot, None, t.name)
         if not t.bracket and (slot[IS_ARRAY] or slot[TYPE] == "string"):
-            self.deprecated(line, f"index with brackets: write {t.name}[...], not {t.name}(...)")
+            raise LangError(f"line {line}: index with brackets: write {t.name}[...], not {t.name}(...)")
         if not slot[IS_ARRAY]:
             if slot[TYPE] == "string":
                 return Ref(slot, self.substring_bounds(slot, t.args, env, line, t.name), t.name)
@@ -1428,7 +1421,7 @@ class Interp:
         if not slot[IS_ARRAY]:
             raise LangError(f"line {line}: field '{name}' is not an array")
         if not t.bracket:
-            self.deprecated(line, f"index with brackets: write {t.field}[...], not {t.field}(...)")
+            raise LangError(f"line {line}: index with brackets: write {t.field}[...], not {t.field}(...)")
         return Ref(slot, self.subscripts(slot[VALUE], t.args, env, line, name), name, ref.root, ref.rsubs, fpath)
 
     def read(self, ref):
@@ -1842,8 +1835,8 @@ class Interp:
                                     f"{describe_array_type(typ)}, not {got}")
                 typ = typ[:typ.index("[")]
             elif is_arr and isinstance(typ, str):
-                self.deprecated(line, f"say that '{name}' of {f.name} is an array: declare it as "
-                                      f"{typ}[{',' * (v.rank - 1)}] :: {name}")
+                raise LangError(f"line {line}: '{name}' of {f.name} is an array: declare it as "
+                                f"{typ}[{',' * (v.rank - 1)}] :: {name}")
             if isinstance(v, Record) and v.rdef.name == typ and v.rdef is not self.scopes[id(f)].records.get(typ):
                 raise LangError(f"line {line}: argument '{name}' is a {typ}, but not the {typ} that "
                                 f"{f.name} was written for (two records share that name)")
