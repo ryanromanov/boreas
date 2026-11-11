@@ -93,11 +93,12 @@ def _case_values(values):
     return "default" if values is None else ", ".join(expr(v) for v in values)
 
 
-def _params(f):
+def _params(f, method=False):
+    """`real :: x, inout integer :: n`; in a record's function the first parameter is written `self`."""
     out = []
-    for typ, name, intent in f.params:
+    for n, (typ, name, intent) in enumerate(f.params):
         mode = "" if intent == "in" else intent + " "
-        out.append(f"{mode}{typ} :: {name}")
+        out.append(f"{mode}self" if method and n == 0 else f"{mode}{typ} :: {name}")
     return ", ".join(out)
 
 
@@ -170,7 +171,8 @@ def stmt(s, depth):
     if k is Stop:
         return [pad + "stop" + (" " + expr(s.code) if s.code is not None else "")]
     if k is Call:
-        return [f"{pad}call {s.name}(" + ", ".join(expr(a) for a in s.args) + ")"]
+        who = expr(s.receiver) + "." if s.receiver is not None else ""
+        return [f"{pad}call {who}{s.name}(" + ", ".join(expr(a) for a in s.args) + ")"]
     if k is Return:
         return [pad + "return" + (" " + expr(s.value) if s.value is not None else "")]
     if k is Exit:
@@ -191,6 +193,12 @@ def stmt(s, depth):
             lines.extend(stmts(s.orelse, depth + 1))
         lines.append(pad + "end if")
         return lines
+    if k is SelectType:
+        lines = [f"{pad}select type {expr(s.subject)} as {s.var}"]
+        for c in s.cases:
+            lines.append(f"{pad}case {'default' if c.values is None else c.values}")
+            lines.extend(stmts(c.body, depth + 1))
+        return lines + [pad + "end select"]
     if k is Select:
         lines = [f"{pad}select case {'fallthrough ' if s.flow else ''}{expr(s.subject)}"]
         for c in s.cases:
@@ -217,14 +225,29 @@ def _uses(uses, depth=1):
     return ["  " * depth + f"use {u.module}: " + ", ".join(u.names) for u in uses]
 
 
+def interface(d):
+    lines = [f"{'public ' if d.public else ''}interface {d.name}"]
+    for f in d.functions.values():
+        kind = "subroutine" if f.is_sub else "function"
+        head = f"  {kind} {f.name}({_params(f, True)})"
+        lines.append(head + (f" -> {f.ret}" if f.ret else ""))
+    return lines + ["end interface"]
+
+
 def record(r):
-    lines = [f"{'public ' if r.public else ''}record {r.name}"]
+    is_ = (" is " + ", ".join(n for n, _ in r.implements)) if r.implements else ""
+    lines = [f"{'public ' if r.public else ''}record {r.name}{is_}"]
     lines.extend(stmts(r.fields))
+    for f in r.functions.values():
+        lines.append("")
+        lines.extend("  " + l if l else l for l in procedure(f, method=True))
     return lines + ["end record"]
 
 
 def module(m):
     lines = [_comment(c) for c in m.comments] + [f"module {m.name}"] + _uses(m.uses)
+    for d in m.interfaces.values():
+        lines.extend("  " + l for l in interface(d))
     for r in m.records.values():
         lines.extend("  " + l for l in record(r))
     lines.extend(stmts(m.decls))
@@ -233,10 +256,10 @@ def module(m):
     return lines + [f"end module {m.name}"]
 
 
-def procedure(f):
+def procedure(f, method=False):
     kind = "subroutine" if f.is_sub else "function"
     lines = [_comment(c) for c in f.comments]
-    head = f"{'public ' if f.public else ''}{kind} {f.name}({_params(f)})"
+    head = f"{'public ' if f.public else ''}{kind} {f.name}({_params(f, method)})"
     if f.ret:
         head += f" -> {f.ret}"
     lines.append(head)
@@ -253,6 +276,8 @@ def to_source(unit, header=()):
         blocks.append([_comment(h) for h in header])
     if unit.ieee:
         blocks.append(["use ieee"])
+    for d in unit.interfaces.values():
+        blocks.append(interface(d))
     for r in unit.records.values():
         blocks.append(record(r))
     for m in unit.modules.values():

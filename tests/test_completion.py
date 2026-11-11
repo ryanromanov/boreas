@@ -39,7 +39,7 @@ def labels(line_text, src=SRC):
 class CompletionTests(unittest.TestCase):
     def test_prefix_matches_declared_names_types_builtins_and_keywords(self):
         self.assertEqual(labels("  t"), ["total", "tan", "tanh", "text", "tf", "tiny", "to_integer", "to_logical", "to_real", "transpose", "trim", "try_open", "then", "true"])
-        self.assertEqual(labels("  INT"), ["int16", "int32", "int64", "int8", "integer"])
+        self.assertEqual(labels("  INT"), ["int16", "int32", "int64", "int8", "integer", "interface"])
 
     def test_sort_text_keeps_the_order(self):
         src = SRC.replace("CURSOR", "  t")

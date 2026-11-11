@@ -452,6 +452,87 @@ field per line, with no default values:
   and cannot be `allocatable` yet. In a module, a record is private unless marked `public`, and is
   imported by name: `use geometry: point`. See `examples/records.bor`.
 
+## Functions in records, interfaces and `select type`
+
+A record can hold the functions that work on it. The first parameter is `self`, which has the record's type; write
+`inout self` for a subroutine that changes the record. Call them with a dot:
+
+    record circle
+      real :: r = 1.0
+
+      function area(self) -> real
+        return 3.14159 * self.r ** 2
+      end function
+
+      subroutine grow(inout self, real :: factor)
+        update self.r = self.r * factor
+      end subroutine
+    end record
+
+    circle :: c = circle(r = 2.0)
+    println(c.area())
+    call c.grow(2.0)               ! c.r is now 4.0
+
+A function in a record is an ordinary function otherwise: the same parameter modes, `update` rules and `const`
+checks apply (`call c.grow(2.0)` on a `const` record is an error). Two records can both have an `area`. A function
+and a field of one record cannot share a name, and a function can only be declared inside its record.
+
+An **interface** lists the functions a caller needs, with `self` standing for the value passed. A variable, array
+element, parameter or result whose type is an interface can hold any record that has those functions, and a call
+runs the function of the record it holds:
+
+    interface figure
+      function area(self) -> real
+    end interface
+
+    record rect is figure          ! `is` is optional; when written it is checked
+      real :: w = 1.0
+      real :: h = 1.0
+      function area(self) -> real
+        return self.w * self.h
+      end function
+    end record
+
+    subroutine report(figure :: f)
+      println(f.area())
+    end subroutine
+
+    figure[2] :: all
+    all[1] = circle(r = 2.0)
+    all[2] = rect(w = 3.0, h = 4.0)
+    call report(all[2])
+
+- A record fits an interface if it has every listed function with the same parameters (not counting `self`), modes
+  and result type. It may have more. `record rect is figure` says so out loud and is checked when the program loads;
+  without it the check happens when a value is assigned or passed.
+- Only the listed functions are available through an interface value (a variable, element, parameter or function
+  result), and its fields are not (`f.w` is an error). If you need a value, add a function that returns it.
+  `println` of an interface value still shows the whole record.
+- An interface value is a copy, like any record. An element that was never assigned cannot be used.
+- Assigning an interface value to a variable of a record type works when it holds that record right now, and is an
+  error when it holds another; `select type` is the way to ask first.
+- A variable of a record type can be passed to an `inout` or `out` parameter of an interface type (as Fortran allows
+  for `class(shape), intent(inout)`). The routine can change the record, or put in a new one of the same kind, but it
+  is an error if it puts in a different kind (a `rect` into a `circle` variable).
+- An interface cannot be named like a built-in (`shape` is one) or a record. Not supported yet: a record field or an
+  `allocatable` array of an interface type, and optional interface values (`figure?`).
+- Interfaces are exported and imported by name from a module (`public interface figure`, `use shapes: figure`).
+
+`select type` finds out which record an interface value holds:
+
+    select type all[2] as p
+      case rect
+        println("width", p.w)      ! p is a copy of the value, as a rect
+      case circle
+        println("radius", p.r)
+      case default
+        println("something else")
+    end select
+
+`case default` is required, because a new record can fit an interface at any time. The default may be empty. A case
+matches exactly one record, not any record that fits. In the default case `p` has the interface's type. `p` is a
+copy: write it back (`all[2] = p`) to change the original. `break`, `exit` and `cycle` work as in `select case`.
+
 ## Optional values
 
 A plain `integer`, `real`, `logical`, `string` or record always holds a value. Add `?` to the type

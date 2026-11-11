@@ -1,5 +1,6 @@
 import math
 import os
+from dataclasses import replace
 import cmath
 import operator
 import random
@@ -99,6 +100,46 @@ UNOPENED = FileHandle()
 OPEN_MODES = {"read": "r", "write": "w", "append": "a"}
 
 
+class IfaceType(str):
+    """The type of a variable, parameter or result declared with an interface: its name (so it still compares
+    equal to the written type), carrying the interface so that a value can be checked against it."""
+    def __new__(cls, name, idef):
+        obj = str.__new__(cls, name)
+        obj.idef = idef
+        return obj
+
+
+def signature_text(f, name):
+    """`function(real) -> real` for a function a record or interface has (self left out)."""
+    modes = ("" if f.params[0][2] == "in" else f"{f.params[0][2]} self; ")
+    rest = ", ".join(("" if i == "in" else i + " ") + str(t) for t, _, i in f.params[1:])
+    return f"{'subroutine' if f.is_sub else 'function'} {name}({modes}{rest})" + (f" -> {f.ret}" if f.ret else "")
+
+
+def conformance(rdef, idef):
+    """What keeps `rdef` (a record) from being used as `idef` (an interface): a list of problems, empty if it fits.
+    The signatures must match without `self`; a record may have more functions than the interface lists.
+    The answer is kept on the record, together with the interface, so a freed interface's id is never reused."""
+    cache = rdef.__dict__.setdefault("_fits", {})
+    hit = cache.get(id(idef))
+    if hit is None or hit[0] is not idef:
+        problems = []
+        for name, want in idef.functions.items():
+            have = rdef.functions.get(name)
+            if have is None:
+                problems.append(f"it has no function '{name}'")
+            elif (have.is_sub != want.is_sub or have.ret != want.ret or len(have.params) != len(want.params)
+                  or have.params[0][2] != want.params[0][2]
+                  or any(h[0] != w[0] or h[2] != w[2] for h, w in zip(have.params[1:], want.params[1:]))):
+                problems.append(f"its '{name}' is {signature_text(have, name)}, but {idef.name} needs "
+                                f"{signature_text(want, name)}")
+        hit = cache[id(idef)] = (idef, problems)
+    return hit[1]
+
+
+NOT_A_METHOD = object()          # method_value: the receiver has no function of that name
+
+
 def type_of(v):
     name = TYPE_NAMES.get(type(v))
     if name is not None: return name
@@ -113,6 +154,13 @@ def coerce(typ, value, what):
     """Assignment rules. Integers go into any integer width if the value fits, integers and
     smaller reals widen to a real, and a real64 rounds into a real32; everything else must match.
     Only an optional type (`integer?`) can hold null."""
+    if isinstance(typ, IfaceType):
+        if not isinstance(value, Record):
+            raise LangError(f"{what}: cannot assign {type_of(value)} to {typ}")
+        problems = conformance(value.rdef, typ.idef)
+        if problems:
+            raise LangError(f"{what}: {value.rdef.name} cannot be used as {typ}: {problems[0]}")
+        return value.copy()
     got = type_of(value)
     if got == typ:
         return value.copy() if isinstance(value, Record) else value
@@ -803,9 +851,10 @@ def iter_apply(e):
 class Scope:
     """What a procedure (or the program) can see besides its own variables:
     procedures and constants, both its own and the ones it imported."""
-    def __init__(self, funcs, consts, records=None):
+    def __init__(self, funcs, consts, records=None, interfaces=None):
         self.funcs, self.consts = funcs, consts
         self.records = {} if records is None else records
+        self.interfaces = {} if interfaces is None else interfaces
 
 
 class LineInput:
@@ -876,17 +925,22 @@ class Interp:
         """Give every procedure its scope: top-level procedures share one namespace,
         a module's procedures see only that module plus what it imports."""
         unit = self.unit
-        base = Scope(dict(unit.functions), {}, dict(unit.records))    # what top-level records can see
+        base = Scope(dict(unit.functions), {}, dict(unit.records), dict(unit.interfaces))    # what top-level records can see
         for r in unit.records.values():
             self.owner[id(r)] = base
             if r.name in unit.functions or r.name in BUILTINS or r.name in ELEMENTAL:
                 raise LangError(f"line {r.line}: the record '{r.name}' has the same name as a procedure")
+        self.check_interfaces(unit.interfaces, unit.records, unit.functions)
         self.check_records(unit.records, base)
+        self.check_implements(unit.records, base)
         self.check_defaults(unit.records, base)
         for f in unit.functions.values():
-            self.scopes[id(f)] = self.import_into(Scope(dict(unit.functions), {}, dict(unit.records)), f.uses)
+            self.scopes[id(f)] = self.import_into(Scope(dict(unit.functions), {}, dict(unit.records), dict(unit.interfaces)), f.uses)
+        for r in unit.records.values():
+            for f in r.functions.values():
+                self.scopes[id(f)] = self.import_into(Scope(dict(unit.functions), {}, dict(unit.records), dict(unit.interfaces)), f.uses)
         prog = unit.program
-        self.program_scope = (self.import_into(Scope(dict(unit.functions), {}, dict(unit.records)), prog.uses)
+        self.program_scope = (self.import_into(Scope(dict(unit.functions), {}, dict(unit.records), dict(unit.interfaces)), prog.uses)
                               if prog else None)
         for name in unit.modules:
             self.load_module(name, 0)
@@ -902,6 +956,9 @@ class Interp:
                 if f.name in seen:
                     raise LangError(f"line {f.line}: record '{r.name}' has two fields called '{f.name}'")
                 seen.add(f.name)
+                if base_type(f.type) in scope.interfaces:
+                    raise LangError(f"line {f.line}: field '{f.name}' of record '{r.name}' cannot have an interface type "
+                                    f"('{f.type}') yet")
                 if base_type(f.type) not in DEFAULTS and base_type(f.type) not in scope.records:
                     raise LangError(f"line {f.line}: field '{f.name}' of record '{r.name}' has unknown type '{f.type}'")
                 for d in f.dims or []:
@@ -926,6 +983,25 @@ class Interp:
         for name in records:
             contains(name, ())
 
+    def check_interfaces(self, interfaces, records, funcs):
+        """An interface needs a name of its own."""
+        for d in interfaces.values():
+            if d.name in BUILTINS or d.name in ELEMENTAL:
+                raise LangError(f"line {d.line}: '{d.name}' is the name of a built-in function, so it cannot name an interface")
+            if d.name in records or d.name in funcs or d.name in DEFAULTS:
+                raise LangError(f"line {d.line}: the interface '{d.name}' has the same name as a record, a procedure or a type")
+
+    def check_implements(self, records, scope):
+        """`record circle is shape` must be true: the record has every function the interface lists."""
+        for r in records.values():
+            for name, line in r.implements:
+                idef = scope.interfaces.get(name)
+                if idef is None:
+                    raise LangError(f"line {line}: record '{r.name}' says it is '{name}', but there is no interface of that name")
+                problems = conformance(r, idef)
+                if problems:
+                    raise LangError(f"line {line}: record '{r.name}' says it is {name}, but {problems[0]}")
+
     def check_defaults(self, records, scope):
         """Build one of each record now, so a bad default fails when the program loads."""
         saved, self.scope = self.scope, scope
@@ -936,11 +1012,11 @@ class Interp:
             self.scope = saved
 
     def import_into(self, scope, uses):
-        taken = set(scope.funcs) | set(scope.consts) | set(scope.records)
+        taken = set(scope.funcs) | set(scope.consts) | set(scope.records) | set(scope.interfaces)
         for u in uses:
             exports = self.load_module(u.module, u.line)
             mod = self.unit.modules[u.module]
-            known = set(mod.functions) | {d.name for d in mod.decls} | set(mod.records)
+            known = set(mod.functions) | {d.name for d in mod.decls} | set(mod.records) | set(mod.interfaces)
             for name in u.names:
                 if name not in known:
                     raise LangError(f"line {u.line}: module '{u.module}' has no '{name}'")
@@ -956,6 +1032,8 @@ class Interp:
                     scope.funcs[name] = item
                 elif isinstance(item, RecordDef):
                     scope.records[name] = item
+                elif isinstance(item, InterfaceDef):
+                    scope.interfaces[name] = item
                 else:
                     scope.consts[name] = item
         return scope
@@ -970,13 +1048,18 @@ class Interp:
             raise LangError(f"line {mod.line}: modules use each other in a cycle: "
                             + " -> ".join(self.loading[self.loading.index(name):] + [name]))
         self.loading.append(name)
-        scope = Scope(dict(mod.functions), {}, dict(mod.records))
+        scope = Scope(dict(mod.functions), {}, dict(mod.records), dict(mod.interfaces))
         for r in mod.records.values():
             self.owner[id(r)] = scope
         self.import_into(scope, mod.uses)
+        self.check_interfaces(mod.interfaces, mod.records, mod.functions)
         self.check_records(mod.records, scope)
+        self.check_implements(mod.records, scope)
         for f in mod.functions.values():
             self.scopes[id(f)] = scope
+        for r in mod.records.values():
+            for f in r.functions.values():
+                self.scopes[id(f)] = scope
         saved, self.scope = self.scope, scope          # initializers may call the module's functions
         env = dict(scope.consts)
         for d in mod.decls:
@@ -995,6 +1078,7 @@ class Interp:
         self.exports[name] = {
             **{f.name: f for f in mod.functions.values() if f.public},
             **{r.name: r for r in mod.records.values() if r.public},
+            **{d.name: d for d in mod.interfaces.values() if d.public},
             **{d.name: env[d.name] for d in mod.decls if d.public}}
         return self.exports[name]
 
@@ -1052,6 +1136,8 @@ class Interp:
                     self.exec_block(body, env)
                     return
             self.exec_block(s.orelse, env)
+        elif k is SelectType:
+            self.select_type(s, env)
         elif k is Select:
             n = self.select_index(s.subject, [c.values for c in s.cases], env, s.line)
             try:
@@ -1136,7 +1222,14 @@ class Interp:
             raise LangError(f"{where}: '{s.name}' already declared")
         sub = None
         base = base_type(s.type)
-        if base not in DEFAULTS:
+        iface = base in self.scope.interfaces and base not in DEFAULTS
+        if iface:
+            if s.type != base:
+                raise LangError(f"{where}: an interface type ('{s.type}') cannot be optional")
+            if s.allocatable:
+                raise LangError(f"{where}: allocatable arrays of an interface type are not supported")
+            s = replace(s, type=self.typed(base))              # its values are checked against the interface
+        elif base not in DEFAULTS:
             sub = self.scope.records.get(base)
             if sub is None:
                 raise LangError(f"{where}: unknown type '{base}'")
@@ -1151,14 +1244,14 @@ class Interp:
             elif s.type.endswith("?"):
                 val = NULL                               # an optional variable starts absent
             else:
-                val = self.new_record(sub) if sub is not None else DEFAULTS[s.type]
+                val = None if iface else self.new_record(sub) if sub is not None else DEFAULTS[s.type]
             env[s.name] = [s.type, val, False, "const" if s.const else None]
             return
         shape = [self.eval(d, env) for d in s.dims]
         if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in shape):
             raise LangError(f"{where}: array dimensions must be non-negative integers")
         n = math.prod(shape)
-        data = [self.new_record(sub) for _ in range(n)] if sub else [DEFAULTS[s.type]] * n
+        data = [None] * n if iface else [self.new_record(sub) for _ in range(n)] if sub else [DEFAULTS[s.type]] * n
         if s.init is not None:
             init = self.eval(s.init, env)
             if isinstance(init, Array):
@@ -1169,6 +1262,15 @@ class Interp:
             else:
                 data = [coerce(s.type, init, where) for _ in range(n)]      # one copy per element
         env[s.name] = [s.type, Array(shape, data), True, "const" if s.const else None]
+
+    def typed(self, typ, scope=None):
+        """`typ` as a slot type: the name of an interface becomes an IfaceType that can check values."""
+        scope = scope or self.scope
+        if isinstance(typ, str) and not isinstance(typ, IfaceType):
+            idef = scope.interfaces.get(typ)
+            if idef is not None:
+                return IfaceType(typ, idef)
+        return typ
 
     def new_record(self, rdef, blank=False):
         """A record whose fields hold their type's default value (0, 0.0, false, ""). A `blank`
@@ -1466,10 +1568,15 @@ class Interp:
         return value, Ref([value.rdef.name, value, False, "const"], None, value.rdef.name)
 
     def resolve_field(self, t, env, line, temp_ok=False):
+        it = self.iface_of(t.base, env)
+        if it is not None:
+            raise LangError(f"line {line}: '{t.field}' is not available through {it}: "
+                            f"a value of an interface type has only the functions it lists")
         rec, ref = self.record_of(t.base, env, line, temp_ok)
         slot = rec.fields.get(t.field)
         if slot is None:
-            raise LangError(f"line {line}: {rec.rdef.name} '{ref[2]}' has no field '{t.field}'")
+            what = "field or function" if t.args is not None and not t.bracket else "field"
+            raise LangError(f"line {line}: {rec.rdef.name} '{ref[2]}' has no {what} '{t.field}'")
         name = f"{ref[2]}.{t.field}"
         fpath = ref.fpath + (t.field,)
         if t.args is None:
@@ -1586,7 +1693,49 @@ class Interp:
             raise LangError("'-' needs a number, got string")
         return tag(TYPE_NAMES[t], -x, f"-{x}")
 
+    def method_of(self, rec, name):
+        """The function `name` that the record value `rec` has, or None."""
+        return rec.rdef.functions.get(name) if isinstance(rec, Record) else None
+
+    def iface_of(self, base, env):
+        """The interface an expression was declared with: a variable, an element, a parameter, or a call of a
+        function that returns one. None for anything else (a plain record, a field)."""
+        if isinstance(base, Var) or (isinstance(base, Apply) and base.bracket):
+            slot = env.get(base.name)
+            typ = slot[TYPE] if slot is not None else None
+        elif isinstance(base, Apply) and base.name not in env:
+            f = self.scope.funcs.get(base.name)
+            typ = self.typed(f.ret, self.scopes[id(f)]) if f is not None and f.ret else None
+        else:
+            typ = None
+        return typ if isinstance(typ, IfaceType) else None
+
+    def check_in_interface(self, base, name, env, line):
+        """A value whose type is an interface may only use the functions that interface lists."""
+        it = self.iface_of(base, env)
+        if it is not None and name not in it.idef.functions:
+            raise LangError(f"line {line}: '{name}' is not part of {it} (it lists: {', '.join(it.idef.functions)})")
+
+    def method_value(self, e, env):
+        """`x.area(args)`: the function the record `x` has by that name, called with `x` as `self`."""
+        rec = self.eval(e.base, env)
+        f = self.method_of(rec, e.field)
+        if f is None:
+            return NOT_A_METHOD
+        self.check_in_interface(e.base, e.field, env, e.line)
+        if f.is_sub:
+            raise LangError(f"line {e.line}: '{e.field}' is a subroutine; use 'call ...{e.field}(...)'")
+        values = [rec]
+        for n, a in enumerate(e.args, 1):
+            typ = f.params[n][0] if n < len(f.params) else None
+            values.append(self.procedure_argument(f, n, a, env, e.line) if isinstance(typ, ProcType) else self.eval(a, env))
+        return self.call_function(f, values, e.line)
+
     def field_value(self, e, env):
+        if e.args is not None and not e.bracket:
+            v = self.method_value(e, env)
+            if v is not NOT_A_METHOD:
+                return v
         ref = self.resolve_field(e, env, e.line, temp_ok=True)
         v = self.read(ref)
         if v is None:
@@ -1594,6 +1743,33 @@ class Interp:
         return v
 
     # -- select case
+    def select_type(self, s, env):
+        """`select type x as p`: run the case that names the record `x` holds, with `p` a copy of it as that
+        record; the default case gets `p` as the type `x` was declared with."""
+        v = self.eval(s.subject, env)
+        if v is None:
+            raise LangError(f"line {s.line}: the value in 'select type' is used before it is assigned")
+        if not isinstance(v, Record):
+            raise LangError(f"line {s.line}: select type needs a record or interface value, got {type_of(v)}")
+        chosen = default = None
+        for c in s.cases:
+            if c.values is None:
+                default = c
+                continue
+            rdef = self.scope.records.get(c.values)
+            if rdef is None:
+                raise LangError(f"line {c.line}: select type has no record called '{c.values}' here")
+            if v.rdef is rdef:
+                chosen = c
+        declared = self.iface_of(s.subject, env) or v.rdef.name
+        c = chosen or default
+        inner = dict(env)
+        inner[s.var] = [chosen.values if chosen else declared, v.copy(), False, None]
+        try:
+            self.exec_block(c.body, inner)
+        except _Break:
+            pass
+
     def case_value(self, e, env, line):
         """A case value is a literal, a signed number or a `const` name."""
         if isinstance(e, Var):
@@ -1754,7 +1930,10 @@ class Interp:
             return self.allocatable(e.args[0].name, env, e.line)[VALUE] is not None
         if e.bracket:
             if e.name in env and (env[e.name][IS_ARRAY] or env[e.name][TYPE] == "string"):
-                return self.read(self.resolve(e, env, e.line))
+                v = self.read(self.resolve(e, env, e.line))
+                if v is None and isinstance(env[e.name][TYPE], IfaceType):
+                    raise LangError(f"line {e.line}: an element of '{e.name}' is used before it is assigned")
+                return v
             if e.name in env:
                 raise LangError(f"line {e.line}: '{e.name}' is not an array" +
                                 (f"; call it with parentheses: {e.name}(...)" if isinstance(env[e.name][TYPE], ProcType) else ""))
@@ -1891,6 +2070,7 @@ class Interp:
             elif is_arr and isinstance(typ, str):
                 raise LangError(f"line {line}: '{name}' of {f.name} is an array: declare it as "
                                 f"{typ}[{',' * (v.rank - 1)}] :: {name}")
+            typ = self.typed(typ, self.scopes[id(f)])
             if isinstance(v, Record) and v.rdef.name == typ and v.rdef is not self.scopes[id(f)].records.get(typ):
                 raise LangError(f"line {line}: argument '{name}' is a {typ}, but not the {typ} that "
                                 f"{f.name} was written for (two records share that name)")
@@ -1930,7 +2110,7 @@ class Interp:
             raise LangError(f"function {f.name} must return a {f.ret}")
         if f.ret.endswith("]"):
             return self.array_result(f, value)
-        return coerce(f.ret, value, f"function {f.name}")
+        return coerce(self.typed(f.ret, self.scopes[id(f)]), value, f"function {f.name}")
 
     def array_result(self, f, value):
         """The array a function declared `-> integer[]` returns: the right rank, each element of the element type."""
@@ -1940,6 +2120,7 @@ class Interp:
         if value.rank != rank:
             raise LangError(f"function {f.name} must return {describe_array_type(f.ret)}, "
                             f"not a {value.rank}-dimensional array")
+        elem = self.typed(elem, self.scopes[id(f)])
         return Array(value.shape, [coerce(elem, x, f"function {f.name}") for x in value.data])
 
     def reference_of(self, a, env, line):
@@ -1986,20 +2167,33 @@ class Interp:
         return fn
 
     def call_subroutine(self, s, env):
-        f = self.scope.funcs.get(s.name)
-        if s.name in env and isinstance(env[s.name][TYPE], ProcType):    # a call through a procedure parameter
-            f = env[s.name][VALUE]
-        if f is None:
-            raise LangError(f"line {s.line}: unknown subroutine '{s.name}'")
+        args, receiver = s.args, None
+        if s.receiver is not None:                   # call x.grow(2.0): x is passed first, as `self`
+            receiver = self.eval(s.receiver, env)
+            f = self.method_of(receiver, s.name)
+            if f is None:
+                what = f"a {type_of(receiver)}" if not isinstance(receiver, Record) else f"record {receiver.rdef.name}"
+                raise LangError(f"line {s.line}: {what} has no function '{s.name}'")
+            self.check_in_interface(s.receiver, s.name, env, s.line)
+            args = [s.receiver] + list(s.args)
+        else:
+            f = self.scope.funcs.get(s.name)
+            if s.name in env and isinstance(env[s.name][TYPE], ProcType):    # a call through a procedure parameter
+                f = env[s.name][VALUE]
+            if f is None:
+                raise LangError(f"line {s.line}: unknown subroutine '{s.name}'")
         if not f.is_sub:
             raise LangError(f"line {s.line}: '{s.name}' is a function; use it in an expression")
-        self.pad_optional(f, s.args, s.line)
+        self.pad_optional(f, args, s.line)
 
         outs, values = [], []   # outs: (param index, reference)
-        for n, ((typ, name, intent), a) in enumerate(zip(f.params, s.args)):
+        for n, ((typ, name, intent), a) in enumerate(zip(f.params, args)):
             if intent == "in":
-                values.append(self.procedure_argument(f, n, a, env, s.line) if isinstance(typ, ProcType)
-                              else self.eval(a, env))
+                if n == 0 and receiver is not None:
+                    values.append(receiver)           # already evaluated: do not run the receiver twice
+                else:
+                    values.append(self.procedure_argument(f, n, a, env, s.line) if isinstance(typ, ProcType)
+                                  else self.eval(a, env))
                 continue
             ref = self.resolve(a, env, s.line)
             slot = ref[0]
@@ -2008,13 +2202,24 @@ class Interp:
                 what = "an 'in' parameter" if ref.root[INTENT] == "in" else "a constant"
                 part = "part of " if ref.fpath else ""
                 raise LangError(f"line {s.line}: '{ref[2]}' is {part}{what} and cannot be passed as {intent}")
-            if slot[TYPE] != typ:
+            through_interface = n == 0 and receiver is not None and isinstance(slot[TYPE], IfaceType)
+            wanted = self.typed(typ, self.scopes[id(f)])
+            # a variable of a record type may be passed where an interface is wanted, like Fortran's
+            # class(shape), intent(inout): the routine can change the record but not what kind it is
+            as_record = (isinstance(wanted, IfaceType) and not slot[IS_ARRAY] and slot[TYPE] != typ
+                         and isinstance(slot[VALUE], Record) and slot[TYPE] == slot[VALUE].rdef.name)
+            if slot[TYPE] != typ and not through_interface and not as_record:   # (an interface value is checked when it is written back)
                 raise LangError(f"line {s.line}: argument '{name}' is {typ} but '{ref[2]}' is {slot[TYPE]}")
+            if as_record:
+                problems = conformance(slot[VALUE].rdef, wanted.idef)
+                if problems:
+                    raise LangError(f"line {s.line}: '{ref[2]}' is a {slot[TYPE]}, which cannot be used as {wanted}: {problems[0]}")
             outs.append((n, ref))
             current = self.read(ref)
             if intent == "out" and typ not in DEFAULTS:           # an out record starts with no values
                 sub = self.scopes[id(f)].records.get(typ)
-                values.append(self.new_record(sub, blank=True) if sub else current.copy())
+                values.append(self.new_record(sub, blank=True) if sub else
+                              current.copy() if current is not None else None)
             elif isinstance(current, (Array, Record)):
                 values.append(current.copy())                     # copy in
             elif intent == "out":
@@ -2027,7 +2232,7 @@ class Interp:
         # Aliasing: an out/inout variable may not overlap any other argument.
         for n, ref in outs:
             name = ref[2]
-            for m, a in enumerate(s.args):
+            for m, a in enumerate(args):
                 other = self.reference_of(a, env, s.line)
                 if m != n and other is not None and aliased(ref, other):
                     raise LangError(f"line {s.line}: '{name}' is passed as {f.params[n][2]} and also "
@@ -2049,4 +2254,10 @@ class Interp:
                 if missing:
                     raise LangError(f"line {s.line}: out parameter '{name}' was not fully assigned in "
                                     f"{s.name}: '{name}.{missing}' has no value")
+            want = self.typed(f.params[n][0], self.scopes[id(f)])
+            if (isinstance(want, IfaceType) and not isinstance(ref[0][TYPE], IfaceType)
+                    and isinstance(result, Record) and result.rdef.name != ref[0][TYPE]):
+                raise LangError(f"line {s.line}: '{ref[2]}' is a {ref[0][TYPE]}, but {s.name} put a {result.rdef.name} in "
+                                f"'{name}': a {f.params[n][2]} parameter of an interface type can change the value, "
+                                f"not what kind of record it is")
             self.write(ref, result, s.line)

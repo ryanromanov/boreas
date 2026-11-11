@@ -7,7 +7,7 @@ reported here should always be a real one. The interpreter still catches those c
 runs them."""
 from .interp import BUILTINS, ELEMENTAL
 from .parser import (Allocate, Apply, ArrayLit, Assign, Binary, Call, Close, Decl, Do, DoWhile,
-                     ExprStmt, FieldAccess, Gen, If, NamedArg, Print, Return, Select, SelectExpr, Slice, Stop,
+                     ExprStmt, FieldAccess, Gen, If, NamedArg, Print, Return, Select, SelectExpr, SelectType, Slice, Stop,
                      Unary, Var, sub_bodies)
 
 
@@ -126,6 +126,16 @@ class Walker:
         elif isinstance(s, DoWhile):
             self.expr(s.cond)
             self.statements(s.body)
+        elif isinstance(s, SelectType):               # `p` exists only inside the cases
+            self.expr(s.subject)
+            added = s.var not in self.variables
+            self.variables.add(s.var)
+            for case in s.cases:
+                if case.values is not None and case.values not in self.scope.records:
+                    self.report(case.values, case.line, case.col, f"no record called '{case.values}'")
+                self.statements(case.body)
+            if added:
+                self.variables.discard(s.var)
         elif isinstance(s, Select):
             self.expr(s.subject)
             for case in s.cases:
@@ -143,7 +153,9 @@ class Walker:
         elif isinstance(s, ExprStmt):
             self.expr(s.expr)
         elif isinstance(s, Call):
-            if s.name not in self.scope.funcs and s.name not in self.variables:
+            if s.receiver is not None:              # a record's function: the record decides which
+                self.expr(s.receiver)
+            elif s.name not in self.scope.funcs and s.name not in self.variables:
                 self.report(s.name, s.line, s.col, f"unknown subroutine '{s.name}'")
             self.arguments(s.args)
         elif isinstance(s, Allocate):
@@ -155,6 +167,8 @@ def undeclared_names(unit, interp):
     bodies = [(f, interp.scopes[id(f)]) for f in unit.functions.values()]
     for mod in unit.modules.values():
         bodies += [(f, interp.scopes[id(f)]) for f in mod.functions.values()]
+    for rec in [*unit.records.values(), *(r for m in unit.modules.values() for r in m.records.values())]:
+        bodies += [(f, interp.scopes[id(f)]) for f in rec.functions.values()]
     errors = []
     for f, scope in bodies:
         walker = Walker(scope, set(scope.consts) | {name for _, name, _ in f.params} | declared_in(f.body),
