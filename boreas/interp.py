@@ -1137,6 +1137,8 @@ class Interp:
                     self.exec_block(body, env)
                     return
             self.exec_block(s.orelse, env)
+        elif k is SelectType:
+            self.select_type(s, env)
         elif k is Select:
             n = self.select_index(s.subject, [c.values for c in s.cases], env, s.line)
             try:
@@ -1732,6 +1734,36 @@ class Interp:
         return v
 
     # -- select case
+    def select_type(self, s, env):
+        """`select type x as p`: run the case that names the record `x` holds, with `p` a copy of it as that
+        record; the default case gets `p` as the type `x` was declared with."""
+        v = self.eval(s.subject, env)
+        if v is None:
+            raise LangError(f"line {s.line}: the value in 'select type' is used before it is assigned")
+        if not isinstance(v, Record):
+            raise LangError(f"line {s.line}: select type needs a record or interface value, got {type_of(v)}")
+        chosen = default = None
+        for c in s.cases:
+            if c.values is None:
+                default = c
+                continue
+            rdef = self.scope.records.get(c.values)
+            if rdef is None:
+                raise LangError(f"line {c.line}: select type has no record called '{c.values}' here")
+            if v.rdef is rdef:
+                chosen = c
+        declared = v.rdef.name
+        if isinstance(s.subject, (Var, Apply)) and s.subject.name in env and (
+                isinstance(s.subject, Var) or s.subject.bracket) and isinstance(env[s.subject.name][TYPE], IfaceType):
+            declared = env[s.subject.name][TYPE]
+        c = chosen or default
+        inner = dict(env)
+        inner[s.var] = [chosen.values if chosen else declared, v.copy(), False, None]
+        try:
+            self.exec_block(c.body, inner)
+        except _Break:
+            pass
+
     def case_value(self, e, env, line):
         """A case value is a literal, a signed number or a `const` name."""
         if isinstance(e, Var):

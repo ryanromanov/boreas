@@ -1,0 +1,82 @@
+! Functions in records, interfaces and select type.
+!
+! An interface lists the functions a caller needs. Any record that has them can be
+! used as that interface: `figure` below holds circles and rectangles alike, and
+! `f.area()` runs the function of whichever one it holds. `is figure` is optional,
+! but when it is written it is checked.
+
+interface figure
+  function name(self) -> string
+  function area(self) -> real
+end interface
+
+record circle is figure
+  string :: label = "circle"
+  real :: r = 1.0
+
+  function name(self) -> string
+    return self.label
+  end function
+
+  function area(self) -> real
+    return 3.14159 * self.r ** 2
+  end function
+
+  subroutine grow(inout self, real :: factor)      ! not part of figure: only a circle has it
+    update self.r = self.r * factor
+  end subroutine
+end record
+
+record rect is figure
+  string :: label = "rect"
+  real :: w = 1.0
+  real :: h = 1.0
+
+  function name(self) -> string
+    return self.label
+  end function
+
+  function area(self) -> real
+    return self.w * self.h
+  end function
+end record
+
+! Shared behavior is an ordinary function over the interface.
+subroutine describe(figure :: f)
+  println(f.name(), "area =", fixed(f.area(), 3))
+end subroutine
+
+program shapes
+  figure[3] :: all                                 ! no wrapper type needed
+  real :: total = 0.0
+  integer :: i
+
+  all[1] = circle(label = "circle", r = 2.0)
+  all[2] = rect(label = "rect", w = 3.0, h = 4.0)
+  all[3] = circle(label = "unit")
+
+  do i = 1, size(all)
+    call describe(all[i])
+    total = total + all[i].area()
+  end do
+  println("total =", fixed(total, 3))
+
+  ! select type finds the record a value holds. The default case is required.
+  select type all[2] as p
+    case rect
+      println("width of the rect:", p.w)
+    case circle
+      println("radius:", p.r)
+    case default
+      println("something else")
+  end select
+
+  ! A circle can still grow: ask for the circle, then change it and put it back.
+  select type all[1] as c
+    case circle
+      call c.grow(2.0)
+      all[1] = c
+    case default
+  end select
+  call describe(all[1])
+end program

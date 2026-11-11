@@ -86,12 +86,18 @@ class Case:
     values: object      # a list of constants and Slice ranges, or None for `case default`
     body: list
     line: int
+    col: int = field(default=0, compare=False, repr=False)   # a select type: where the record's name starts
 @dataclass
 class Select:
     subject: object
     cases: list
     line: int
     flow: bool = False  # `select case fallthrough`: a finished body continues into the next case
+@dataclass
+class SelectType(Select):
+    """`select type x as p`: each case names a record type (its `values` is that name, None for `case default`),
+    and inside it `p` is a copy of the value, as that record."""
+    var: str = None
 @dataclass
 class Break: pass       # leaves the nearest enclosing select statement
 @dataclass
@@ -916,6 +922,8 @@ class Parser:
         if self.at("do"):
             return self.do_stmt()
         if self.at("select"):
+            if self.toks[self.i + 1].kind == "ident" and self.toks[self.i + 1].text == "type":
+                return self.select_type_stmt()
             return self.select_stmt()
         if self.at("fallthrough"):
             self.error("'fallthrough' is only allowed right after 'select case'")
@@ -1197,6 +1205,50 @@ class Parser:
             raise LangError(f"line {line}: a select needs at least one case")
         check_cases([(c.values, c.line) for c in cases])
         return Select(subject, cases, line, flow)
+
+    def select_type_stmt(self):
+        """`select type x as p` / `case rect` ... / `case default` / `end select`; the default is required."""
+        line = self.expect("select").line
+        self.next()                                              # the word `type`
+        subject = self.expr()
+        if not (self.tok.kind == "ident" and self.tok.text == "as"):
+            self.error("select type names the variable for each case: select type x as p")
+        self.next()
+        var = self.ident()
+        self.newline()
+        cases, seen = [], set()
+        self.inside.append("select")
+        while True:
+            if self.at_end_select():
+                self.next(); self.next()
+                self.newline()
+                break
+            if self.tok.kind == "eof":
+                self.error("unexpected end of file, missing 'end select'")
+            if not self.at("case"):
+                self.error("expected 'case' or 'end select' (statements belong inside a case)")
+            at = self.next().line
+            col = self.tok.col
+            if self.accept("default"):
+                name = None
+            else:
+                name = self.ident()
+            if name in seen:
+                raise LangError(f"line {at}: {'case default' if name is None else 'case ' + name} appears twice in this select type")
+            seen.add(name)
+            self.newline()
+            body = []
+            while not (self.at("case") or self.at_end_select()):
+                if self.tok.kind == "eof":
+                    self.error("unexpected end of file, missing 'end select'")
+                body.append(self.statement())
+                self.skip_newlines()
+            cases.append(Case(name, body, at, col))
+        self.inside.pop()
+        if None not in seen:
+            raise LangError(f"line {line}: a select type needs a 'case default': other records can fit the interface "
+                            f"later, so say what to do with them (an empty default is fine)")
+        return SelectType(subject, cases, line, False, var)
 
     def select_expr(self):
         line = self.expect("select").line

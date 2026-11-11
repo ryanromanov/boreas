@@ -7,7 +7,7 @@ reported here should always be a real one. The interpreter still catches those c
 runs them."""
 from .interp import BUILTINS, ELEMENTAL
 from .parser import (Allocate, Apply, ArrayLit, Assign, Binary, Call, Close, Decl, Do, DoWhile,
-                     ExprStmt, FieldAccess, Gen, If, NamedArg, Print, Return, Select, SelectExpr, Slice, Stop,
+                     ExprStmt, FieldAccess, Gen, If, NamedArg, Print, Return, Select, SelectExpr, SelectType, Slice, Stop,
                      Unary, Var, sub_bodies)
 
 
@@ -126,6 +126,16 @@ class Walker:
         elif isinstance(s, DoWhile):
             self.expr(s.cond)
             self.statements(s.body)
+        elif isinstance(s, SelectType):               # `p` exists only inside the cases
+            self.expr(s.subject)
+            added = s.var not in self.variables
+            self.variables.add(s.var)
+            for case in s.cases:
+                if case.values is not None and case.values not in self.scope.records:
+                    self.report(case.values, case.line, case.col, f"no record called '{case.values}'")
+                self.statements(case.body)
+            if added:
+                self.variables.discard(s.var)
         elif isinstance(s, Select):
             self.expr(s.subject)
             for case in s.cases:

@@ -193,6 +193,12 @@ def stmt(s, depth):
             lines.extend(stmts(s.orelse, depth + 1))
         lines.append(pad + "end if")
         return lines
+    if k is SelectType:
+        lines = [f"{pad}select type {expr(s.subject)} as {s.var}"]
+        for c in s.cases:
+            lines.append(f"{pad}case {'default' if c.values is None else c.values}")
+            lines.extend(stmts(c.body, depth + 1))
+        return lines + [pad + "end select"]
     if k is Select:
         lines = [f"{pad}select case {'fallthrough ' if s.flow else ''}{expr(s.subject)}"]
         for c in s.cases:
