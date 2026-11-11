@@ -219,8 +219,18 @@ def _uses(uses, depth=1):
     return ["  " * depth + f"use {u.module}: " + ", ".join(u.names) for u in uses]
 
 
+def interface(d):
+    lines = [f"{'public ' if d.public else ''}interface {d.name}"]
+    for f in d.functions.values():
+        kind = "subroutine" if f.is_sub else "function"
+        head = f"  {kind} {f.name}({_params(f, True)})"
+        lines.append(head + (f" -> {f.ret}" if f.ret else ""))
+    return lines + ["end interface"]
+
+
 def record(r):
-    lines = [f"{'public ' if r.public else ''}record {r.name}"]
+    is_ = (" is " + ", ".join(n for n, _ in r.implements)) if r.implements else ""
+    lines = [f"{'public ' if r.public else ''}record {r.name}{is_}"]
     lines.extend(stmts(r.fields))
     for f in r.functions.values():
         lines.append("")
@@ -230,6 +240,8 @@ def record(r):
 
 def module(m):
     lines = [_comment(c) for c in m.comments] + [f"module {m.name}"] + _uses(m.uses)
+    for d in m.interfaces.values():
+        lines.extend("  " + l for l in interface(d))
     for r in m.records.values():
         lines.extend("  " + l for l in record(r))
     lines.extend(stmts(m.decls))
@@ -258,6 +270,8 @@ def to_source(unit, header=()):
         blocks.append([_comment(h) for h in header])
     if unit.ieee:
         blocks.append(["use ieee"])
+    for d in unit.interfaces.values():
+        blocks.append(interface(d))
     for r in unit.records.values():
         blocks.append(record(r))
     for m in unit.modules.values():

@@ -61,6 +61,15 @@ class RecordDef:
     public: bool
     line: int
     functions: dict = field(default_factory=dict)   # name -> Function; each takes the record first, as `self`
+    implements: list = field(default_factory=list)  # `record circle is shape`: [(interface name, line)]
+@dataclass
+class InterfaceDef:
+    """`interface shape`: the signatures a value must have to be used as a shape. Each is a Function with
+    no body whose first parameter is `self`."""
+    name: str
+    functions: dict       # name -> Function
+    public: bool
+    line: int
 @dataclass
 class Assign: target: object; value: object; line: int; update: bool = False
 @dataclass
@@ -167,6 +176,7 @@ class Module:
     line: int
     comments: list = field(default_factory=list)   # printed above the header by `convert`
     records: dict = field(default_factory=dict)    # name -> RecordDef
+    interfaces: dict = field(default_factory=dict) # name -> InterfaceDef
 @dataclass
 class Unit:
     functions: dict       # top-level procedures (outside any module)
@@ -174,6 +184,7 @@ class Unit:
     modules: dict = field(default_factory=dict)
     records: dict = field(default_factory=dict)    # top-level record types
     ieee: bool = False    # `use ieee`: real arithmetic follows IEEE (NaN, Infinity) instead of stopping
+    interfaces: dict = field(default_factory=dict) # top-level interfaces
 
 
 def root_name(target):
@@ -184,7 +195,7 @@ def root_name(target):
 
 
 KEYWORDS = {"if", "then", "else", "do", "while", "end", "program", "function", "subroutine", "module",
-            "record", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print", "println", "write", "writeln", "close", "stop",
+            "record", "interface", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print", "println", "write", "writeln", "close", "stop",
             "select", "case", "default", "fallthrough", "break", "update", "allocate", "deallocate",
             "allocatable", "in", "out", "inout", "true", "false", "null", "and", "or", "not"}
 
@@ -487,7 +498,7 @@ class Parser:
 
     # -- top level
     def parse(self):
-        funcs, mods, prog, recs, ieee = {}, {}, None, {}, False
+        funcs, mods, prog, recs, ieee, ifaces = {}, {}, None, {}, False, {}
         self.skip_newlines()
         while self.tok.kind != "eof":
             if self.at("public", "private"):
@@ -502,6 +513,11 @@ class Parser:
                 if r.name in recs:
                     raise LangError(f"line {r.line}: record '{r.name}' is defined more than once")
                 recs[r.name] = r
+            elif self.at("interface"):
+                d = self.interface_def(False)
+                if d.name in ifaces:
+                    raise LangError(f"line {d.line}: interface '{d.name}' is defined more than once")
+                ifaces[d.name] = d
             elif self.at("module"):
                 m = self.module()
                 if m.name in mods:
@@ -515,11 +531,11 @@ class Parser:
                 self.next(); self.next()
                 ieee = True                                  # `use ieee`: real arithmetic gives NaN and Infinity
             else:
-                self.error("expected 'use ieee', 'module', 'record', 'function', 'subroutine' or 'program'")
+                self.error("expected 'use ieee', 'module', 'record', 'interface', 'function', 'subroutine' or 'program'")
             self.skip_newlines()
         if not prog:
             raise LangError("no program found")
-        return Unit(funcs, prog, mods, recs, ieee)
+        return Unit(funcs, prog, mods, recs, ieee, ifaces)
 
     def record_def(self, public):
         """`record point` / one `type :: name` line per field / `end record`."""
@@ -527,6 +543,14 @@ class Parser:
         name = self.ident()
         if name in KEYWORDS or name in TYPES:
             self.error(f"'{name}' cannot be the name of a record")
+        implements = []
+        if self.tok.kind == "ident" and self.tok.text == "is":           # record circle is shape, drawable
+            self.next()
+            while True:
+                at = self.tok.line
+                implements.append((self.ident(), at))
+                if not self.accept(","):
+                    break
         self.newline()
         fields, functions = [], {}
         while not (self.at("end") and self.toks[self.i + 1].text == "record"):
@@ -556,7 +580,42 @@ class Parser:
         if self.tok.kind == "ident":
             self.next()
         self.newline()
-        return RecordDef(name, fields, public, line, functions)
+        return RecordDef(name, fields, public, line, functions, implements)
+
+    def interface_def(self, public):
+        """`interface shape` / one function or subroutine signature per line / `end interface`."""
+        line = self.expect("interface").line
+        name = self.ident()
+        if name in KEYWORDS or name in TYPES:
+            self.error(f"'{name}' cannot be the name of an interface")
+        self.newline()
+        functions = {}
+        self.skip_newlines()
+        while not (self.at("end") and self.toks[self.i + 1].text == "interface"):
+            if self.tok.kind == "eof":
+                self.error("unexpected end of file, missing 'end interface'")
+            if not self.at("function", "subroutine"):
+                self.error("an interface lists signatures: 'function name(self, ...) -> type' or 'subroutine name(self, ...)'")
+            at = self.tok.line
+            is_sub = self.next().text == "subroutine"
+            fname = self.ident()
+            params = self.params(is_sub, name)
+            ret = None
+            if not is_sub:
+                if not self.accept("->"):
+                    self.error("a function signature needs its result type: function area(self) -> real")
+                ret = self.result_type()
+            if fname in functions:
+                raise LangError(f"line {at}: interface '{name}' lists '{fname}' twice")
+            functions[fname] = Function(fname, params, ret, [], is_sub)
+            self.newline()
+            self.skip_newlines()
+        self.expect("end")
+        self.expect("interface")
+        if self.tok.kind == "ident":
+            self.next()
+        self.newline()
+        return InterfaceDef(name, functions, public, line)
 
     def program(self):
         self.expect("program")
@@ -592,7 +651,7 @@ class Parser:
         name = self.ident()
         self.newline()
         uses = self.uses()
-        decls, funcs, recs = [], {}, {}
+        decls, funcs, recs, ifaces = [], {}, {}, {}
         taken = {}                                     # name -> line, across constants, variables and procedures
         checks = []                                    # (procedure, its parameter modes): checked once every variable is known
         shared = {n: False for u in uses for n in u.names}   # names other procedures can see: imported (False) or declared here (True)
@@ -620,6 +679,10 @@ class Parser:
                 r = self.record_def(public)
                 claim(r.name, r.line)
                 recs[r.name] = r
+            elif self.at("interface"):
+                d = self.interface_def(public)
+                claim(d.name, d.line)
+                ifaces[d.name] = d
             elif self.at("function", "subroutine"):
                 at = self.tok.line
                 f = self.procedure()
@@ -641,7 +704,7 @@ class Parser:
                 if not x.const:
                     shared[x.name] = True
             else:
-                self.error("expected a declaration, 'record', 'function', 'subroutine' or 'end module'")
+                self.error("expected a declaration, 'record', 'interface', 'function', 'subroutine' or 'end module'")
             self.skip_newlines()
         self.expect("end")
         self.expect("module")
@@ -653,7 +716,7 @@ class Parser:
             check_writes(f.body, params, {**{n: False for u in f.uses for n in u.names}, **shared}, f.is_sub)
             check_allocs(f.body, set(params), {**{n: None for u in f.uses for n in u.names},
                                                **{n: None for u in uses for n in u.names}, **variables}, f.is_sub)
-        return Module(name, uses, decls, funcs, line, records=recs)
+        return Module(name, uses, decls, funcs, line, records=recs, interfaces=ifaces)
 
     def procedure(self, owner=None):
         """A function or subroutine. Inside a record (`owner` is the record's name) the first parameter is
