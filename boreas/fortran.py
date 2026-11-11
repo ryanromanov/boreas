@@ -183,6 +183,8 @@ def classify(toks):
     nxt = toks[1] if len(toks) > 1 else None
     if is_case_line(toks):
         return ("case",)
+    if t0 in ("type", "class") and nxt is not None and nxt.kind == "name" and nxt.text in ("is", "default"):
+        return ("guard",)                           # type is (T) / class is (T) / class default
     if nxt is not None and nxt.kind == "op" and nxt.text in ("=", "("):
         if nxt.text == "=" or t0 not in ("else", "elseif", "end"):
             return None
@@ -655,6 +657,10 @@ class FParser:
             else:
                 self.k += 1
                 args = self.call_arguments(name)
+                if name == "allocated" and len(args) == 1 and isinstance(args[0], (Var, Apply)):
+                    holder = self.lookup_decl(args[0].name)
+                    if holder is not None and holder.poly:
+                        raise Unsupported("allocated() of a class(T) value: Boreas interface values are always set")
                 name = SPECIFIC_NAMES.get(name, name)
                 name, args = self.convert_intrinsic(name, args)
                 intrinsic = name in BUILTINS or name in ELEMENTAL
@@ -2738,7 +2744,56 @@ class FParser:
             s = s.host
         return None
 
+    def is_polymorphic_allocate(self):
+        """`allocate(s, source=...)` / `allocate(T :: s)`: the allocation of a class(T) value."""
+        depth = 0
+        for j in range(self.k, len(self.toks)):
+            t = self.toks[j]
+            if t.kind == "op" and t.text == "(":
+                depth += 1
+            elif t.kind == "op" and t.text == ")":
+                depth -= 1
+            elif depth == 1 and t.kind == "op" and t.text == "::":
+                return True
+            elif depth == 1 and t.kind == "name" and t.text in ("source", "mold") and \
+                    j + 1 < len(self.toks) and self.toks[j + 1].text == "=":
+                return True
+        return False
+
+    def polymorphic_allocate(self, it):
+        """`allocate(all(1)%s, source=circle(...))` becomes `all[1] = circle(...)`, and `allocate(circle :: s)`
+        becomes `s = circle()` (a record built from its defaults)."""
+        self.expect_op("(")
+        type_spec = None
+        if self.peek() is not None and self.peek(1) is not None and self.peek(1).text == "::":
+            type_spec = self.type_name(self.expect_name())
+            self.expect_op("::")
+        target = self.primary()
+        root = self.root_name_of(target)
+        info = self.lookup_decl(root) if root is not None else None
+        if not isinstance(target, (Var, Apply)) or info is None or not info.poly:
+            raise Unsupported("'allocate' of something that is not a class(T) value")
+        value = None
+        while self.accept_op(","):
+            key = self.expect_name()
+            self.expect_op("=")
+            if key != "source":
+                raise Unsupported(f"'allocate' with {key}= is not supported")
+            value = self.expr()
+        self.expect_op(")")
+        self.end_of_statement()
+        if value is None:
+            if type_spec is None:
+                raise Unsupported("'allocate' of a class(T) value needs source= or a type")
+            tinfo = self.types.get(type_spec)
+            if tinfo is None or not tinfo.ok or tinfo.abstract:
+                raise Unsupported(f"'allocate({type_spec} :: ...)': not a record this conversion knows")
+            value = Apply(type_spec, [], it.line)
+        return [Assign(target, value, it.line)]
+
     def st_allocate(self, it, scope):
+        if self.is_polymorphic_allocate():
+            return self.polymorphic_allocate(it)
         out = []
         for name, dims in self.allocation_objects(scope, "allocate"):
             info = scope.decls.get(name) or self.shared_info(scope, name)
@@ -2764,9 +2819,122 @@ class FParser:
             self.skip_block("select")
             raise
 
+    def select_type(self, scope):
+        """`select type (p => x)` ... `type is (T)` ... `class default` ... `end select`. The associate name is a
+        copy of the value as that record in Boreas, so a case that changes it writes it back."""
+        import copy
+        self.k += 1                                           # `type`
+        self.expect_op("(")
+        assoc = None
+        if self.peek() is not None and self.peek(1) is not None and self.peek().kind == "name" and self.peek(1).text == "=>":
+            assoc = self.rename(self.expect_name())
+            self.k += 1
+        subject = self.expr()
+        self.expect_op(")")
+        self.end_of_statement()
+        line = self.line
+        if not isinstance(subject, (Var, Apply, FieldAccess)):
+            raise Unsupported("select type of something that is not a variable")
+        stops = {("end", "select"), ("guard",)}
+        lead = self.parse_body(scope, stops)
+        if any(not isinstance(n, Comment) for n in lead):
+            raise Unsupported("statements before the first 'type is'")
+        bound = assoc or (subject.name if isinstance(subject, Var) else None)
+        base = self.lookup_decl(self.root_name_of(subject))
+        cases = []
+        while True:
+            cur = self.items[self.i]
+            self.i += 1
+            toks = self.tokens(cur)
+            if classify(toks) != ("guard",):
+                break                                         # `end select`
+            self.toks, self.k, self.line = toks, 0, cur.line
+            word = self.expect_name()
+            col = 0
+            if word == "class" and self.at_name("default"):
+                self.k += 1
+                name = None
+            elif word == "type" and self.at_name("is"):
+                self.k += 1
+                self.expect_op("(")
+                if self.peek() is not None and self.peek().text in TYPE_WORDS:
+                    raise Unsupported(f"'type is ({self.peek().text})': only derived types are supported")
+                name = self.type_name(self.expect_name())
+                self.expect_op(")")
+                info = self.types.get(name)
+                if info is None or not info.ok or info.abstract or info.wrapper is not None:
+                    raise Unsupported(f"'type is ({name})': not a record this conversion knows")
+            else:
+                raise Unsupported("'class is (T)' is not supported")
+            shadowed = scope.decls.get(bound) if bound is not None else None
+            if bound is not None:                             # inside the case the name has the narrowed type
+                if name is not None:
+                    scope.decls[bound] = Info(name, None, False, None, None, False, cur.line)
+                elif base is not None:
+                    scope.decls[bound] = replace(base, dims=None, shape_dropped=False, rank=0, intent=None,
+                                                 allocatable=False, init=None, parameter=False)
+            try:
+                body = self.parse_body(scope, stops)
+            finally:
+                if bound is not None:
+                    if shadowed is not None:
+                        scope.decls[bound] = shadowed
+                    else:
+                        scope.decls.pop(bound, None)
+            cases.append(Case(name, body, cur.line, col))
+        if not cases:
+            raise Unsupported("'select type' without any case")
+        if sum(c.values is None for c in cases) > 1 or len({c.values for c in cases}) < len(cases):
+            raise Unsupported("a type or the default appears twice")
+        if assoc is None:                                     # select type (x): x names the narrowed value inside
+            if not isinstance(subject, Var):
+                raise Unsupported("select type of an expression needs an associate name: select type (p => expr)")
+            assoc = subject.name + "_as"
+            while assoc in scope.decls or assoc in scope.dummies:
+                assoc += "_"
+            for c in cases:
+                for n in iter_nodes(c.body):
+                    if isinstance(n, (Var, Apply, Call, Allocate, Deallocate)) and n.name == subject.name:
+                        n.name = assoc
+        for c in cases:                                       # the copy goes back if the case changed it
+            if c.values is not None and self.changes(c.body, assoc):
+                if not isinstance(subject, (Var, Apply)):
+                    raise Unsupported(f"'type is ({c.values})' changes '{assoc}', which is not a variable to write back to")
+                if any(isinstance(n, (Exit, Cycle, Return)) for n in iter_nodes(c.body)):
+                    raise Unsupported(f"'type is ({c.values})' changes '{assoc}' and leaves early with exit, cycle or return")
+                c.body.append(Assign(copy.deepcopy(subject), Var(assoc), c.line))
+        if None not in {c.values for c in cases}:
+            cases.append(Case(None, [Comment("no other type is handled here (Fortran does nothing for them either)")], line))
+        return lead + [SelectType(subject, cases, line, False, assoc)]
+
+    @staticmethod
+    def changes(body, name):
+        """Might this code change the variable `name`? (an assignment to it or a part of it, or a call it takes part in)"""
+        for n in iter_nodes(body):
+            if isinstance(n, Assign):
+                t = n.target
+                while isinstance(t, FieldAccess):
+                    t = t.base
+                if isinstance(t, (Var, Apply)) and t.name == name:
+                    return True
+            elif isinstance(n, Call):
+                if isinstance(n.receiver, (Var, Apply, FieldAccess)) and FParser.root_name_of(n.receiver) == name:
+                    return True
+                if any(isinstance(a, (Var, Apply, FieldAccess)) and FParser.root_name_of(a) == name for a in n.args):
+                    return True
+        return False
+
+    @staticmethod
+    def root_name_of(e):
+        while isinstance(e, FieldAccess):
+            e = e.base
+        return e.name if isinstance(e, (Var, Apply)) else None
+
     def select_case(self, scope):
+        if self.at_name("type"):
+            return self.select_type(scope)
         if not self.at_name("case"):
-            raise Unsupported("'select type' and 'select rank' are not supported; skipped")
+            raise Unsupported("'select rank' is not supported; skipped")
         self.k += 1
         self.expect_op("(")
         subject = self.expr()
@@ -4159,6 +4327,9 @@ class FParser:
         """Names used in `nodes`: variables, calls, constructors, and the types of declarations."""
         out = set()
         for n in iter_nodes(nodes):
+            if isinstance(n, Case) and isinstance(n.values, str):
+                out.add(n.values)                            # select type: `case circle`
+                continue
             if isinstance(n, Call) and n.receiver is not None:
                 continue                                     # call x.grow(2.0): `grow` belongs to the record
             if isinstance(n, (Var, Apply, Call, Allocate, Deallocate)):
@@ -4232,6 +4403,7 @@ class FParser:
 
     def implicit_decls(self, scope, body, proc_names, line):
         known = set(scope.decls) | set(scope.dummies) | proc_names | self.imported_names(scope)
+        known |= {n.var for n in iter_nodes(body) if isinstance(n, SelectType)}      # select type (p => x)
         if scope.module is not None:
             known |= set(scope.module.decls)
         host_names = set()
