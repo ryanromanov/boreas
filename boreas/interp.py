@@ -116,14 +116,13 @@ def signature_text(f, name):
     return f"{'subroutine' if f.is_sub else 'function'} {name}({modes}{rest})" + (f" -> {f.ret}" if f.ret else "")
 
 
-_CONFORMS = {}
-
-
 def conformance(rdef, idef):
     """What keeps `rdef` (a record) from being used as `idef` (an interface): a list of problems, empty if it fits.
-    The signatures must match without `self`; a record may have more functions than the interface lists."""
-    key = (id(rdef), id(idef))
-    if key not in _CONFORMS:
+    The signatures must match without `self`; a record may have more functions than the interface lists.
+    The answer is kept on the record, together with the interface, so a freed interface's id is never reused."""
+    cache = rdef.__dict__.setdefault("_fits", {})
+    hit = cache.get(id(idef))
+    if hit is None or hit[0] is not idef:
         problems = []
         for name, want in idef.functions.items():
             have = rdef.functions.get(name)
@@ -134,8 +133,8 @@ def conformance(rdef, idef):
                   or any(h[0] != w[0] or h[2] != w[2] for h, w in zip(have.params[1:], want.params[1:]))):
                 problems.append(f"its '{name}' is {signature_text(have, name)}, but {idef.name} needs "
                                 f"{signature_text(want, name)}")
-        _CONFORMS[key] = problems
-    return _CONFORMS[key]
+        hit = cache[id(idef)] = (idef, problems)
+    return hit[1]
 
 
 NOT_A_METHOD = object()          # method_value: the receiver has no function of that name
@@ -1569,9 +1568,9 @@ class Interp:
         return value, Ref([value.rdef.name, value, False, "const"], None, value.rdef.name)
 
     def resolve_field(self, t, env, line, temp_ok=False):
-        slot = env.get(t.base.name) if isinstance(t.base, Var) or (isinstance(t.base, Apply) and t.base.bracket) else None
-        if slot is not None and isinstance(slot[TYPE], IfaceType):
-            raise LangError(f"line {line}: '{t.field}' is not available through {slot[TYPE]}: "
+        it = self.iface_of(t.base, env)
+        if it is not None:
+            raise LangError(f"line {line}: '{t.field}' is not available through {it}: "
                             f"a value of an interface type has only the functions it lists")
         rec, ref = self.record_of(t.base, env, line, temp_ok)
         slot = rec.fields.get(t.field)
@@ -1698,14 +1697,24 @@ class Interp:
         """The function `name` that the record value `rec` has, or None."""
         return rec.rdef.functions.get(name) if isinstance(rec, Record) else None
 
-    def check_in_interface(self, base, name, env, line):
-        """A variable whose type is an interface may only use the functions that interface lists."""
-        slot = None
+    def iface_of(self, base, env):
+        """The interface an expression was declared with: a variable, an element, a parameter, or a call of a
+        function that returns one. None for anything else (a plain record, a field)."""
         if isinstance(base, Var) or (isinstance(base, Apply) and base.bracket):
             slot = env.get(base.name)
-        if slot is not None and isinstance(slot[TYPE], IfaceType) and name not in slot[TYPE].idef.functions:
-            raise LangError(f"line {line}: '{name}' is not part of {slot[TYPE]} (it lists: "
-                            f"{', '.join(slot[TYPE].idef.functions)})")
+            typ = slot[TYPE] if slot is not None else None
+        elif isinstance(base, Apply) and base.name not in env:
+            f = self.scope.funcs.get(base.name)
+            typ = self.typed(f.ret, self.scopes[id(f)]) if f is not None and f.ret else None
+        else:
+            typ = None
+        return typ if isinstance(typ, IfaceType) else None
+
+    def check_in_interface(self, base, name, env, line):
+        """A value whose type is an interface may only use the functions that interface lists."""
+        it = self.iface_of(base, env)
+        if it is not None and name not in it.idef.functions:
+            raise LangError(f"line {line}: '{name}' is not part of {it} (it lists: {', '.join(it.idef.functions)})")
 
     def method_value(self, e, env):
         """`x.area(args)`: the function the record `x` has by that name, called with `x` as `self`."""
@@ -1752,10 +1761,7 @@ class Interp:
                 raise LangError(f"line {c.line}: select type has no record called '{c.values}' here")
             if v.rdef is rdef:
                 chosen = c
-        declared = v.rdef.name
-        if isinstance(s.subject, (Var, Apply)) and s.subject.name in env and (
-                isinstance(s.subject, Var) or s.subject.bracket) and isinstance(env[s.subject.name][TYPE], IfaceType):
-            declared = env[s.subject.name][TYPE]
+        declared = self.iface_of(s.subject, env) or v.rdef.name
         c = chosen or default
         inner = dict(env)
         inner[s.var] = [chosen.values if chosen else declared, v.copy(), False, None]
@@ -2203,7 +2209,8 @@ class Interp:
             current = self.read(ref)
             if intent == "out" and typ not in DEFAULTS:           # an out record starts with no values
                 sub = self.scopes[id(f)].records.get(typ)
-                values.append(self.new_record(sub, blank=True) if sub else current.copy())
+                values.append(self.new_record(sub, blank=True) if sub else
+                              current.copy() if current is not None else None)
             elif isinstance(current, (Array, Record)):
                 values.append(current.copy())                     # copy in
             elif intent == "out":

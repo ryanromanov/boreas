@@ -156,6 +156,42 @@ class InterfaceErrorTests(unittest.TestCase):
             parse("interface f\n  function area(real :: x) -> real\nend interface\nprogram t\nend program\n")
 
 
+PICK = "\nfunction pick() -> figure\n  return circle()\nend function\n"
+
+
+class InterfaceEdgeTests(unittest.TestCase):
+    def fails(self, body, text, defs=DEFS):
+        with self.assertRaises(LangError) as cm:
+            run(body, defs)
+        self.assertIn(text, str(cm.exception))
+
+    def test_a_function_result_of_an_interface_type_has_only_the_listed_functions(self):
+        self.fails("  println(pick().r)", "'r' is not available through figure", DEFS + PICK)
+        self.fails("  println(pick().grow(2.0))", "'grow' is not part of figure", DEFS + PICK)
+        self.assertEqual(run("  println(pick().area())", DEFS + PICK), ["3.0"])
+
+    def test_an_out_parameter_of_an_interface_type_starts_unassigned(self):
+        defs = DEFS + "\nsubroutine make(out figure :: g)\n  update g = rect(w = 2.0, h = 2.0)\nend subroutine\n"
+        self.assertEqual(run("  figure :: f\n  call make(f)\n  println(f.area())", defs), ["4.0"])
+        defs = DEFS + "\nsubroutine lazy(out figure :: g)\n  println(1)\nend subroutine\n"
+        self.fails("  figure :: f\n  call lazy(f)", "was never assigned", defs)
+
+    def test_an_inout_parameter_can_replace_the_value(self):
+        defs = DEFS + "\nsubroutine swap_in(inout figure :: g)\n  update g = rect(w = 2.0, h = 5.0)\nend subroutine\n"
+        self.assertEqual(run("  figure :: f = circle()\n  call swap_in(f)\n  println(f.area())", defs), ["10.0"])
+
+    def test_the_fit_check_survives_freed_objects(self):
+        import gc
+        bad = DEFS.replace("record rect\n", "record rect is figure\n", 1).replace(
+            "  function area(self) -> real\n    return self.w * self.h\n  end function\n", "", 1)
+        good = DEFS.replace("record rect\n", "record rect is figure\n", 1)
+        for _ in range(40):                     # a language server parses the same text again and again
+            self.assertEqual(len(check_errors(program("  println(1)", bad))), 1)
+            gc.collect()
+            self.assertEqual(check_errors(program("  println(1)", good)), [])
+            gc.collect()
+
+
 class InterfaceCheckAndPrintTests(unittest.TestCase):
     def test_check_is_clean_for_a_valid_program(self):
         self.assertEqual(check_errors(program("  figure[2] :: all\n  all[1] = circle()\n  println(all[1].area())")), [])

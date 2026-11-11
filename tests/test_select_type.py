@@ -71,6 +71,13 @@ class SelectTypeTests(unittest.TestCase):
             run("  figure :: f = rect()\n  select type f as p\n    case circle\n      println(1)\n    case default\n      println(p.w)\n  end select")
         self.assertIn("not available through figure", str(cm.exception))
 
+    def test_a_function_result_can_be_the_subject_and_its_default_is_the_interface(self):
+        defs = DEFS + "\nfunction pick() -> figure\n  return rect(w = 2.0, h = 3.0)\nend function\n"
+        self.assertEqual(run("  select type pick() as p\n    case circle\n      println(\"c\")\n    case default\n      println(p.area())\n  end select", defs), ["6.0"])
+        with self.assertRaises(LangError) as cm:
+            run("  select type pick() as p\n    case circle\n      println(\"c\")\n    case default\n      println(p.w)\n  end select", defs)
+        self.assertIn("not available through figure", str(cm.exception))
+
     def test_a_plain_record_can_be_the_subject(self):
         self.assertEqual(run("  circle :: c = circle(r = 3.0)\n  select type c as p\n    case circle\n      println(p.r)\n    case default\n  end select"), ["3.0"])
 

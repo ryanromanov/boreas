@@ -505,9 +505,12 @@ runs the function of the record it holds:
 - A record fits an interface if it has every listed function with the same parameters (not counting `self`), modes
   and result type. It may have more. `record rect is figure` says so out loud and is checked when the program loads;
   without it the check happens when a value is assigned or passed.
-- Only the listed functions are available through an interface value, and its fields are not (`f.w` is an error).
-  If you need a value, add a function that returns it.
+- Only the listed functions are available through an interface value (a variable, element, parameter or function
+  result), and its fields are not (`f.w` is an error). If you need a value, add a function that returns it.
+  `println` of an interface value still shows the whole record.
 - An interface value is a copy, like any record. An element that was never assigned cannot be used.
+- Assigning an interface value to a variable of a record type works when it holds that record right now, and is an
+  error when it holds another; `select type` is the way to ask first.
 - An interface cannot be named like a built-in (`shape` is one) or a record. Not supported yet: a record field or an
   `allocatable` array of an interface type, and optional interface values (`figure?`).
 - Interfaces are exported and imported by name from a module (`public interface figure`, `use shapes: figure`).
