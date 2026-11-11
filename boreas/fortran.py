@@ -6,7 +6,7 @@ array expressions, print/write to the terminal). Anything else becomes a
 whole file. Every translation that is not a 1:1 rename is recorded as a
 finding, returned alongside the AST."""
 import re
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 
 from .fixedform import fixed_to_free, is_fixed_form
 from .preprocess import preprocess
@@ -28,7 +28,7 @@ RESERVED = {"left", "right", "fixed", "scientific", "general", "tf", "text", "sp
             "allocatable", "allocate", "deallocate", "record"}
 
 FORMAT_STATEMENT = re.compile(r"(\d+)\s+format\s*\((.*)\)\s*$", re.I | re.S)
-TYPE_WORDS = {"integer", "real", "logical", "character", "double", "complex", "type"}
+TYPE_WORDS = {"integer", "real", "logical", "character", "double", "complex", "type", "class"}
 BLOCK_KINDS = ("select", "associate", "block", "interface", "where", "forall", "type", "module", "do")
 
 
@@ -183,6 +183,8 @@ def classify(toks):
     nxt = toks[1] if len(toks) > 1 else None
     if is_case_line(toks):
         return ("case",)
+    if t0 in ("type", "class") and nxt is not None and nxt.kind == "name" and nxt.text in ("is", "default"):
+        return ("guard",)                           # type is (T) / class is (T) / class default
     if nxt is not None and nxt.kind == "op" and nxt.text in ("=", "("):
         if nxt.text == "=" or t0 not in ("else", "elseif", "end"):
             return None
@@ -228,6 +230,7 @@ REAL_KINDS = {4: "real32", 8: "real"}
 # Fortran lets an intrinsic's arguments be passed by name; Boreas built-ins are positional, so the converter
 # puts them in this order. (Looking into keyword arguments for Boreas parameters is on the list: see D52.)
 INTRINSIC_PARAMS = {"cshift": ["array", "shift", "dim"]}
+UNSET = object()          # "not given", for an argument that may be None
 KIND_ARGUMENT = {"real", "int", "cmplx", "dble", "dcmplx", "float", "sngl", "nint", "floor", "ceiling"}
 
 
@@ -260,6 +263,8 @@ class Info:
     optional: bool = False
     length: int | None = None     # declared character length, when it is a known number
     rank: int = 0                 # number of dimensions of a dummy whose shape was dropped
+    poly: bool = False            # declared class(T) (or as a wrapper of one): any type that extends T
+    wrapped: object = None        # the TypeInfo of a wrapper type this was declared with (its component is dropped)
 
 
 class Scope:
@@ -304,13 +309,27 @@ class Raw:
 
 
 @dataclass
+class Binding:
+    """A type-bound procedure: `procedure :: name => impl`, or `procedure(iface), deferred :: name`."""
+    name: str
+    impl: str | None              # the module procedure that implements it; None for a deferred one
+    iface: str | None             # for a deferred binding: the abstract interface that gives its signature
+    line: int
+
+
+@dataclass
 class TypeInfo:
-    """A Fortran derived type. `fields` are Boreas Decls; `ok` is False when it could not be translated."""
+    """A Fortran derived type. `fields` are Boreas Decls (an extension's start with its parent's);
+    `ok` is False when it could not be translated."""
     name: str
     scope: object                 # the scope that defines it
     fields: list
     line: int
     ok: bool = True
+    parent: str | None = None     # extends(parent)
+    abstract: bool = False
+    bindings: dict = field(default_factory=dict)    # its own type-bound procedures: name -> Binding
+    wrapper: tuple | None = None  # (T, component) for a type that only holds `class(T), allocatable :: component`
 
     @property
     def module(self):
@@ -403,6 +422,14 @@ class FParser:
         self.do_labels = []         # terminating labels of the enclosing `do 10 ...` loops, innermost last
         self.loops = []             # enclosing named do loops: (Fortran name, Boreas label), innermost last
         self.construct = None       # the name in front of the statement being read: `outer: do`
+        self.iface_name = {}        # derived type -> the Boreas interface that stands for class(type), see oo_prepare
+        self.raw_names = {}         # a type renamed because it is called like a built-in: new name -> the Fortran name
+        self.method_functions = []  # the functions copied into records, see attach_bindings
+        self.method_home = {}       # id(such a function) -> the Boreas Module its record is in (None: top level)
+        self.method_origin = {}     # id(such a function) -> (type it was defined for, procedure it is a copy of)
+        self.eff = {}               # derived type -> {binding name: (Binding, the type it was defined in)}
+        self.poly_spec = None       # set by type_spec for class(T) (or a wrapper of one): the T
+        self.wrapped = None         # set by type_spec for a wrapper type: its TypeInfo
 
     # -- reporting
     def note(self, line, msg, once=False):
@@ -634,6 +661,10 @@ class FParser:
             else:
                 self.k += 1
                 args = self.call_arguments(name)
+                if name == "allocated" and len(args) == 1 and isinstance(args[0], (Var, Apply)):
+                    holder = self.lookup_decl(args[0].name)
+                    if holder is not None and holder.poly:
+                        raise Unsupported("allocated() of a class(T) value: Boreas interface values are always set")
                 name = SPECIFIC_NAMES.get(name, name)
                 name, args = self.convert_intrinsic(name, args)
                 intrinsic = name in BUILTINS or name in ELEMENTAL
@@ -649,12 +680,46 @@ class FParser:
                 if isinstance(e, Var) and self.is_array_name(e.name):
                     raise Unsupported(f"a component of a whole array ({e.name}%...): Boreas needs one element")
                 field = self.rename(self.expect_name())
+                holder = self.wrapped_by(e)
+                if holder is not None and field == holder.wrapper[1]:
+                    if self.at_op("("):
+                        raise Unsupported(f"'{field}' of a wrapper type is a single value, not an array")
+                    continue                                 # all(i)%s is just all(i)
                 args = None
                 if self.accept_op("("):
                     args = self.call_arguments(field)
                 e = FieldAccess(e, field, args, self.line)
+                e.call = args is not None and self.is_binding(e.base, field)
             return e
         raise Unsupported(f"unexpected {t.text!r} in expression")
+
+    def record_type_of(self, e):
+        """The derived type of a variable, array element or component, or None."""
+        if isinstance(e, (Var, Apply)):
+            info = self.lookup_decl(e.name)
+            return info.type if info is not None and info.type in self.types else None
+        if isinstance(e, FieldAccess):
+            base = self.types.get(self.record_type_of(e.base))
+            for d in base.fields if base is not None else []:
+                if d.name == e.field:
+                    return d.type if d.type in self.types else None
+        return None
+
+    def is_binding(self, base, name):
+        """Is `name` a type-bound procedure of the derived type of `base` (or of a type it extends)?"""
+        t = self.types.get(self.record_type_of(base))
+        while t is not None:
+            if name in t.bindings:
+                return True
+            t = self.types.get(t.parent)
+        return False
+
+    def wrapped_by(self, e):
+        """The wrapper type a variable or array element was declared with, or None."""
+        if isinstance(e, (Var, Apply)):
+            info = self.lookup_decl(e.name)
+            return info.wrapped if info is not None else None
+        return None
 
     def literal_kind(self, raw):
         """The kind number after the underscore in 5_8 or 1.0_dp, or None."""
@@ -1447,16 +1512,37 @@ class FParser:
                 raise Unsupported("expected 'double precision' or 'double complex'")
             self.k += 1
             return "real"
-        if word == "type":
+        if word == "class":
             if not self.accept_op("("):
-                raise Unsupported("expected 'type(name)'")
-            name = self.rename(self.expect_name())
+                raise Unsupported("expected 'class(name)'")
+            if self.at_op("*"):
+                raise Unsupported("class(*) is not supported")
+            name = self.type_name(self.expect_name())
             self.expect_op(")")
             info = self.types.get(name)
             if info is None:
                 raise Unsupported(f"derived type '{name}' is not defined earlier in this file")
             if not info.ok:
                 raise Unsupported(f"derived type '{name}' was not translated")
+            if info.wrapper is not None:
+                raise Unsupported(f"class({name}) of a wrapper type")
+            self.poly_spec = name
+            return name
+        if word == "type":
+            if not self.accept_op("("):
+                raise Unsupported("expected 'type(name)'")
+            name = self.type_name(self.expect_name())
+            self.expect_op(")")
+            info = self.types.get(name)
+            if info is None:
+                raise Unsupported(f"derived type '{name}' is not defined earlier in this file")
+            if not info.ok:
+                raise Unsupported(f"derived type '{name}' was not translated")
+            if info.wrapper is not None:               # a wrapper of class(T) is just a polymorphic T in Boreas
+                self.poly_spec, self.wrapped = info.wrapper[0], info
+                return info.wrapper[0]
+            if info.abstract:
+                raise Unsupported(f"type({name}) of an abstract type")
             return name
         if word == "character":
             self.char_len = self.character_length()
@@ -1559,8 +1645,10 @@ class FParser:
 
     def declaration_inner(self, it, scope):
         self.char_len = None
+        self.poly_spec = self.wrapped = None
         typ = self.type_spec()
         char_len = self.char_len
+        poly, wrapped = self.poly_spec, self.wrapped
         attrs = {}
         while self.accept_op(","):
             word = self.expect_name()
@@ -1599,7 +1687,13 @@ class FParser:
                 if self.accept_op("="):
                     init = self.expr()
                 dims, dropped = None, False
-                if attrs.get("allocatable"):
+                scalar_poly = bool(poly) and bool(attrs.get("allocatable")) and specs is None
+                if scalar_poly:                  # class(T), allocatable :: s: a Boreas variable of an interface type
+                    if scope.kind != "type" and name in scope.dummies:
+                        raise Unsupported(f"allocatable dummy argument '{name}'")
+                elif attrs.get("allocatable"):
+                    if poly:
+                        raise Unsupported("an allocatable array of polymorphic values")
                     dims = self.allocatable_dims(name, specs, init, scope)
                 elif specs is not None:
                     if name in scope.dummies:
@@ -1636,9 +1730,10 @@ class FParser:
                     elif isinstance(init, Str):
                         init = self.fit_to_length(init, length)
                 scope.decls[name] = Info(typ, dims, dropped, attrs.get("intent"), init,
-                                         bool(attrs.get("parameter")), line, bool(attrs.get("allocatable")),
+                                         bool(attrs.get("parameter")), line,
+                                         bool(attrs.get("allocatable")) and not scalar_poly,
                                          bool(attrs.get("optional")), length,
-                                         len(specs) if dropped else 0)
+                                         len(specs) if dropped else 0, bool(poly), wrapped)
                 if attrs.get("external"):
                     scope.externals.add(name)
                 if scope.kind == "module":
@@ -1714,7 +1809,7 @@ class FParser:
                     remote_raw = self.expect_name()
                     self.import_rename(scope, local_raw, remote_raw, names, it.line, exports)
                 elif only:
-                    names.append(self.rename(local_raw))
+                    names.append(self.export_name(local_raw))
                 else:
                     raise Unsupported("'use' with a rename list needs 'only:' or 'local => remote' entries")
                 if not self.accept_op(","):
@@ -1781,11 +1876,16 @@ class FParser:
         self.end_of_statement()
 
     def is_public(self, mod, name):
-        return mod.access.get(name, "public" if mod.default_public else "private") == "public"
+        access = mod.access.get(name)
+        if access is None:                                # `public :: shape` names a type we call shape_
+            access = mod.access.get(self.raw_names.get(name))
+        return (access or ("public" if mod.default_public else "private")) == "public"
 
     def own_exports(self, mod):
         """Public names defined in a module that Boreas can export, in source order."""
-        names = [t.name for t in self.types.values() if t.ok and t.scope is mod]
+        names = [t.name for t in self.types.values() if t.ok and t.scope is mod and t.wrapper is None]
+        names += [self.iface_name[t.name] for t in self.types.values()
+                  if t.ok and t.scope is mod and t.name in self.iface_name and self.iface_name[t.name] != t.name]
         names += [r.scope.name for r in self.raw if r.scope.module is mod and r.scope.host is mod]
         names += [n for n, info in mod.decls.items() if n not in mod.externals and n not in mod.skipped]
         return [n for n in names if self.is_public(mod, n)]
@@ -2535,7 +2635,31 @@ class FParser:
             value = Unary("-", value)
         return [value] * repeat
 
+    def has_component_call(self):
+        """Does this `call` name a component (`call s%grow(2.0)`, `call all(i)%s%describe()`)?"""
+        depth = 0
+        for t in self.toks[self.k:]:
+            if t.kind == "op" and t.text == "(":
+                depth += 1
+            elif t.kind == "op" and t.text == ")":
+                depth -= 1
+            elif t.kind == "op" and t.text == "%" and depth == 0:
+                return True
+        return False
+
+    def method_call(self, it):
+        """`call x%f(args)`: the type-bound procedure `f` of the record `x`."""
+        e = self.primary()
+        if not (isinstance(e, FieldAccess) and e.args is not None):
+            raise Unsupported("call of a component that is not a procedure")
+        if not e.call:
+            raise Unsupported(f"'{e.field}' is not a type-bound procedure of a type this conversion knows")
+        self.end_of_statement()
+        return [Call(e.field, e.args, it.line, 0, e.base)]
+
     def st_call(self, it, scope):
+        if self.has_component_call():
+            return self.method_call(it)
         name = self.rename(self.expect_name())
         args = []
         if self.accept_op("("):
@@ -2624,7 +2748,56 @@ class FParser:
             s = s.host
         return None
 
+    def is_polymorphic_allocate(self):
+        """`allocate(s, source=...)` / `allocate(T :: s)`: the allocation of a class(T) value."""
+        depth = 0
+        for j in range(self.k, len(self.toks)):
+            t = self.toks[j]
+            if t.kind == "op" and t.text == "(":
+                depth += 1
+            elif t.kind == "op" and t.text == ")":
+                depth -= 1
+            elif depth == 1 and t.kind == "op" and t.text == "::":
+                return True
+            elif depth == 1 and t.kind == "name" and t.text in ("source", "mold") and \
+                    j + 1 < len(self.toks) and self.toks[j + 1].text == "=":
+                return True
+        return False
+
+    def polymorphic_allocate(self, it):
+        """`allocate(all(1)%s, source=circle(...))` becomes `all[1] = circle(...)`, and `allocate(circle :: s)`
+        becomes `s = circle()` (a record built from its defaults)."""
+        self.expect_op("(")
+        type_spec = None
+        if self.peek() is not None and self.peek(1) is not None and self.peek(1).text == "::":
+            type_spec = self.type_name(self.expect_name())
+            self.expect_op("::")
+        target = self.primary()
+        root = self.root_name_of(target)
+        info = self.lookup_decl(root) if root is not None else None
+        if not isinstance(target, (Var, Apply)) or info is None or not info.poly:
+            raise Unsupported("'allocate' of something that is not a class(T) value")
+        value = None
+        while self.accept_op(","):
+            key = self.expect_name()
+            self.expect_op("=")
+            if key != "source":
+                raise Unsupported(f"'allocate' with {key}= is not supported")
+            value = self.expr()
+        self.expect_op(")")
+        self.end_of_statement()
+        if value is None:
+            if type_spec is None:
+                raise Unsupported("'allocate' of a class(T) value needs source= or a type")
+            tinfo = self.types.get(type_spec)
+            if tinfo is None or not tinfo.ok or tinfo.abstract:
+                raise Unsupported(f"'allocate({type_spec} :: ...)': not a record this conversion knows")
+            value = Apply(type_spec, [], it.line)
+        return [Assign(target, value, it.line)]
+
     def st_allocate(self, it, scope):
+        if self.is_polymorphic_allocate():
+            return self.polymorphic_allocate(it)
         out = []
         for name, dims in self.allocation_objects(scope, "allocate"):
             info = scope.decls.get(name) or self.shared_info(scope, name)
@@ -2650,9 +2823,123 @@ class FParser:
             self.skip_block("select")
             raise
 
+    def select_type(self, scope):
+        """`select type (p => x)` ... `type is (T)` ... `class default` ... `end select`. The associate name is a
+        copy of the value as that record in Boreas, so a case that changes it writes it back."""
+        import copy
+        self.k += 1                                           # `type`
+        self.expect_op("(")
+        assoc = None
+        if self.peek() is not None and self.peek(1) is not None and self.peek().kind == "name" and self.peek(1).text == "=>":
+            assoc = self.rename(self.expect_name())
+            self.k += 1
+        subject = self.expr()
+        self.expect_op(")")
+        self.end_of_statement()
+        line = self.line
+        if not isinstance(subject, (Var, Apply, FieldAccess)):
+            raise Unsupported("select type of something that is not a variable")
+        stops = {("end", "select"), ("guard",)}
+        lead = self.parse_body(scope, stops)
+        if any(not isinstance(n, Comment) for n in lead):
+            raise Unsupported("statements before the first 'type is'")
+        bound = assoc or (subject.name if isinstance(subject, Var) else None)
+        base = self.lookup_decl(self.root_name_of(subject))
+        cases = []
+        while True:
+            cur = self.items[self.i]
+            self.i += 1
+            toks = self.tokens(cur)
+            if classify(toks) != ("guard",):
+                break                                         # `end select`
+            self.toks, self.k, self.line = toks, 0, cur.line
+            word = self.expect_name()
+            col = 0
+            if word == "class" and self.at_name("default"):
+                self.k += 1
+                name = None
+            elif word == "type" and self.at_name("is"):
+                self.k += 1
+                self.expect_op("(")
+                if self.peek() is not None and self.peek().text in TYPE_WORDS:
+                    raise Unsupported(f"'type is ({self.peek().text})': only derived types are supported")
+                name = self.type_name(self.expect_name())
+                self.expect_op(")")
+                info = self.types.get(name)
+                if info is None or not info.ok or info.abstract or info.wrapper is not None:
+                    raise Unsupported(f"'type is ({name})': not a record this conversion knows")
+            else:
+                raise Unsupported("'class is (T)' is not supported")
+            shadowed = scope.decls.get(bound) if bound is not None else None
+            if bound is not None:                             # inside the case the name has the narrowed type
+                if name is not None:
+                    scope.decls[bound] = Info(name, None, False, None, None, False, cur.line)
+                elif base is not None:
+                    scope.decls[bound] = replace(base, dims=None, shape_dropped=False, rank=0, intent=None,
+                                                 allocatable=False, init=None, parameter=False)
+            try:
+                body = self.parse_body(scope, stops)
+            finally:
+                if bound is not None:
+                    if shadowed is not None:
+                        scope.decls[bound] = shadowed
+                    else:
+                        scope.decls.pop(bound, None)
+            cases.append(Case(name, body, cur.line, col))
+        if not cases:
+            raise Unsupported("'select type' without any case")
+        if sum(c.values is None for c in cases) > 1 or len({c.values for c in cases}) < len(cases):
+            raise Unsupported("a type or the default appears twice")
+        if assoc is None:                                     # select type (x): x names the narrowed value inside
+            if not isinstance(subject, Var):
+                raise Unsupported("select type of an expression needs an associate name: select type (p => expr)")
+            assoc = subject.name + "_as"
+            while assoc in scope.decls or assoc in scope.dummies:
+                assoc += "_"
+            for c in cases:
+                for n in iter_nodes(c.body):
+                    if isinstance(n, (Var, Apply, Call, Allocate, Deallocate)) and n.name == subject.name:
+                        n.name = assoc
+        read_only = base is not None and (base.intent == "in" or base.parameter)     # Fortran cannot change it either
+        for c in cases:                                       # the copy goes back if the case changed it
+            if c.values is not None and not read_only and self.changes(c.body, assoc):
+                if not isinstance(subject, (Var, Apply)):
+                    raise Unsupported(f"'type is ({c.values})' changes '{assoc}', which is not a variable to write back to")
+                if any(isinstance(n, (Exit, Cycle, Return)) for n in iter_nodes(c.body)):
+                    raise Unsupported(f"'type is ({c.values})' changes '{assoc}' and leaves early with exit, cycle or return")
+                c.body.append(Assign(copy.deepcopy(subject), Var(assoc), c.line))
+        if None not in {c.values for c in cases}:
+            cases.append(Case(None, [Comment("no other type is handled here (Fortran does nothing for them either)")], line))
+        return lead + [SelectType(subject, cases, line, False, assoc)]
+
+    @staticmethod
+    def changes(body, name):
+        """Might this code change the variable `name`? (an assignment to it or a part of it, or a call it takes part in)"""
+        for n in iter_nodes(body):
+            if isinstance(n, Assign):
+                t = n.target
+                while isinstance(t, FieldAccess):
+                    t = t.base
+                if isinstance(t, (Var, Apply)) and t.name == name:
+                    return True
+            elif isinstance(n, Call):
+                if isinstance(n.receiver, (Var, Apply, FieldAccess)) and FParser.root_name_of(n.receiver) == name:
+                    return True
+                if any(isinstance(a, (Var, Apply, FieldAccess)) and FParser.root_name_of(a) == name for a in n.args):
+                    return True
+        return False
+
+    @staticmethod
+    def root_name_of(e):
+        while isinstance(e, FieldAccess):
+            e = e.base
+        return e.name if isinstance(e, (Var, Apply)) else None
+
     def select_case(self, scope):
+        if self.at_name("type"):
+            return self.select_type(scope)
         if not self.at_name("case"):
-            raise Unsupported("'select type' and 'select rank' are not supported; skipped")
+            raise Unsupported("'select rank' is not supported; skipped")
         self.k += 1
         self.expect_op("(")
         subject = self.expr()
@@ -3006,10 +3293,31 @@ class FParser:
             return self.declaration(it, scope)
         return self.type_definition(it, scope)
 
+    def type_name(self, name):
+        """A derived type's name in Boreas: renamed like any other name, and also when it is the name of a
+        built-in function (a type called `shape`), since a record or interface cannot share that name."""
+        name = self.rename(name)
+        if name in BUILTINS or name in ELEMENTAL:
+            new = name + "_"
+            self.raw_names[new] = name
+            if name not in self.renames:
+                self.renames[name] = new
+                self.note(self.line, f"'{name}' is the name of a Boreas built-in function; the type is called '{new}'")
+            return new
+        return name
+
+    def export_name(self, raw):
+        """The Boreas name of something a `use ..., only:` list names: a type renamed for being called like a
+        built-in is found under its new name."""
+        new = self.renames.get(raw)
+        return new if new is not None and new in self.types else self.rename(raw)
+
     def type_definition(self, it, scope):
-        """`type [, attrs] [::] name` through `end type`: a Boreas record, or a TODO for the
-        whole type when any part of it cannot be translated (variables of it are then skipped)."""
+        """`type [, attrs] [::] name` through `end type`: a Boreas record (an interface too when it is abstract
+        or used polymorphically; see oo_prepare), or a TODO for the whole type when any part of it cannot be
+        translated (variables of it are then skipped)."""
         bad, access = None, None
+        abstract, parent = False, None
         while self.accept_op(","):
             word = self.expect_name()
             if word in ("public", "private"):
@@ -3017,20 +3325,33 @@ class FParser:
             elif word == "bind":
                 self.skip_parens()
                 self.note(it.line, "bind(c) ignored: Boreas records have no C layout")
-            elif word in ("extends", "abstract"):
-                bad = bad or f"'{word}' (inheritance) is not supported"
-                if self.at_op("("):
-                    self.skip_parens()
+            elif word == "abstract":
+                abstract = True
+            elif word == "extends":
+                self.expect_op("(")
+                parent = self.type_name(self.expect_name())
+                self.expect_op(")")
             else:
                 bad = bad or f"unknown type attribute '{word}'"
         self.accept_op("::")
-        name = self.rename(self.expect_name())
+        raw_name = self.peek().text if self.peek() is not None else ""
+        name = self.type_name(self.expect_name())
         if self.at_op("("):
             bad = bad or "parameterized derived types are not supported"
             self.skip_parens()
         self.end_of_statement()
-        fields, holder = [], Scope("type", name)
+        pinfo = None
+        if parent is not None:
+            pinfo = self.types.get(parent)
+            if pinfo is None:
+                bad = bad or f"its parent type '{parent}' is not defined earlier in this file"
+            elif not pinfo.ok:
+                bad = bad or f"its parent type '{parent}' was not translated"
+        if not abstract and (raw_name in BUILTINS or raw_name in ELEMENTAL):
+            bad = bad or "a record named like a built-in function cannot be told from a call of it"
+        own, holder = [], Scope("type", name)
         holder.host = scope
+        bindings, poly_comps, in_bindings = {}, [], False
         while self.i < len(self.items):
             cur = self.items[self.i]
             self.i += 1
@@ -3042,9 +3363,15 @@ class FParser:
             if lab == ("end", "type") or (lab is not None and lab[0] == "end" and lab[1] in (None, "type")):
                 break
             if lab == ("contains",):
-                bad = bad or "type-bound procedures are not supported"
-                self.skip_block("type")
-                break
+                in_bindings = True
+                continue
+            if in_bindings:
+                try:
+                    msg = self.binding_line(toks, cur.line, bindings)
+                except Unsupported as e:
+                    msg = f"{e}: {cur.text}"
+                bad = bad or msg
+                continue
             word = toks[0].text if toks and toks[0].kind == "name" else ""
             if word in ("private", "public") and len(toks) == 1:
                 self.note(cur.line, f"'{word}' in a type: Boreas record fields are always accessible")
@@ -3052,7 +3379,12 @@ class FParser:
             if word == "sequence" and len(toks) == 1:
                 continue
             self.toks, self.k = toks, 0
-            if word in TYPE_WORDS and word != "type" or word == "type":
+            if word == "class":
+                try:
+                    poly_comps.append(self.poly_component())
+                except Unsupported as e:
+                    bad = bad or f"{e}: {cur.text}"
+            elif word in TYPE_WORDS and word != "type" or word == "type":
                 try:
                     for c in self.declaration(cur, holder):         # an entity that could not be declared
                         bad = bad or c.text.replace("TODO(convert): ", "")
@@ -3064,13 +3396,28 @@ class FParser:
             raise LangError("unexpected end of file: 'type' is missing its 'end type'")
         for cname, info in holder.decls.items():
             dims = None
+            if info.poly:
+                bad = bad or f"component '{cname}' is a polymorphic value, which Boreas records cannot hold"
+                continue
             if info.dims is not None:
                 dims = [self.literal_size(d, holder) for d in info.dims]
                 if None in dims:
                     bad = bad or f"component '{cname}' has an array size that is not an integer constant"
                     continue
-            fields.append(Decl(info.type, cname, dims, self.component_default(cname, info, scope, holder),
-                               info.line))
+            own.append(Decl(info.type, cname, dims, self.component_default(cname, info, scope, holder),
+                            info.line))
+        fields = [replace(d) for d in pinfo.fields] if pinfo is not None and pinfo.ok else []
+        taken = {d.name for d in fields}
+        for d in own:
+            if d.name in taken:
+                bad = bad or f"component '{d.name}' is already a component of the parent type"
+        fields += own
+        wrapper = None
+        if poly_comps:
+            if len(poly_comps) == 1 and not own and parent is None and not bindings and not abstract:
+                wrapper = poly_comps[0]               # only holds a polymorphic value: it is dropped (see primary)
+            else:
+                bad = bad or "a polymorphic component (class(T), allocatable) is only supported in a type that holds nothing else"
         if name in self.types:
             self.todo(it.line, f"derived type '{name}' is defined more than once")
         if bad:
@@ -3078,8 +3425,68 @@ class FParser:
             raise Unsupported(f"derived type '{name}' was not translated: {bad}")
         if scope.kind == "module" and access:
             scope.access[name] = access
-        self.types[name] = TypeInfo(name, scope, fields, it.line)
+        self.types[name] = TypeInfo(name, scope, fields, it.line, parent=parent, abstract=abstract,
+                                    bindings=bindings, wrapper=wrapper)
         return []
+
+    def poly_component(self):
+        """`class(T), allocatable :: name` inside a type: (T, name)."""
+        self.expect_name()
+        self.expect_op("(")
+        if self.at_op("*"):
+            raise Unsupported("class(*) is not supported")
+        t = self.type_name(self.expect_name())
+        self.expect_op(")")
+        attrs = set()
+        while self.accept_op(","):
+            attrs.add(self.expect_name())
+        if "allocatable" not in attrs:
+            raise Unsupported("a polymorphic component must be allocatable")
+        self.accept_op("::")
+        name = self.rename(self.expect_name())
+        if self.at_op("("):
+            raise Unsupported("an array of polymorphic values inside a type")
+        info = self.types.get(t)
+        if info is None or not info.ok:
+            raise Unsupported(f"derived type '{t}' is not defined earlier in this file")
+        return (t, name)
+
+    def binding_line(self, toks, line, bindings):
+        """One line after a type's `contains`: `procedure :: name [=> impl]` or `procedure(iface), deferred :: name`.
+        Fills `bindings`; returns why the type cannot be translated, or None."""
+        self.toks, self.k = toks, 0
+        word = self.expect_name()
+        if word in ("private", "public") and len(toks) == 1:
+            return None
+        if word != "procedure":
+            return f"'{word}' (a generic, final or other type-bound statement) is not supported"
+        iface = None
+        if self.accept_op("("):
+            iface = self.rename(self.expect_name())
+            self.expect_op(")")
+        attrs = set()
+        while self.accept_op(","):
+            a = self.expect_name()
+            attrs.add(a)
+            if self.at_op("("):
+                self.skip_parens()
+        if attrs & {"nopass", "pass"}:
+            return f"a '{'nopass' if 'nopass' in attrs else 'pass'}' binding is not supported"
+        deferred = "deferred" in attrs
+        if deferred and iface is None:
+            return "a deferred binding needs an interface: procedure(name), deferred :: binding"
+        if iface is not None and not deferred:
+            return "a binding with an interface (procedure(name) :: x) is only supported as deferred"
+        self.accept_op("::")
+        while True:
+            name = self.rename(self.expect_name())
+            impl = name
+            if self.accept_op("=>"):
+                impl = self.rename(self.expect_name())
+            bindings[name] = Binding(name, None if deferred else impl, iface if deferred else None, line)
+            if not self.accept_op(","):
+                break
+        return None
 
     def literal_size(self, e, scope):
         """An array size as a literal Num, folding constants (parameters, + - *); None if it is not one."""
@@ -3652,6 +4059,7 @@ class FParser:
             s.decls[name] = Info("integer", None, False, None, None, False, r.line)
 
     def finalize(self):
+        self.oo_prepare()
         for r in self.raw:                               # a module that stopped half way keeps what it had
             if r.scope.module is not None:
                 self.modules.setdefault(r.scope.module.name, r.scope.module)
@@ -3687,13 +4095,19 @@ class FParser:
             self.fn_lines[id(fn)] = r.line
             target[fn.name] = fn
             built.append((fn, r.scope))
-        records = {}
+        records, interfaces = {}, {}
         for t in self.types.values():
-            if not t.ok:
+            if not t.ok or t.wrapper is not None:
                 continue
-            rd = RecordDef(t.name, t.fields, t.module is not None and self.is_public(t.module, t.name), t.line)
-            (modules[t.module.name].records if t.module is not None else records)[t.name] = rd
-        unit = Unit(functions, program, modules, records, ieee=True)    # Fortran arithmetic is IEEE
+            if not t.abstract:
+                rd = RecordDef(t.name, t.fields, t.module is not None and self.is_public(t.module, t.name), t.line,
+                               implements=self.implemented_interfaces(t))
+                (modules[t.module.name].records if t.module is not None else records)[t.name] = rd
+            if t.name in self.iface_name:
+                name = self.iface_name[t.name]
+                idef = InterfaceDef(name, {}, t.module is not None and self.is_public(t.module, name), t.line)
+                (modules[t.module.name].interfaces if t.module is not None else interfaces)[name] = idef
+        unit = Unit(functions, program, modules, records, ieee=True, interfaces=interfaces)  # Fortran arithmetic is IEEE
         self.scope_of_procedure = {r.scope.name: r.scope for r in self.raw if r.kind != "program"}
         self.resolve_generics(unit)
         self.add_intrinsic_wrappers(unit)
@@ -3703,6 +4117,7 @@ class FParser:
         self.infer_intents(unit)
         self.mark_module_writes(unit)
         self.hoist_calls(unit)
+        self.attach_bindings(unit)
         self.check_calls(unit)
         if program is not None:                          # a final plain `stop` changes nothing
             while program.body and isinstance(program.body[-1], Stop) and program.body[-1].code is None:
@@ -3746,19 +4161,187 @@ class FParser:
             for n in iter_nodes(owner.body):
                 if isinstance(n, Apply) and n.name in names:
                     n.bracket = True
-                elif isinstance(n, FieldAccess) and n.args is not None:
+                elif isinstance(n, FieldAccess) and n.args is not None and not n.call:
                     n.bracket = True
         for name, ms in self.modules.items():
             names = self.indexable_names(ms)
             for n in iter_nodes([d.init for d in unit.modules[name].decls]):
                 if isinstance(n, Apply) and n.name in names:
                     n.bracket = True
-                elif isinstance(n, FieldAccess) and n.args is not None:
+                elif isinstance(n, FieldAccess) and n.args is not None and not n.call:
                     n.bracket = True
         for rd in list(unit.records.values()) + [r for m in unit.modules.values() for r in m.records.values()]:
             for n in iter_nodes([f.init for f in rd.fields]):
-                if isinstance(n, FieldAccess) and n.args is not None:
+                if isinstance(n, FieldAccess) and n.args is not None and not n.call:
                     n.bracket = True
+
+    # -- type-bound procedures: records, interfaces and copies of the procedures
+    def oo_prepare(self):
+        """Once every type is known: each type's procedures (its own and its parent's), and which types need a
+        Boreas interface. An abstract type is one; a normal type that others extend and that is used as
+        class(T) is one too, under the name T_any (the record keeps the name T)."""
+        types = {n: t for n, t in self.types.items() if t.ok and t.wrapper is None}
+        for t in types.values():                       # a parent is always defined before its extensions
+            eff = dict(self.eff.get(t.parent, {}))
+            for b in t.bindings.values():
+                eff[b.name] = (b, t.name)
+            self.eff[t.name] = eff
+        has_children = {t.parent for t in types.values() if t.parent is not None}
+        impls = {(r.scope.module.name if r.scope.module is not None else None, r.scope.name): r
+                 for r in self.raw if r.kind != "program"}
+        passed = set()                                 # the `self` of a procedure that implements a binding: it just means "this record"
+        for t in types.values():
+            for b in t.bindings.values():
+                r = impls.get((t.module.name if t.module is not None else None, b.impl))
+                if r is not None and r.scope.dummies:
+                    passed.add((id(r.scope), r.scope.dummies[0]))
+        used = set()
+        for sc in [r.scope for r in self.raw] + list(self.modules.values()):
+            for name, info in sc.decls.items():
+                if info.poly and (id(sc), name) not in passed:
+                    used.add(info.type)
+        taken = set(self.types) | {r.scope.name for r in self.raw} | {n for m in self.modules.values() for n in m.decls}
+        for t in types.values():
+            if t.abstract:
+                self.iface_name[t.name] = t.name
+            elif t.name in used and t.name in has_children:
+                name = t.name + "_any"
+                while name in taken:
+                    name += "_"
+                taken.add(name)
+                self.iface_name[t.name] = name
+                if t.scope.kind == "module":
+                    t.scope.access[name] = t.scope.access.get(t.name, "public" if t.scope.default_public else "private")
+                self.note(t.line, f"'{t.name}' is also used as class({t.name}): the record keeps the name and the "
+                                  f"interface for class({t.name}) is '{name}'")
+
+    def ancestors(self, t):
+        """The type itself, then its parent, and so on."""
+        out = []
+        while t is not None:
+            out.append(t)
+            t = self.types.get(t.parent)
+        return out
+
+    def implemented_interfaces(self, t):
+        return [(self.iface_name[a.name], t.line) for a in self.ancestors(t) if a.name in self.iface_name]
+
+    def binding_signature(self, t, b, origin, fn, iname):
+        """The Function (no body) an interface lists for the binding `b` of type `t`: from the procedure that
+        implements it, or from the abstract interface a deferred binding names."""
+        if fn is not None:
+            first = fn.params[0][2] or "in"
+            return Function(b.name, [[iname, "self", first]] + [list(p) for p in fn.params[1:]], fn.ret, [], fn.is_sub)
+        pt = self.find_interface(self.types[origin].scope, b.iface)
+        if pt is None:
+            return None
+        first = pt.params[0][1] if pt.params[0][1] in ("in", "inout", "out") else "in"
+        names = list(pt.names[1:]) if pt.names else []
+        params = [[iname, "self", first]]
+        for k, (typ, intent) in enumerate(pt.params[1:]):
+            params.append([typ, names[k] if k < len(names) and names[k] else f"arg{k + 1}",
+                           intent if intent in ("in", "inout", "out") else "in"])
+        return Function(b.name, params, pt.ret, [], pt.is_sub)
+
+    def attach_bindings(self, unit):
+        """Give each record the functions its type-bound procedures run (copies of the procedures that implement
+        them, so `self` is the record itself and dynamic dispatch picks the right one), and give each interface
+        the signatures of its type's procedures. Runs after the other passes so the copies carry their results."""
+        import copy
+
+        def place(t, what):
+            return unit.modules[t.module.name].__dict__[what] if t.module is not None else getattr(unit, what)
+
+        copied = {}
+        for t in self.types.values():
+            if not t.ok or t.wrapper is not None:
+                continue
+            rec = place(t, "records").get(t.name)
+            idef = place(t, "interfaces").get(self.iface_name[t.name]) if t.name in self.iface_name else None
+            problems = []
+            for bname, (b, origin) in self.eff.get(t.name, {}).items():
+                otype = self.types[origin]
+                fn = None
+                if b.impl is not None:
+                    pool = place(otype, "functions") if otype.module is not None else unit.functions
+                    fn = pool.get(b.impl)
+                    if fn is None:
+                        problems.append(f"procedure '{b.impl}' of '{bname}' is not defined where the type is")
+                        continue
+                    if otype.module is not t.module:
+                        problems.append(f"'{bname}' is inherited from another module (implemented in '{b.impl}' there)")
+                        continue
+                elif not t.abstract:
+                    problems.append(f"the deferred procedure '{bname}' is never implemented")
+                    continue
+                if fn is not None and self.converted.get(fn.name, (None,))[0] is fn:
+                    problems.append(f"'{bname}' is a function that changes its arguments or module variables, so it became "
+                                    f"a subroutine; calls through a record are not rewritten")
+                    continue
+                if idef is not None:
+                    sig = self.binding_signature(t, b, origin, fn, idef.name)
+                    if sig is None:
+                        problems.append(f"the interface '{b.iface}' of '{bname}' could not be read")
+                    else:
+                        idef.functions[bname] = sig
+                if rec is None or fn is None:
+                    continue
+                if any(d.name == bname for d in rec.fields):
+                    problems.append(f"'{bname}' is both a component and a procedure")
+                    continue
+                f = copy.deepcopy(fn)
+                old = f.params[0][1]
+                if any(isinstance(d, Decl) and d.name == "self" for d in iter_nodes(f.body)) or \
+                        (old != "self" and any(q[1] == "self" for q in f.params[1:])):
+                    problems.append(f"'{bname}' has a variable called 'self'")
+                    continue
+                f.name, f.public = bname, False
+                f.params[0] = [t.name, "self", f.params[0][2] or "in"]
+                if old != "self":
+                    for n in iter_nodes(f.body):
+                        if isinstance(n, (Var, Apply, Call, Allocate, Deallocate)) and n.name == old:
+                            n.name = "self"
+                rec.functions[bname] = f
+                self.method_functions.append(f)
+                self.method_home[id(f)] = unit.modules[t.module.name] if t.module is not None else None
+                self.method_origin[id(f)] = (origin, b.impl)
+                copied[(origin, b.impl)] = (bname, t.name)
+            if problems:
+                if rec is not None:
+                    rec.implements = []                    # it cannot honestly say it fits the interface
+                for why in problems:
+                    self.todo(t.line, f"type '{t.name}': {why}")
+        owners = [(f, f.body) for f in self.all_functions(unit)] + [(f, f.body) for f in self.method_functions]
+        if unit.program:
+            owners.append((unit.program, unit.program.body))
+        flagged = set()
+        for (origin, impl), (bname, tname) in copied.items():       # the procedure itself is gone unless something uses it
+            otype = self.types[origin]
+            pool = unit.modules[otype.module.name].functions if otype.module is not None else unit.functions
+            fn = pool.get(impl)
+            if fn is None:
+                continue
+            hits = []
+            for owner, body in owners:
+                if owner is fn or self.method_origin.get(id(owner)) == (origin, impl):
+                    continue                                        # its own body (or a copy of it)
+                for n in iter_nodes(body):
+                    if isinstance(n, (Apply, Var)) and n.name == impl or \
+                            isinstance(n, Call) and n.receiver is None and n.name == impl:
+                        hits.append((owner, getattr(n, "line", 0) or self.fn_lines.get(id(owner), 0)))
+            if not hits:
+                del pool[impl]
+                continue
+            msg = (f"'{impl}' implements the type-bound procedure '{bname}' of '{tname}' and is also used by name; "
+                   f"Boreas has it as a function of the record, so call it as x.{bname}(...)")
+            fn.comments.append("TODO(convert): " + msg)
+            self.todo(self.fn_lines.get(id(fn), 0), msg)
+            for owner, line in hits:
+                if (id(owner), impl) not in flagged:
+                    flagged.add((id(owner), impl))
+                    if hasattr(owner, "comments"):
+                        owner.comments.append("TODO(convert): " + msg)
+                    self.todo(line, msg)
 
     def all_functions(self, unit):
         return list(unit.functions.values()) + [f for m in unit.modules.values() for f in m.functions.values()]
@@ -3772,7 +4355,7 @@ class FParser:
                 continue
             if name in ms.skipped:
                 continue
-            consts.append(Decl(info.type, name, info.dims, info.init, info.line, info.parameter,
+            consts.append(Decl(self.info_type(info), name, info.dims, info.init, info.line, info.parameter,
                                self.is_public(ms, name), allocatable=info.allocatable))
         return mod
 
@@ -3780,6 +4363,11 @@ class FParser:
         """Names used in `nodes`: variables, calls, constructors, and the types of declarations."""
         out = set()
         for n in iter_nodes(nodes):
+            if isinstance(n, Case) and isinstance(n.values, str):
+                out.add(n.values)                            # select type: `case circle`
+                continue
+            if isinstance(n, Call) and n.receiver is not None:
+                continue                                     # call x.grow(2.0): `grow` belongs to the record
             if isinstance(n, (Var, Apply, Call, Allocate, Deallocate)):
                 out.add(n.name)
             elif isinstance(n, Decl):
@@ -3799,6 +4387,28 @@ class FParser:
                     use.names.append(n)
         return list(merged.values())
 
+    def procedure_uses(self, owner, scope, refs):
+        """The imports of a procedure: its own `use` statements, plus what the program or procedure it was written
+        inside imported (an internal procedure sees those), when it uses the name and has no variable of that name."""
+        own = self.make_uses(scope.uses, refs)
+        inherited, host = [], scope.host
+        while host is not None and host.kind != "module":
+            inherited += [u for u in host.uses if u not in inherited]
+            host = host.host
+        if not inherited:
+            return own
+        mine = {d.name for d in iter_nodes(owner.body) if isinstance(d, Decl)} | {p[1] for p in owner.params}
+        wanted = refs - mine
+        inherited = [(mod, names if names is None else [n for n in names if n in wanted], line)
+                     for mod, names, line in inherited]
+        for use in self.make_uses([u for u in inherited if u[1] is None or u[1]], wanted):
+            same = next((u for u in own if u.module == use.module), None)
+            if same is None:
+                own.append(use)
+            else:
+                same.names += [n for n in use.names if n not in same.names]
+        return own
+
     def link_uses(self, unit, built):
         by_module = {}
         for owner, scope in built:
@@ -3806,7 +4416,7 @@ class FParser:
                 owner.uses = self.make_uses(scope.uses, self.references(owner.body))
             else:
                 sig = {n for p in owner.params for n in type_names(p[0])} | ({base_type(owner.ret)} if owner.ret else set())
-                owner.uses = self.make_uses(scope.uses, self.references(owner.body) | sig)
+                owner.uses = self.procedure_uses(owner, scope, self.references(owner.body) | sig)
                 if scope.module is not None:
                     by_module.setdefault(scope.module.name, []).append(owner)
         for name, ms in self.modules.items():
@@ -3818,9 +4428,10 @@ class FParser:
                 refs |= self.references(f.body) | {n for p in f.params for n in type_names(p[0])} | ({base_type(f.ret)} if f.ret else set())
             mod.uses = self.make_uses(ms.uses, refs)
 
-    def visible_procs(self, unit, f):
+    def visible_procs(self, unit, f, mod=UNSET):
         """The procedures `f` can call: its siblings plus whatever it (or its module) imports."""
-        mod = next((m for m in unit.modules.values() if m.functions.get(f.name) is f), None)
+        if mod is UNSET:
+            mod = next((m for m in unit.modules.values() if m.functions.get(f.name) is f), None)
         procs = dict(mod.functions if mod else unit.functions)
         for use in f.uses + (mod.uses if mod else []):
             src = unit.modules[use.module].functions
@@ -3835,12 +4446,13 @@ class FParser:
             if name in proc_names or name in scope.externals:
                 self.note(info.line, f"declaration of '{name}' dropped: it is a procedure, not a variable")
                 continue
-            decls.append(Decl(info.type, name, info.dims, info.init, info.line, info.parameter,
+            decls.append(Decl(self.info_type(info), name, info.dims, info.init, info.line, info.parameter,
                               allocatable=info.allocatable))
         return decls
 
     def implicit_decls(self, scope, body, proc_names, line):
         known = set(scope.decls) | set(scope.dummies) | proc_names | self.imported_names(scope)
+        known |= {n.var for n in iter_nodes(body) if isinstance(n, SelectType)}      # select type (p => x)
         if scope.module is not None:
             known |= set(scope.module.decls)
         host_names = set()
@@ -3904,7 +4516,7 @@ class FParser:
             if info is None:
                 s.decls[result] = info = Info(implicit_type(s.name), None, False, None, None, False, line)
                 self.note(line, f"result of '{s.name}' has no declared type; assumed {info.type}")
-            ret = info.type
+            ret = self.info_type(info)
             if info.dims:
                 ret = self.array_result(s, result, info, body, line)
             self.fix_returns(body, result)
@@ -3936,12 +4548,15 @@ class FParser:
         fn = Function(s.name, params, ret, decls + self.local_decls(s, body, proc_names) + body, is_sub, list(s.comments))
         return fn
 
-    @staticmethod
-    def dummy_type(info):
+    def info_type(self, info):
+        """The Boreas type of a declaration: class(T) is the interface that stands for it (see oo_prepare)."""
+        return self.iface_name.get(info.type, info.type) if info.poly else info.type
+
+    def dummy_type(self, info):
         """A dummy argument's Boreas type: `real[,]` for a two-dimensional array (its rank is all Boreas keeps)."""
         if info.shape_dropped and info.rank:
-            return info.type + "[" + "," * (info.rank - 1) + "]"
-        return info.type
+            return self.info_type(info) + "[" + "," * (info.rank - 1) + "]"
+        return self.info_type(info)
 
     def array_result(self, scope, result, info, body, line):
         """A function result that is an array: `-> real[]` (one comma more per extra dimension). The result is
@@ -4715,6 +5330,7 @@ class FParser:
 
     def check_calls(self, unit):
         scopes = [(f, self.visible_procs(unit, f), f.uses) for f in self.all_functions(unit)]
+        scopes += [(f, self.visible_procs(unit, f, self.method_home[id(f)]), f.uses) for f in self.method_functions]
         if unit.program:
             p = unit.program
             procs = dict(unit.functions)
@@ -4723,7 +5339,10 @@ class FParser:
                 procs.update({n: src[n] for n in use.names if n in src})
             scopes.append((p, procs, p.uses))
         for node, procs, uses in scopes:
-            mod = next((m for m in unit.modules.values() if m.functions.get(node.name) is node), None)
+            if id(node) in self.method_home:                    # a function inside a record: its record's module
+                mod = self.method_home[id(node)]
+            else:
+                mod = next((m for m in unit.modules.values() if m.functions.get(node.name) is node), None)
             imported = {n for u in uses + (mod.uses if mod else []) for n in u.names}
             declared = {d.name for d in iter_nodes(node.body) if isinstance(d, Decl)} | imported
             declared |= {d.name for d in mod.decls} if mod else set()
@@ -4735,7 +5354,7 @@ class FParser:
                     continue                                    # already a TODO of its own
                 if isinstance(n, Apply) and n.name not in declared and n.name not in known:
                     what = "function"
-                elif isinstance(n, Call) and n.name not in procs and n.name not in declared:
+                elif isinstance(n, Call) and n.receiver is None and n.name not in procs and n.name not in declared:
                     what = "subroutine"
                 else:
                     continue

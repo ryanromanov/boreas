@@ -131,13 +131,21 @@ class UnsupportedTests(unittest.TestCase):
         self.assertEqual(run_bor(text), ["3"])         # the rest still converts and runs
         return text
 
-    def test_type_bound_procedures(self):
-        self.check_todo("  type :: thing\n    integer :: v\n  contains\n    procedure :: show\n  end type thing\n",
-                        "type-bound procedures")
+    def test_generic_and_final_bindings_are_still_unsupported(self):
+        self.check_todo("  type :: thing\n    integer :: v\n  contains\n    final :: tidy\n  end type thing\n",
+                        "generic, final or other type-bound statement")
+        self.check_todo("  type :: thing\n    integer :: v\n  contains\n    generic :: write(formatted) => show\n"
+                        "  end type thing\n", "generic, final or other type-bound statement")
 
-    def test_extends(self):
-        self.check_todo("  type :: base\n    integer :: w\n  end type base\n  type, extends(base) :: thing\n"
-                        "    integer :: v\n  end type thing\n", "'extends' (inheritance)")
+    def test_nopass_and_pass_bindings_are_unsupported(self):
+        self.check_todo("  type :: thing\n    integer :: v\n  contains\n    procedure, nopass :: make\n"
+                        "  end type thing\n", "'nopass' binding")
+        self.check_todo("  type :: thing\n    integer :: v\n  contains\n    procedure, pass(other) :: show\n"
+                        "  end type thing\n", "'pass' binding")
+
+    def test_extends_a_type_that_is_not_defined_here(self):
+        self.check_todo("  type, extends(base) :: thing\n    integer :: v\n  end type thing\n",
+                        "its parent type 'base' is not defined earlier")
 
     def test_allocatable_and_pointer_components(self):
         self.check_todo("  type :: thing\n    integer :: v\n    real, allocatable :: a(:)\n  end type thing\n",
