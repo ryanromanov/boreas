@@ -409,6 +409,141 @@ end program
         self.assertIn("'allocate' of something that is not a class(T) value", self.messages(findings))
 
 
+class OOReviewTests(unittest.TestCase):
+    """Cases a reviewer found: nothing may convert quietly into a program that is wrong."""
+    check = OOConversionTests.check
+
+    def messages(self, findings):
+        return [m for _, kind, m in findings if kind == "todo"]
+
+    def test_a_binding_body_is_checked_for_calls_to_nothing(self):
+        src = ("module m\n  implicit none\n  type :: t\n    integer :: n = 1\n  contains\n    procedure :: go\n  end type\n"
+               "contains\n  subroutine go(self)\n    class(t), intent(in) :: self\n    call nowhere(self%n)\n  end subroutine\n"
+               "end module\nprogram p\n  use m\n  implicit none\n  type(t) :: x\n  call x%go()\nend program\n")
+        _, findings = converted(src)
+        gone = [m for m in self.messages(findings) if "'nowhere'" in m]
+        self.assertEqual(len(gone), 1, self.messages(findings))
+
+    def test_an_implementation_that_is_also_called_by_name_is_a_todo(self):
+        src = ANIMALS + """program demo
+  use animals
+  implicit none
+  type(animal) :: a
+  call speak(a)
+end program
+"""
+        _, findings = converted(src)
+        self.assertTrue(any("is also used by name" in m for m in self.messages(findings)), self.messages(findings))
+
+    def test_an_override_that_calls_the_parents_procedure_by_name_is_a_todo(self):
+        src = ANIMALS.replace('print *, trim(self%name), " barks", self%tricks', 'call speak(self)') + """program demo
+  use animals
+  implicit none
+  type(dog) :: d
+  call d%speak()
+end program
+"""
+        text, findings = converted(src)
+        self.assertTrue(any("is also used by name" in m for m in self.messages(findings)), self.messages(findings))
+
+    def test_no_write_back_into_an_in_parameter(self):
+        text = self.check(SHAPES_WITH_GROW + """module users
+  use shapes
+  implicit none
+contains
+  subroutine inspect(s)
+    class(shape), intent(in) :: s
+    select type (s)
+    type is (circle)
+      call s%describe()
+    class default
+      print *, "other"
+    end select
+  end subroutine
+end module
+program demo
+  use shapes
+  use users
+  implicit none
+  type(circle) :: c
+  c = circle(name="c", r=2.0)
+  call inspect(c)
+end program
+""")
+        self.assertNotIn("s = s_as", text)
+
+    def test_write_back_into_an_inout_parameter_is_an_update(self):
+        text = self.check(SHAPES_WITH_GROW + """module users
+  use shapes
+  implicit none
+contains
+  subroutine enlarge(s)
+    class(shape), intent(inout) :: s
+    select type (s)
+    type is (circle)
+      call s%grow(2.0)
+    end select
+  end subroutine
+end module
+program demo
+  use shapes
+  use users
+  implicit none
+  type(circle) :: c
+  c = circle(name="c", r=2.0)
+  call enlarge(c)
+  call c%describe()
+end program
+""")
+        self.assertIn("update s = s_as", text)
+
+    def test_an_internal_procedure_keeps_a_local_that_hides_a_host_import(self):
+        self.check("""module m
+  implicit none
+  integer, parameter :: n = 3
+  integer, parameter :: k = 4
+end module
+program p
+  use m, only: n, k
+  implicit none
+  call s()
+contains
+  subroutine s()
+    integer :: n
+    n = 7
+    print *, n, k
+  end subroutine
+end program
+""")
+
+    def test_an_internal_procedure_imports_only_what_it_uses(self):
+        text = self.check("""module m
+  implicit none
+  integer, parameter :: n = 3
+  integer, parameter :: k = 4
+end module
+program p
+  use m, only: n, k
+  implicit none
+  call s()
+  print *, n
+contains
+  subroutine s()
+    print *, k
+  end subroutine
+end program
+""")
+        self.assertIn("use m: k\n", text)
+
+    def test_a_function_binding_that_became_a_subroutine_is_a_todo(self):
+        src = ("module m\n  implicit none\n  type :: counter\n    integer :: n = 0\n  contains\n    procedure :: next\n  end type\n"
+               "contains\n  function next(self) result(r)\n    class(counter), intent(inout) :: self\n    integer :: r\n"
+               "    self%n = self%n + 1\n    r = self%n\n  end function\nend module\n"
+               "program p\n  use m\n  implicit none\n  type(counter) :: c\n  print *, c%next()\nend program\n")
+        _, findings = converted(src)
+        self.assertTrue(any("it became a subroutine" in m for m in self.messages(findings)), self.messages(findings))
+
+
 class OOLimitTests(unittest.TestCase):
     def test_an_inherited_procedure_from_another_module_is_a_todo(self):
         src = ("module base_m\n  implicit none\n  type :: base\n    integer :: v = 1\n  contains\n    procedure :: show\n"

@@ -230,6 +230,7 @@ REAL_KINDS = {4: "real32", 8: "real"}
 # Fortran lets an intrinsic's arguments be passed by name; Boreas built-ins are positional, so the converter
 # puts them in this order. (Looking into keyword arguments for Boreas parameters is on the list: see D52.)
 INTRINSIC_PARAMS = {"cshift": ["array", "shift", "dim"]}
+UNSET = object()          # "not given", for an argument that may be None
 KIND_ARGUMENT = {"real", "int", "cmplx", "dble", "dcmplx", "float", "sngl", "nint", "floor", "ceiling"}
 
 
@@ -423,6 +424,9 @@ class FParser:
         self.construct = None       # the name in front of the statement being read: `outer: do`
         self.iface_name = {}        # derived type -> the Boreas interface that stands for class(type), see oo_prepare
         self.raw_names = {}         # a type renamed because it is called like a built-in: new name -> the Fortran name
+        self.method_functions = []  # the functions copied into records, see attach_bindings
+        self.method_home = {}       # id(such a function) -> the Boreas Module its record is in (None: top level)
+        self.method_origin = {}     # id(such a function) -> (type it was defined for, procedure it is a copy of)
         self.eff = {}               # derived type -> {binding name: (Binding, the type it was defined in)}
         self.poly_spec = None       # set by type_spec for class(T) (or a wrapper of one): the T
         self.wrapped = None         # set by type_spec for a wrapper type: its TypeInfo
@@ -2896,8 +2900,9 @@ class FParser:
                 for n in iter_nodes(c.body):
                     if isinstance(n, (Var, Apply, Call, Allocate, Deallocate)) and n.name == subject.name:
                         n.name = assoc
+        read_only = base is not None and (base.intent == "in" or base.parameter)     # Fortran cannot change it either
         for c in cases:                                       # the copy goes back if the case changed it
-            if c.values is not None and self.changes(c.body, assoc):
+            if c.values is not None and not read_only and self.changes(c.body, assoc):
                 if not isinstance(subject, (Var, Apply)):
                     raise Unsupported(f"'type is ({c.values})' changes '{assoc}', which is not a variable to write back to")
                 if any(isinstance(n, (Exit, Cycle, Return)) for n in iter_nodes(c.body)):
@@ -4247,7 +4252,7 @@ class FParser:
         def place(t, what):
             return unit.modules[t.module.name].__dict__[what] if t.module is not None else getattr(unit, what)
 
-        copied = set()
+        copied = {}
         for t in self.types.values():
             if not t.ok or t.wrapper is not None:
                 continue
@@ -4268,6 +4273,10 @@ class FParser:
                         continue
                 elif not t.abstract:
                     problems.append(f"the deferred procedure '{bname}' is never implemented")
+                    continue
+                if fn is not None and self.converted.get(fn.name, (None,))[0] is fn:
+                    problems.append(f"'{bname}' is a function that changes its arguments or module variables, so it became "
+                                    f"a subroutine; calls through a record are not rewritten")
                     continue
                 if idef is not None:
                     sig = self.binding_signature(t, b, origin, fn, idef.name)
@@ -4293,19 +4302,46 @@ class FParser:
                         if isinstance(n, (Var, Apply, Call, Allocate, Deallocate)) and n.name == old:
                             n.name = "self"
                 rec.functions[bname] = f
-                copied.add((origin, b.impl))
+                self.method_functions.append(f)
+                self.method_home[id(f)] = unit.modules[t.module.name] if t.module is not None else None
+                self.method_origin[id(f)] = (origin, b.impl)
+                copied[(origin, b.impl)] = (bname, t.name)
             if problems:
                 if rec is not None:
                     rec.implements = []                    # it cannot honestly say it fits the interface
                 for why in problems:
                     self.todo(t.line, f"type '{t.name}': {why}")
-        for origin, impl in copied:                        # the procedure itself is gone unless something still calls it
+        owners = [(f, f.body) for f in self.all_functions(unit)] + [(f, f.body) for f in self.method_functions]
+        if unit.program:
+            owners.append((unit.program, unit.program.body))
+        flagged = set()
+        for (origin, impl), (bname, tname) in copied.items():       # the procedure itself is gone unless something uses it
             otype = self.types[origin]
             pool = unit.modules[otype.module.name].functions if otype.module is not None else unit.functions
             fn = pool.get(impl)
-            others = [f.body for f in self.all_functions(unit) if f is not fn] + ([unit.program.body] if unit.program else [])
-            if fn is not None and impl not in self.references(others):
+            if fn is None:
+                continue
+            hits = []
+            for owner, body in owners:
+                if owner is fn or self.method_origin.get(id(owner)) == (origin, impl):
+                    continue                                        # its own body (or a copy of it)
+                for n in iter_nodes(body):
+                    if isinstance(n, (Apply, Var)) and n.name == impl or \
+                            isinstance(n, Call) and n.receiver is None and n.name == impl:
+                        hits.append((owner, getattr(n, "line", 0) or self.fn_lines.get(id(owner), 0)))
+            if not hits:
                 del pool[impl]
+                continue
+            msg = (f"'{impl}' implements the type-bound procedure '{bname}' of '{tname}' and is also used by name; "
+                   f"Boreas has it as a function of the record, so call it as x.{bname}(...)")
+            fn.comments.append("TODO(convert): " + msg)
+            self.todo(self.fn_lines.get(id(fn), 0), msg)
+            for owner, line in hits:
+                if (id(owner), impl) not in flagged:
+                    flagged.add((id(owner), impl))
+                    if hasattr(owner, "comments"):
+                        owner.comments.append("TODO(convert): " + msg)
+                    self.todo(line, msg)
 
     def all_functions(self, unit):
         return list(unit.functions.values()) + [f for m in unit.modules.values() for f in m.functions.values()]
@@ -4351,15 +4387,27 @@ class FParser:
                     use.names.append(n)
         return list(merged.values())
 
-    @staticmethod
-    def inherited_uses(scope):
-        """A procedure's `use` entries, and those of the program or procedure it was written inside (an internal
-        procedure sees what its host imported)."""
-        entries, host = list(scope.uses), scope.host
+    def procedure_uses(self, owner, scope, refs):
+        """The imports of a procedure: its own `use` statements, plus what the program or procedure it was written
+        inside imported (an internal procedure sees those), when it uses the name and has no variable of that name."""
+        own = self.make_uses(scope.uses, refs)
+        inherited, host = [], scope.host
         while host is not None and host.kind != "module":
-            entries += [u for u in host.uses if u not in entries]
+            inherited += [u for u in host.uses if u not in inherited]
             host = host.host
-        return entries
+        if not inherited:
+            return own
+        mine = {d.name for d in iter_nodes(owner.body) if isinstance(d, Decl)} | {p[1] for p in owner.params}
+        wanted = refs - mine
+        inherited = [(mod, names if names is None else [n for n in names if n in wanted], line)
+                     for mod, names, line in inherited]
+        for use in self.make_uses([u for u in inherited if u[1] is None or u[1]], wanted):
+            same = next((u for u in own if u.module == use.module), None)
+            if same is None:
+                own.append(use)
+            else:
+                same.names += [n for n in use.names if n not in same.names]
+        return own
 
     def link_uses(self, unit, built):
         by_module = {}
@@ -4368,7 +4416,7 @@ class FParser:
                 owner.uses = self.make_uses(scope.uses, self.references(owner.body))
             else:
                 sig = {n for p in owner.params for n in type_names(p[0])} | ({base_type(owner.ret)} if owner.ret else set())
-                owner.uses = self.make_uses(self.inherited_uses(scope), self.references(owner.body) | sig)
+                owner.uses = self.procedure_uses(owner, scope, self.references(owner.body) | sig)
                 if scope.module is not None:
                     by_module.setdefault(scope.module.name, []).append(owner)
         for name, ms in self.modules.items():
@@ -4380,9 +4428,10 @@ class FParser:
                 refs |= self.references(f.body) | {n for p in f.params for n in type_names(p[0])} | ({base_type(f.ret)} if f.ret else set())
             mod.uses = self.make_uses(ms.uses, refs)
 
-    def visible_procs(self, unit, f):
+    def visible_procs(self, unit, f, mod=UNSET):
         """The procedures `f` can call: its siblings plus whatever it (or its module) imports."""
-        mod = next((m for m in unit.modules.values() if m.functions.get(f.name) is f), None)
+        if mod is UNSET:
+            mod = next((m for m in unit.modules.values() if m.functions.get(f.name) is f), None)
         procs = dict(mod.functions if mod else unit.functions)
         for use in f.uses + (mod.uses if mod else []):
             src = unit.modules[use.module].functions
@@ -5281,6 +5330,7 @@ class FParser:
 
     def check_calls(self, unit):
         scopes = [(f, self.visible_procs(unit, f), f.uses) for f in self.all_functions(unit)]
+        scopes += [(f, self.visible_procs(unit, f, self.method_home[id(f)]), f.uses) for f in self.method_functions]
         if unit.program:
             p = unit.program
             procs = dict(unit.functions)
@@ -5289,7 +5339,10 @@ class FParser:
                 procs.update({n: src[n] for n in use.names if n in src})
             scopes.append((p, procs, p.uses))
         for node, procs, uses in scopes:
-            mod = next((m for m in unit.modules.values() if m.functions.get(node.name) is node), None)
+            if id(node) in self.method_home:                    # a function inside a record: its record's module
+                mod = self.method_home[id(node)]
+            else:
+                mod = next((m for m in unit.modules.values() if m.functions.get(node.name) is node), None)
             imported = {n for u in uses + (mod.uses if mod else []) for n in u.names}
             declared = {d.name for d in iter_nodes(node.body) if isinstance(d, Decl)} | imported
             declared |= {d.name for d in mod.decls} if mod else set()
