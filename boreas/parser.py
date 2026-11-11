@@ -52,6 +52,7 @@ class Decl:   # dims: list of exprs or None
 class FieldAccess:    # base.field or base.field[subscripts] for an array field
     base: object; field: str; args: object; line: int
     bracket: bool = field(default=False, compare=False, repr=False)
+    call: bool = field(default=False, compare=False, repr=False)      # x.area(): a record's function, not an array field
 @dataclass
 class NamedArg: name: str; value: object     # `x = 1.0` inside a record constructor
 @dataclass

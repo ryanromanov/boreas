@@ -7,7 +7,7 @@ program mixed
   type point
     real :: x, y
   contains
-    procedure :: show
+    final :: tidy
   end type point
   type(point) :: p
 
