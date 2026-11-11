@@ -93,11 +93,12 @@ def _case_values(values):
     return "default" if values is None else ", ".join(expr(v) for v in values)
 
 
-def _params(f):
+def _params(f, method=False):
+    """`real :: x, inout integer :: n`; in a record's function the first parameter is written `self`."""
     out = []
-    for typ, name, intent in f.params:
+    for n, (typ, name, intent) in enumerate(f.params):
         mode = "" if intent == "in" else intent + " "
-        out.append(f"{mode}{typ} :: {name}")
+        out.append(f"{mode}self" if method and n == 0 else f"{mode}{typ} :: {name}")
     return ", ".join(out)
 
 
@@ -170,7 +171,8 @@ def stmt(s, depth):
     if k is Stop:
         return [pad + "stop" + (" " + expr(s.code) if s.code is not None else "")]
     if k is Call:
-        return [f"{pad}call {s.name}(" + ", ".join(expr(a) for a in s.args) + ")"]
+        who = expr(s.receiver) + "." if s.receiver is not None else ""
+        return [f"{pad}call {who}{s.name}(" + ", ".join(expr(a) for a in s.args) + ")"]
     if k is Return:
         return [pad + "return" + (" " + expr(s.value) if s.value is not None else "")]
     if k is Exit:
@@ -220,6 +222,9 @@ def _uses(uses, depth=1):
 def record(r):
     lines = [f"{'public ' if r.public else ''}record {r.name}"]
     lines.extend(stmts(r.fields))
+    for f in r.functions.values():
+        lines.append("")
+        lines.extend("  " + l if l else l for l in procedure(f, method=True))
     return lines + ["end record"]
 
 
@@ -233,10 +238,10 @@ def module(m):
     return lines + [f"end module {m.name}"]
 
 
-def procedure(f):
+def procedure(f, method=False):
     kind = "subroutine" if f.is_sub else "function"
     lines = [_comment(c) for c in f.comments]
-    head = f"{'public ' if f.public else ''}{kind} {f.name}({_params(f)})"
+    head = f"{'public ' if f.public else ''}{kind} {f.name}({_params(f, method)})"
     if f.ret:
         head += f" -> {f.ret}"
     lines.append(head)

@@ -60,6 +60,7 @@ class RecordDef:
     fields: list          # [Decl], no initializers
     public: bool
     line: int
+    functions: dict = field(default_factory=dict)   # name -> Function; each takes the record first, as `self`
 @dataclass
 class Assign: target: object; value: object; line: int; update: bool = False
 @dataclass
@@ -103,6 +104,7 @@ class ExprStmt: expr: object
 class Call:
     name: str; args: list; line: int
     col: int = field(default=0, compare=False, repr=False)
+    receiver: object = None    # `call x.grow(2.0)`: the record `x`, which is passed first, as `self`
 @dataclass
 class Allocate: name: str; dims: list; line: int; update: bool = False   # allocate a[n, m]: one extent per dimension
 @dataclass
@@ -526,13 +528,25 @@ class Parser:
         if name in KEYWORDS or name in TYPES:
             self.error(f"'{name}' cannot be the name of a record")
         self.newline()
-        fields = []
+        fields, functions = [], {}
         while not (self.at("end") and self.toks[self.i + 1].text == "record"):
             if self.tok.kind == "eof":
                 self.error("unexpected end of file, missing 'end record'")
+            if self.at("function", "subroutine"):
+                fn_line = self.tok.line
+                fn = self.procedure(owner=name)
+                if fn.name in functions:
+                    raise LangError(f"line {fn_line}: record '{name}' has two functions called '{fn.name}'")
+                if any(d.name == fn.name for d in fields):
+                    raise LangError(f"line {fn_line}: record '{name}' has a field and a function called '{fn.name}'")
+                functions[fn.name] = fn
+                self.skip_newlines()
+                continue
             if self.at("const", "allocatable", "public", "private"):
                 self.error("record fields are plain declarations: 'type :: name'")
             f = self.decl()
+            if f.name in functions:
+                raise LangError(f"line {f.line}: record '{name}' has a field and a function called '{f.name}'")
             if f.init is not None:
                 check_constant(f.init, f"the default of field '{f.name}'", f.line)
             fields.append(f)
@@ -542,7 +556,7 @@ class Parser:
         if self.tok.kind == "ident":
             self.next()
         self.newline()
-        return RecordDef(name, fields, public, line)
+        return RecordDef(name, fields, public, line, functions)
 
     def program(self):
         self.expect("program")
@@ -641,11 +655,13 @@ class Parser:
                                                **{n: None for u in uses for n in u.names}, **variables}, f.is_sub)
         return Module(name, uses, decls, funcs, line, records=recs)
 
-    def procedure(self):
+    def procedure(self, owner=None):
+        """A function or subroutine. Inside a record (`owner` is the record's name) the first parameter is
+        `self`, which has the record's type."""
         kind = self.next().text           # "function" or "subroutine"
         is_sub = kind == "subroutine"
         name = self.ident()
-        params = self.params(is_sub)
+        params = self.params(is_sub, owner)
         ret = None
         if not is_sub and self.accept("->"):
             ret = self.result_type()
@@ -666,10 +682,25 @@ class Parser:
             check_allocs(body, {n for _, n, _ in params}, {n: None for u in uses for n in u.names}, is_sub)
         return f
 
-    def params(self, is_sub):
-        """`(real :: x, inout integer :: n)`; the mode defaults to `in`."""
+    def params(self, is_sub, owner=None):
+        """`(real :: x, inout integer :: n)`; the mode defaults to `in`. In a record's function the list
+        starts with `self` (`(self, real :: x)`, `(inout self)`), which has the record's type."""
         self.expect("(")
         params = []
+        if owner is not None:
+            intent = "in"
+            if self.at("in", "out", "inout") and self.toks[self.i + 1].text == "self":
+                intent = self.next().text
+                if intent != "in" and not is_sub:
+                    self.error("only subroutines may have out or inout parameters")
+                if intent == "out":
+                    self.error("'self' cannot be an out parameter")
+            if not (self.tok.kind == "ident" and self.tok.text == "self"):
+                self.error(f"a function in record '{owner}' takes 'self' first: (self, ...)")
+            self.next()
+            params.append((owner, "self", intent))
+            if not self.at(")"):
+                self.expect(",")
         if not self.at(")"):
             while True:
                 intent = "in"
@@ -863,6 +894,13 @@ class Parser:
             code = None if self.tok.kind == "nl" else self.expr()
             self.newline()
             return Stop(code, t.line)
+        if self.at("call") and self.toks[self.i + 2].text in (".", "["):      # call x.grow(2.0): a record's function
+            self.next()
+            target = self.primary()
+            if not (isinstance(target, FieldAccess) and not target.bracket and target.args is not None):
+                self.error("expected a call: call record.function(...)")
+            self.newline()
+            return Call(target.field, target.args, t.line, t.col, target.base)
         if self.at("call"):
             self.next()
             col = self.tok.col

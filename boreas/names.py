@@ -143,7 +143,9 @@ class Walker:
         elif isinstance(s, ExprStmt):
             self.expr(s.expr)
         elif isinstance(s, Call):
-            if s.name not in self.scope.funcs and s.name not in self.variables:
+            if s.receiver is not None:              # a record's function: the record decides which
+                self.expr(s.receiver)
+            elif s.name not in self.scope.funcs and s.name not in self.variables:
                 self.report(s.name, s.line, s.col, f"unknown subroutine '{s.name}'")
             self.arguments(s.args)
         elif isinstance(s, Allocate):
@@ -155,6 +157,8 @@ def undeclared_names(unit, interp):
     bodies = [(f, interp.scopes[id(f)]) for f in unit.functions.values()]
     for mod in unit.modules.values():
         bodies += [(f, interp.scopes[id(f)]) for f in mod.functions.values()]
+    for rec in [*unit.records.values(), *(r for m in unit.modules.values() for r in m.records.values())]:
+        bodies += [(f, interp.scopes[id(f)]) for f in rec.functions.values()]
     errors = []
     for f, scope in bodies:
         walker = Walker(scope, set(scope.consts) | {name for _, name, _ in f.params} | declared_in(f.body),

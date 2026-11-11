@@ -99,6 +99,9 @@ UNOPENED = FileHandle()
 OPEN_MODES = {"read": "r", "write": "w", "append": "a"}
 
 
+NOT_A_METHOD = object()          # method_value: the receiver has no function of that name
+
+
 def type_of(v):
     name = TYPE_NAMES.get(type(v))
     if name is not None: return name
@@ -885,6 +888,9 @@ class Interp:
         self.check_defaults(unit.records, base)
         for f in unit.functions.values():
             self.scopes[id(f)] = self.import_into(Scope(dict(unit.functions), {}, dict(unit.records)), f.uses)
+        for r in unit.records.values():
+            for f in r.functions.values():
+                self.scopes[id(f)] = self.import_into(Scope(dict(unit.functions), {}, dict(unit.records)), f.uses)
         prog = unit.program
         self.program_scope = (self.import_into(Scope(dict(unit.functions), {}, dict(unit.records)), prog.uses)
                               if prog else None)
@@ -977,6 +983,9 @@ class Interp:
         self.check_records(mod.records, scope)
         for f in mod.functions.values():
             self.scopes[id(f)] = scope
+        for r in mod.records.values():
+            for f in r.functions.values():
+                self.scopes[id(f)] = scope
         saved, self.scope = self.scope, scope          # initializers may call the module's functions
         env = dict(scope.consts)
         for d in mod.decls:
@@ -1469,7 +1478,8 @@ class Interp:
         rec, ref = self.record_of(t.base, env, line, temp_ok)
         slot = rec.fields.get(t.field)
         if slot is None:
-            raise LangError(f"line {line}: {rec.rdef.name} '{ref[2]}' has no field '{t.field}'")
+            what = "field or function" if t.args is not None and not t.bracket else "field"
+            raise LangError(f"line {line}: {rec.rdef.name} '{ref[2]}' has no {what} '{t.field}'")
         name = f"{ref[2]}.{t.field}"
         fpath = ref.fpath + (t.field,)
         if t.args is None:
@@ -1586,7 +1596,29 @@ class Interp:
             raise LangError("'-' needs a number, got string")
         return tag(TYPE_NAMES[t], -x, f"-{x}")
 
+    def method_of(self, rec, name):
+        """The function `name` that the record value `rec` has, or None."""
+        return rec.rdef.functions.get(name) if isinstance(rec, Record) else None
+
+    def method_value(self, e, env):
+        """`x.area(args)`: the function the record `x` has by that name, called with `x` as `self`."""
+        rec = self.eval(e.base, env)
+        f = self.method_of(rec, e.field)
+        if f is None:
+            return NOT_A_METHOD
+        if f.is_sub:
+            raise LangError(f"line {e.line}: '{e.field}' is a subroutine; use 'call ...{e.field}(...)'")
+        values = [rec]
+        for n, a in enumerate(e.args, 1):
+            typ = f.params[n][0] if n < len(f.params) else None
+            values.append(self.procedure_argument(f, n, a, env, e.line) if isinstance(typ, ProcType) else self.eval(a, env))
+        return self.call_function(f, values, e.line)
+
     def field_value(self, e, env):
+        if e.args is not None and not e.bracket:
+            v = self.method_value(e, env)
+            if v is not NOT_A_METHOD:
+                return v
         ref = self.resolve_field(e, env, e.line, temp_ok=True)
         v = self.read(ref)
         if v is None:
@@ -1986,20 +2018,32 @@ class Interp:
         return fn
 
     def call_subroutine(self, s, env):
-        f = self.scope.funcs.get(s.name)
-        if s.name in env and isinstance(env[s.name][TYPE], ProcType):    # a call through a procedure parameter
-            f = env[s.name][VALUE]
-        if f is None:
-            raise LangError(f"line {s.line}: unknown subroutine '{s.name}'")
+        args, receiver = s.args, None
+        if s.receiver is not None:                   # call x.grow(2.0): x is passed first, as `self`
+            receiver = self.eval(s.receiver, env)
+            f = self.method_of(receiver, s.name)
+            if f is None:
+                what = f"a {type_of(receiver)}" if not isinstance(receiver, Record) else f"record {receiver.rdef.name}"
+                raise LangError(f"line {s.line}: {what} has no function '{s.name}'")
+            args = [s.receiver] + list(s.args)
+        else:
+            f = self.scope.funcs.get(s.name)
+            if s.name in env and isinstance(env[s.name][TYPE], ProcType):    # a call through a procedure parameter
+                f = env[s.name][VALUE]
+            if f is None:
+                raise LangError(f"line {s.line}: unknown subroutine '{s.name}'")
         if not f.is_sub:
             raise LangError(f"line {s.line}: '{s.name}' is a function; use it in an expression")
-        self.pad_optional(f, s.args, s.line)
+        self.pad_optional(f, args, s.line)
 
         outs, values = [], []   # outs: (param index, reference)
-        for n, ((typ, name, intent), a) in enumerate(zip(f.params, s.args)):
+        for n, ((typ, name, intent), a) in enumerate(zip(f.params, args)):
             if intent == "in":
-                values.append(self.procedure_argument(f, n, a, env, s.line) if isinstance(typ, ProcType)
-                              else self.eval(a, env))
+                if n == 0 and receiver is not None:
+                    values.append(receiver)           # already evaluated: do not run the receiver twice
+                else:
+                    values.append(self.procedure_argument(f, n, a, env, s.line) if isinstance(typ, ProcType)
+                                  else self.eval(a, env))
                 continue
             ref = self.resolve(a, env, s.line)
             slot = ref[0]
@@ -2027,7 +2071,7 @@ class Interp:
         # Aliasing: an out/inout variable may not overlap any other argument.
         for n, ref in outs:
             name = ref[2]
-            for m, a in enumerate(s.args):
+            for m, a in enumerate(args):
                 other = self.reference_of(a, env, s.line)
                 if m != n and other is not None and aliased(ref, other):
                     raise LangError(f"line {s.line}: '{name}' is passed as {f.params[n][2]} and also "
