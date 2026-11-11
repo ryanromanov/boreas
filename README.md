@@ -686,7 +686,7 @@ Reads free-form Fortran (not fixed-form `.f`) and writes Boreas source plus a
 report on stderr. Translations that change meaning are flagged, never silent:
 
 - `! TODO(convert): ...` comments quote any line that could not be translated
-  (`goto`, `read`, type-bound procedures, ...).
+  (`goto`, `read`, generic bindings, ...).
 - `parameter` constants become `const`.
 - `allocatable` locals, `allocate` / `deallocate` (one statement per array) and `allocated()` are
   translated. `stat=`, `errmsg=`, `source=`, `mold=`, non-1 lower bounds, allocatable
@@ -697,9 +697,22 @@ report on stderr. Translations that change meaning are flagged, never silent:
   defaults carry over (parameters are folded in unless they are module constants), constructors
   keep their positional and keyword forms, and a type defined in a program or procedure moves to
   the top level. An `intent(out)` record that the body does not fully assign becomes `inout`.
-  Types with inheritance (`extends`), type-bound procedures, allocatable or pointer components,
-  or array sizes that aren't constants become a TODO for the whole type, and code that uses it
+  Allocatable or pointer components, generic, final or `nopass`/`pass(arg)` bindings, parameterized
+  types, or array sizes that aren't constants become a TODO for the whole type, and code that uses it
   becomes TODOs too.
+- Object-oriented Fortran becomes Boreas records and interfaces (see "Functions in records, interfaces and
+  `select type`"). An extension (`extends`) is a record with its parent's components first. Each type-bound
+  procedure becomes a function inside the record, **copied into every extension that inherits it** (an
+  extension's own version replaces it), so `self` is always the record itself and dynamic dispatch picks the right
+  one. An abstract type, and a normal type that others extend and that is used as `class(T)`, become an interface
+  (for a normal type the record keeps its name and the interface is `T_any`); `class(T)` is that interface, and
+  `x%f()` is `x.f()`. `allocate(s, source=e)` and `allocate(T :: s)` are assignments, `select type (p => x)` is
+  `select type x as p` (with an empty `case default` added when Fortran has none, and `x = p` written back after a
+  case that changes `p`), and a type that only holds `class(T), allocatable` (the wrapper Fortran needs for an
+  array of mixed types) is dropped: `type(wrapper) :: all(3)` is `figure[3] :: all` and `all(i)%s` is `all[i]`.
+  A type called like a Boreas built-in (`shape`) is renamed (`shape_`). Still TODOs: `class(*)`, `class is (T)`,
+  `allocated()` of a `class(T)` value, an inherited procedure whose type is in another module, a wrapper used as a
+  component, and a case that changes `p` and also leaves with `exit`, `cycle` or `return`. See `examples/shapes.f90`.
 - A local that Fortran keeps between calls (declared `save`, named in a `save` statement, or
   initialised in its declaration) matters only when the procedure changes it and can read the old value.
   If the procedure is called from just one place that runs once, a fresh start each call behaves the same,
