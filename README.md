@@ -511,6 +511,9 @@ runs the function of the record it holds:
 - An interface value is a copy, like any record. An element that was never assigned cannot be used.
 - Assigning an interface value to a variable of a record type works when it holds that record right now, and is an
   error when it holds another; `select type` is the way to ask first.
+- A variable of a record type can be passed to an `inout` or `out` parameter of an interface type (as Fortran allows
+  for `class(shape), intent(inout)`). The routine can change the record, or put in a new one of the same kind, but it
+  is an error if it puts in a different kind (a `rect` into a `circle` variable).
 - An interface cannot be named like a built-in (`shape` is one) or a record. Not supported yet: a record field or an
   `allocatable` array of an interface type, and optional interface values (`figure?`).
 - Interfaces are exported and imported by name from a module (`public interface figure`, `use shapes: figure`).

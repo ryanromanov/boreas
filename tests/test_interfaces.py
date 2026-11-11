@@ -180,6 +180,26 @@ class InterfaceEdgeTests(unittest.TestCase):
         defs = DEFS + "\nsubroutine swap_in(inout figure :: g)\n  update g = rect(w = 2.0, h = 5.0)\nend subroutine\n"
         self.assertEqual(run("  figure :: f = circle()\n  call swap_in(f)\n  println(f.area())", defs), ["10.0"])
 
+    def test_a_record_variable_can_be_passed_as_inout_to_an_interface_parameter(self):
+        # like Fortran's class(figure), intent(inout) given a type(circle): the routine may change the circle
+        defs = DEFS.replace("  function area(self) -> real\nend interface", "  function area(self) -> real\n  subroutine grow(inout self, real :: factor)\nend interface", 1)
+        defs += "\nsubroutine double_it(inout figure :: g)\n  call g.grow(2.0)\nend subroutine\n"
+        self.assertEqual(run("  circle :: c = circle(r = 1.0)\n  call double_it(c)\n  println(c.r)", defs), ["2.0"])
+
+    def test_the_routine_may_replace_the_value_with_one_of_the_same_kind(self):
+        defs = DEFS + "\nsubroutine reset(inout figure :: g)\n  update g = circle(r = 9.0)\nend subroutine\n"
+        self.assertEqual(run("  circle :: c\n  call reset(c)\n  println(c.r)", defs), ["9.0"])
+
+    def test_the_routine_may_not_change_what_kind_of_record_it_is(self):
+        defs = DEFS + "\nsubroutine swap_in(inout figure :: g)\n  update g = rect()\nend subroutine\n"
+        self.fails("  circle :: c\n  call swap_in(c)", "put a rect in 'g'", defs)
+        defs = DEFS + "\nsubroutine make(out figure :: g)\n  update g = rect()\nend subroutine\n"
+        self.fails("  circle :: c\n  call make(c)", "can change the value, not what kind of record it is", defs)
+
+    def test_a_record_that_does_not_fit_is_still_refused(self):
+        defs = DEFS + "\nrecord blob\n  real :: x\nend record\nsubroutine f(inout figure :: g)\n  println(1)\nend subroutine\n"
+        self.fails("  blob :: b\n  call f(b)", "'b' is a blob, which cannot be used as figure", defs)
+
     def test_the_fit_check_survives_freed_objects(self):
         import gc
         bad = DEFS.replace("record rect\n", "record rect is figure\n", 1).replace(

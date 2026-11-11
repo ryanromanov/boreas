@@ -2203,8 +2203,17 @@ class Interp:
                 part = "part of " if ref.fpath else ""
                 raise LangError(f"line {s.line}: '{ref[2]}' is {part}{what} and cannot be passed as {intent}")
             through_interface = n == 0 and receiver is not None and isinstance(slot[TYPE], IfaceType)
-            if slot[TYPE] != typ and not through_interface:      # (a value used as an interface is checked when it is written back)
+            wanted = self.typed(typ, self.scopes[id(f)])
+            # a variable of a record type may be passed where an interface is wanted, like Fortran's
+            # class(shape), intent(inout): the routine can change the record but not what kind it is
+            as_record = (isinstance(wanted, IfaceType) and not slot[IS_ARRAY] and slot[TYPE] != typ
+                         and isinstance(slot[VALUE], Record) and slot[TYPE] == slot[VALUE].rdef.name)
+            if slot[TYPE] != typ and not through_interface and not as_record:   # (an interface value is checked when it is written back)
                 raise LangError(f"line {s.line}: argument '{name}' is {typ} but '{ref[2]}' is {slot[TYPE]}")
+            if as_record:
+                problems = conformance(slot[VALUE].rdef, wanted.idef)
+                if problems:
+                    raise LangError(f"line {s.line}: '{ref[2]}' is a {slot[TYPE]}, which cannot be used as {wanted}: {problems[0]}")
             outs.append((n, ref))
             current = self.read(ref)
             if intent == "out" and typ not in DEFAULTS:           # an out record starts with no values
@@ -2245,4 +2254,10 @@ class Interp:
                 if missing:
                     raise LangError(f"line {s.line}: out parameter '{name}' was not fully assigned in "
                                     f"{s.name}: '{name}.{missing}' has no value")
+            want = self.typed(f.params[n][0], self.scopes[id(f)])
+            if (isinstance(want, IfaceType) and not isinstance(ref[0][TYPE], IfaceType)
+                    and isinstance(result, Record) and result.rdef.name != ref[0][TYPE]):
+                raise LangError(f"line {s.line}: '{ref[2]}' is a {ref[0][TYPE]}, but {s.name} put a {result.rdef.name} in "
+                                f"'{name}': a {f.params[n][2]} parameter of an interface type can change the value, "
+                                f"not what kind of record it is")
             self.write(ref, result, s.line)
