@@ -569,8 +569,15 @@ class OOLimitTests(unittest.TestCase):
         said = " | ".join(m for _, kind, m in findings if kind == "todo")
         self.assertIn("uses 'width', private to module 'base_m'", said)
 
+    def test_an_inherited_procedure_that_writes_a_module_variable_of_the_parent(self):
+        src = self.parts("  integer, public :: calls = 0\n", "    calls = calls + 1\n").replace(
+            "  call c%show()\n", "  call c%show()\n  call c%show()\n  print *, calls\n").replace(
+            "use child_m\n  implicit none\n  type(child)", "use child_m\n  use base_m, only: calls\n  implicit none\n  type(child)")
+        OOConversionTests.check(self, src)               # both copies update the one shared `calls`
+
     def test_an_inherited_procedure_whose_name_clashes_is_a_todo(self):
         src = self.parts("  integer, parameter, public :: scale = 10\n", "    print *, scale * self%v\n") \
+            .replace("module child_m\n  use base_m\n", "module child_m\n  use base_m, only: base\n") \
             .replace("  type, extends(base) :: child", "  integer, parameter :: scale = 3\n  type, extends(base) :: child")
         _, findings = converted(src)
         said = " | ".join(m for _, kind, m in findings if kind == "todo")
