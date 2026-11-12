@@ -131,8 +131,9 @@ class Walker:
             added = s.var not in self.variables
             self.variables.add(s.var)
             for case in s.cases:
-                if case.values is not None and case.values not in self.scope.records:
-                    self.report(case.values, case.line, case.col, f"no record called '{case.values}'")
+                if case.values is not None and case.values not in self.scope.records \
+                        and case.values not in self.scope.interfaces:
+                    self.report(case.values, case.line, case.col, f"no record or interface called '{case.values}'")
                 self.statements(case.body)
             if added:
                 self.variables.discard(s.var)
