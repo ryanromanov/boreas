@@ -196,14 +196,14 @@ def stmt(s, depth):
     if k is SelectType:
         lines = [f"{pad}select type {expr(s.subject)} as {s.var}"]
         for c in s.cases:
-            lines.append(f"{pad}case {'default' if c.values is None else c.values}")
-            lines.extend(stmts(c.body, depth + 1))
+            lines.append(f"{pad}  case {'default' if c.values is None else c.values}")
+            lines.extend(stmts(c.body, depth + 2))
         return lines + [pad + "end select"]
     if k is Select:
         lines = [f"{pad}select case {'fallthrough ' if s.flow else ''}{expr(s.subject)}"]
         for c in s.cases:
-            lines.append(f"{pad}case {_case_values(c.values)}")
-            lines.extend(stmts(c.body, depth + 1))
+            lines.append(f"{pad}  case {_case_values(c.values)}")
+            lines.extend(stmts(c.body, depth + 2))
         return lines + [pad + "end select"]
     if k is Do:
         head = f"{pad}{_label(s)}do {s.var} = {expr(s.lo)}, {expr(s.hi)}"
@@ -247,9 +247,9 @@ def record(r):
 def module(m):
     lines = [_comment(c) for c in m.comments] + [f"module {m.name}"] + _uses(m.uses)
     for d in m.interfaces.values():
-        lines.extend("  " + l for l in interface(d))
+        lines.extend("  " + l if l else l for l in interface(d))
     for r in m.records.values():
-        lines.extend("  " + l for l in record(r))
+        lines.extend("  " + l if l else l for l in record(r))
     lines.extend(stmts(m.decls))
     for f in m.functions.values():
         lines.extend("  " + l if l else l for l in procedure(f))

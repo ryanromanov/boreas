@@ -11,6 +11,9 @@ USAGE = """usage:
   boreas FILE.bor                    run a program
   boreas check FILE.bor [--json]     parse and check without running; exit 1 on errors
   boreas lsp                         language server on stdin/stdout (errors as diagnostics)
+  boreas fmt [--check] [--indent N | --tabs] FILE.bor [FILE...]
+                                     re-indent files in place (2 spaces a level unless told);
+                                     --check changes nothing and exits 1 if a file would change
   boreas convert [--define NAME[=VALUE]]... FILE.f90 [FILE...] [-o OUT]
                                      convert Fortran (free or fixed form; several files make one program);
                                      #if/#ifdef lines are evaluated with the macros you --define
@@ -54,6 +57,49 @@ def check_command(args):
         for line, col, msg, _ in errors:
             print(f"{path}:{line or 1}:{col or 1}: {msg}")
     sys.exit(1 if errors else 0)
+
+
+def fmt_command(args):
+    from .formatter import DEFAULT_INDENT, format_source
+    check, tabs, indent, files = False, False, DEFAULT_INDENT, []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--check":
+            check = True
+        elif a == "--tabs":
+            tabs = True
+        elif a == "--indent" and i + 1 < len(args) and args[i + 1].isdigit() and int(args[i + 1]) > 0:
+            indent = int(args[i + 1])
+            i += 1
+        elif a.startswith("-"):
+            sys.exit(USAGE)
+        else:
+            files.append(a)
+        i += 1
+    if not files:
+        sys.exit(USAGE)
+    would_change = []
+    for path in files:
+        try:
+            with open(path, newline="") as f:
+                src = f.read()
+        except OSError as e:
+            sys.exit(f"error: {e}")
+        try:
+            formatted = format_source(src, indent, tabs)
+        except LangError as e:
+            sys.exit(f"error: {path}: {e}")
+        if formatted == src:
+            continue
+        would_change.append(path)
+        if not check:
+            with open(path, "w", newline="") as f:
+                f.write(formatted)
+    if check:
+        for path in would_change:
+            print(f"{path}: would be reformatted")
+        sys.exit(1 if would_change else 0)
 
 
 def convert_command(args):
@@ -142,6 +188,8 @@ def main():
             serve()
         elif args[0] == "convert":
             convert_command(args[1:])
+        elif args[0] == "fmt":
+            fmt_command(args[1:])
         elif args[0] != "" and not args[0].startswith("-"):      # boreas FILE [ARGUMENT ...]
             sys.exit(run_source(open(args[0]).read(), args=args))
         else:
