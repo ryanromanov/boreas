@@ -2868,12 +2868,23 @@ class FParser:
                 info = self.types.get(name)
                 if info is None or not info.ok or info.abstract or info.wrapper is not None:
                     raise Unsupported(f"'type is ({name})': not a record this conversion knows")
+            elif word == "class" and self.at_name("is"):
+                self.k += 1
+                self.expect_op("(")
+                if self.peek() is not None and self.peek().text in TYPE_WORDS:
+                    raise Unsupported(f"'class is ({self.peek().text})': only derived types are supported")
+                top = self.type_name(self.expect_name())
+                self.expect_op(")")
+                info = self.types.get(top)
+                if info is None or not info.ok or info.wrapper is not None:
+                    raise Unsupported(f"'class is ({top})': not a record this conversion knows")
+                name = ("class", top, False)                  # settled by guard_cases once every type is known
             else:
-                raise Unsupported("'class is (T)' is not supported")
+                raise Unsupported("this guard of 'select type' is not supported")
             shadowed = scope.decls.get(bound) if bound is not None else None
             if bound is not None:                             # inside the case the name has the narrowed type
                 if name is not None:
-                    scope.decls[bound] = Info(name, None, False, None, None, False, cur.line)
+                    scope.decls[bound] = Info(name[1] if isinstance(name, tuple) else name, None, False, None, None, False, cur.line)
                 elif base is not None:
                     scope.decls[bound] = replace(base, dims=None, shape_dropped=False, rank=0, intent=None,
                                                  allocatable=False, init=None, parameter=False)
@@ -2902,15 +2913,35 @@ class FParser:
                         n.name = assoc
         read_only = base is not None and (base.intent == "in" or base.parameter)     # Fortran cannot change it either
         for c in cases:                                       # the copy goes back if the case changed it
+            if isinstance(c.values, tuple):                   # class is (T): can the body do with just T's functions?
+                c.values = ("class", c.values[1], self.only_calls_methods(c.body, assoc))
             if c.values is not None and not read_only and self.changes(c.body, assoc):
                 if not isinstance(subject, (Var, Apply)):
-                    raise Unsupported(f"'type is ({c.values})' changes '{assoc}', which is not a variable to write back to")
+                    raise Unsupported(f"the guard for '{self.guard_name(c)}' changes '{assoc}', which is not a variable to write back to")
                 if any(isinstance(n, (Exit, Cycle, Return)) for n in iter_nodes(c.body)):
-                    raise Unsupported(f"'type is ({c.values})' changes '{assoc}' and leaves early with exit, cycle or return")
+                    raise Unsupported(f"the guard for '{self.guard_name(c)}' changes '{assoc}' and leaves early with exit, cycle or return")
                 c.body.append(Assign(copy.deepcopy(subject), Var(assoc), c.line))
         if None not in {c.values for c in cases}:
             cases.append(Case(None, [Comment("no other type is handled here (Fortran does nothing for them either)")], line))
         return lead + [SelectType(subject, cases, line, False, assoc)]
+
+    @staticmethod
+    def guard_name(c):
+        return c.values[1] if isinstance(c.values, tuple) else c.values
+
+    @staticmethod
+    def only_calls_methods(body, name):
+        """Does this code use the variable `name` only as `name.f(...)` or `call name.f(...)`?"""
+        allowed = set()
+        for n in iter_nodes(body):
+            if isinstance(n, FieldAccess) and n.call and isinstance(n.base, Var):
+                allowed.add(id(n.base))
+            elif isinstance(n, Call) and isinstance(n.receiver, Var):
+                allowed.add(id(n.receiver))
+        for n in iter_nodes(body):
+            if isinstance(n, (Var, Apply, Allocate, Deallocate)) and n.name == name and id(n) not in allowed:
+                return False
+        return True
 
     @staticmethod
     def changes(body, name):
@@ -4214,6 +4245,48 @@ class FParser:
                     t.scope.access[name] = t.scope.access.get(t.name, "public" if t.scope.default_public else "private")
                 self.note(t.line, f"'{t.name}' is also used as class({t.name}): the record keeps the name and the "
                                   f"interface for class({t.name}) is '{name}'")
+        self.guard_cases()
+
+    def guard_cases(self):
+        """`class is (T)` matches T and everything that extends it. Boreas matches a `case` on one record or on
+        an interface (any record that fits it), so a guard becomes `case T_any` when its body only calls T's
+        functions and no unrelated record could fit that interface; otherwise it becomes one case per concrete
+        type that extends T (a converted program is closed, so they are all known)."""
+        import copy
+        concrete = [t for t in self.types.values() if t.ok and t.wrapper is None and not t.abstract]
+        for r in self.raw:
+            for sel in [n for n in iter_nodes(r.body) if isinstance(n, SelectType)]:
+                guards = [c for c in sel.cases if isinstance(c.values, tuple)]
+                if not guards:
+                    continue
+                guards.sort(key=lambda c: -len(self.ancestors(self.types[c.values[1]])))     # the most specific first
+                if all(c.values[2] and self.interface_fits(self.types[c.values[1]], concrete) for c in guards):
+                    for c in guards:
+                        c.values = self.iface_name[c.values[1]]
+                    continue
+                taken = {c.values for c in sel.cases if isinstance(c.values, str)}
+                made_for = {}
+                for c in guards:
+                    top = c.values[1]
+                    made = [t.name for t in concrete if t.name not in taken
+                            and any(a.name == top for a in self.ancestors(t))]
+                    taken |= set(made)
+                    made_for[id(c)] = [Case(name, copy.deepcopy(c.body), c.line, c.col) for name in made]
+                    self.note(c.line, f"'class is ({top})' is written out as a case for each type that extends it: "
+                                      f"{', '.join(made) or 'none'}")
+                out = []
+                for c in sel.cases:
+                    out.extend(made_for[id(c)] if id(c) in made_for else [c])
+                sel.cases[:] = out
+
+    def interface_fits(self, t, concrete):
+        """May a guard `class is (t)` be a case on t's interface? It needs one, with functions to tell the types
+        apart, and no record outside t's family may have all of them."""
+        if t.name not in self.iface_name or not self.eff.get(t.name):
+            return False
+        wanted = set(self.eff[t.name])
+        return not any(all(a.name != t.name for a in self.ancestors(c)) and wanted <= set(self.eff.get(c.name, {}))
+                       for c in concrete)
 
     def ancestors(self, t):
         """The type itself, then its parent, and so on."""

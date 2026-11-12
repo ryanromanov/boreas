@@ -376,9 +376,9 @@ class SelectTypeLimitTests(unittest.TestCase):
     def messages(self, findings):
         return " | ".join(m for _, kind, m in findings if kind == "todo")
 
-    def test_class_is_and_intrinsic_type_guards_are_todos(self):
-        _, findings = self.convert("  select type (s)\n  class is (shape)\n    print *, 1\n  end select\n")
-        self.assertIn("'class is (T)' is not supported", self.messages(findings))
+    def test_intrinsic_type_guards_are_todos(self):
+        _, findings = self.convert("  select type (s)\n  type is (integer)\n    print *, 1\n  end select\n")
+        self.assertIn("only derived types are supported", self.messages(findings))
 
     def test_allocated_of_a_polymorphic_value_is_a_todo(self):
         _, findings = self.convert("  print *, allocated(s)\n")
@@ -571,3 +571,96 @@ class OOLimitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+MEET = """program demo
+  use animals
+  implicit none
+  type(animal) :: a
+  type(dog) :: d
+  type(puppy) :: p
+  d%name = "rex"
+  p%name = "bit"
+  call meet(a)
+  call meet(d)
+  call meet(p)
+contains
+  subroutine meet(x)
+    class(animal), intent(in) :: x
+    select type (x)
+BODY    end select
+  end subroutine
+end program
+"""
+
+
+class ClassIsGuardTests(unittest.TestCase):
+    """`class is (T)` matches T and everything that extends it."""
+    check = OOConversionTests.check
+
+    def test_a_guard_that_only_calls_functions_is_a_case_on_the_interface(self):
+        text = self.check(ANIMALS + MEET.replace("BODY", """    type is (puppy)
+      print *, "a puppy"
+    class is (animal)
+      call x%speak()
+    class default
+      print *, "other"
+"""), ["case animal_any", "case puppy"])
+        self.assertNotIn("case dog", text)
+
+    def test_a_guard_that_reads_fields_is_written_out_per_type(self):
+        text = self.check(ANIMALS + MEET.replace("BODY", """    type is (puppy)
+      print *, "a puppy"
+    class is (dog)
+      print *, "a dog with", x%tricks
+    class default
+      print *, "other"
+"""), ["case dog", "case puppy"])
+        self.assertNotIn("case dog_any", text)
+        self.assertEqual(text.count("with"), 1)                     # puppy has its own guard, so only dog gets the body
+
+    def test_an_interface_that_an_unrelated_type_also_fits_is_written_out(self):
+        # a plain `animal` has every function `dog` lists, so `case dog_any` would wrongly match it
+        self.check(ANIMALS + MEET.replace("BODY", """    class is (dog)
+      call x%speak()
+    class default
+      print *, "other"
+"""), ["case dog", "case puppy"])
+
+    def test_the_more_specific_guard_wins(self):
+        self.check(ANIMALS + MEET.replace("BODY", """    class is (animal)
+      print *, "an animal"
+    class is (dog)
+      print *, "a dog", x%tricks
+    class default
+      print *, "other"
+"""))
+
+    def test_a_guard_that_changes_the_value_writes_it_back(self):
+        src = SHAPES_WITH_GROW + """module users
+  use shapes
+  implicit none
+contains
+  subroutine enlarge(s)
+    class(shape), intent(inout) :: s
+    select type (s)
+    class is (circle)
+      call s%grow(2.0)
+    end select
+  end subroutine
+end module
+program demo
+  use shapes
+  use users
+  implicit none
+  type(circle) :: c
+  c = circle(name="c", r=2.0)
+  call enlarge(c)
+  call c%describe()
+end program
+"""
+        text, findings = converted(src)
+        self.assertEqual(todos(findings), [])
+        got = run_bor(text)
+        if GFORTRAN:
+            self.assertTrue(same_output("\n".join(got), fortran_output(src)), got)
