@@ -424,19 +424,19 @@ class PrinterTests(unittest.TestCase):
         want = """program t
   integer :: g = 3
   select case fallthrough g
-  case 90:100
-    println("A")
-    break
-  case 80:89
-    println("B")
-    break
-  case 1, 3, 5
-    println("odd")
-  case 7
-    println("seven")
-    break
-  case default
-    println("other")
+    case 90:100
+      println("A")
+      break
+    case 80:89
+      println("B")
+      break
+    case 1, 3, 5
+      println("odd")
+    case 7
+      println("seven")
+      break
+    case default
+      println("other")
   end select
 end program t
 """
