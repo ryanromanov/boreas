@@ -140,10 +140,23 @@ end program
                                     "  end select, select case 2\n    case 2 -> 4\n    case default -> 5\n"
                                     "  end select)\nend program\n"))
 
-    def test_one_line_if_and_generators_open_nothing(self):
-        src = "program t\nif true println(1)\ninteger[] :: a = [(i do i = 1, 3)]\nprintln(a)\nend program\n"
-        self.assertEqual(fmt(src), "program t\n  if true println(1)\n  integer[] :: a = [(i do i = 1, 3)]\n"
-                                   "  println(a)\nend program\n")
+    def test_generators_open_nothing(self):
+        src = "program t\ninteger[] :: a = [(i do i = 1, 3)]\nprintln(a)\nend program\n"
+        self.assertEqual(fmt(src), "program t\n  integer[] :: a = [(i do i = 1, 3)]\n  println(a)\nend program\n")
+
+    def test_select_expressions_inside_other_statements(self):
+        src = ("program t\ninteger :: i = 0\n"
+               "if select case i\ncase 0 -> 1\ncase default -> 2\nend select == 1 then\nprintln(\"one\")\nend if\n"
+               "do while select case i\ncase 0 -> true\ncase default -> false\nend select\ni = i + 1\nend do\n"
+               "println(i, select case i\ncase 1 -> \"one\"\ncase default -> \"other\"\nend select)\nend program\n")
+        parse(src)
+        self.assertEqual(fmt(src), ("program t\n  integer :: i = 0\n"
+                                    "  if select case i\n    case 0 -> 1\n    case default -> 2\n  end select == 1 then\n"
+                                    "    println(\"one\")\n  end if\n"
+                                    "  do while select case i\n    case 0 -> true\n    case default -> false\n  end select\n"
+                                    "    i = i + 1\n  end do\n"
+                                    "  println(i, select case i\n    case 1 -> \"one\"\n    case default -> \"other\"\n"
+                                    "  end select)\nend program\n"))
 
     def test_procedure_types_are_not_definitions(self):
         src = "subroutine each(subroutine(real) :: show)\ncall show(1.0)\nend subroutine\n"

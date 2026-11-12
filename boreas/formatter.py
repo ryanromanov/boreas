@@ -7,7 +7,8 @@ comments is never mistaken for a keyword:
 
 - `program`, `module`, `record`, `interface`, and `function` / `subroutine` definitions open a block (the
   signatures listed inside an `interface` don't);
-- `if ... then` / `else` / `end if`, and `do` (with or without a label);
+- `if` / `else` / `end if` (always a block; `then` may follow a select expression lines later), and `do`
+  (with or without a label);
 - `select case` and `select type`: a `case` line sits one level inside the select, its body one level deeper;
 - a select expression (`x = select case (n)` ... `case 1 -> ...` ... `end select`): its arms sit one level in.
 
@@ -133,8 +134,8 @@ def format_source(src, indent=DEFAULT_INDENT, tabs=False):
         elif (word0 in ("function", "subroutine") and len(head) > 1 and kinds[1] == "ident"
               and not (top and top.kind == "interface")):
             stack.append(_Frame("block", depth))        # a definition, not a procedure type like `function(real)`
-        elif word0 == "if" and texts[-1] == "then":
-            stack.append(_Frame("if", depth))
+        elif word0 == "if":                             # always a block: Boreas has no one-line if, and `then`
+            stack.append(_Frame("if", depth))           # can come lines later, after a select expression
         elif word0 == "do" or labeled_do:
             stack.append(_Frame("do", depth))
         elif word0 == "select" and word1 in ("case", "type"):
