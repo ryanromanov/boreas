@@ -664,3 +664,134 @@ end program
         got = run_bor(text)
         if GFORTRAN:
             self.assertTrue(same_output("\n".join(got), fortran_output(src)), got)
+
+
+KENNEL = """module kennel
+  implicit none
+  type :: animal
+    integer :: legs = 4
+  contains
+    procedure :: speak
+  end type
+  type, extends(animal) :: dog
+  contains
+    procedure :: speak => dog_speak
+    procedure :: fetch
+  end type
+  type, extends(dog) :: puppy
+  end type
+contains
+  subroutine speak(self)
+    class(animal), intent(in) :: self
+    print *, "animal speaks"
+  end subroutine
+  subroutine dog_speak(self)
+    class(dog), intent(in) :: self
+    print *, "dog speaks"
+  end subroutine
+  subroutine fetch(self)
+    class(dog), intent(in) :: self
+    print *, "fetching"
+  end subroutine
+  subroutine walk(d)
+    class(dog), intent(in) :: d
+    call d%speak()
+  end subroutine
+end module
+"""
+
+
+class ClassIsReviewTests(unittest.TestCase):
+    check = OOConversionTests.check
+
+    def test_the_more_specific_interface_guard_is_tried_first(self):
+        text = self.check(KENNEL + """program demo
+  use kennel
+  implicit none
+  type(animal) :: a
+  type(dog) :: d
+  type(puppy) :: p
+  call meet(a)
+  call meet(d)
+  call meet(p)
+  call walk(p)
+contains
+  subroutine meet(x)
+    class(animal), intent(in) :: x
+    select type (x)
+    class is (animal)
+      call x%speak()
+    class is (dog)
+      call x%fetch()
+    end select
+  end subroutine
+end program
+""", ["case dog_any", "case animal_any"])
+        self.assertLess(text.index("case dog_any"), text.index("case animal_any"))
+
+    def test_a_guard_inside_a_guard_is_settled_too(self):
+        self.check(ANIMALS + MEET.replace("BODY", """    class is (dog)
+      select type (x)
+      class is (puppy)
+        print *, "puppy", x%tricks
+      class default
+        print *, "dog", x%tricks
+      end select
+    class default
+      print *, "other"
+"""))
+
+    def test_a_type_the_code_cannot_see_is_flagged_not_dropped(self):
+        src = """module base
+  implicit none
+  type :: animal
+    integer :: legs = 4
+  contains
+    procedure :: speak
+  end type
+contains
+  subroutine speak(self)
+    class(animal), intent(in) :: self
+    print *, "animal"
+  end subroutine
+end module
+module kinds
+  use base
+  implicit none
+  type, extends(animal) :: bird
+  contains
+    procedure :: speak => bird_speak
+  end type
+contains
+  subroutine bird_speak(self)
+    class(bird), intent(in) :: self
+    print *, "bird"
+  end subroutine
+end module
+module users
+  use base
+  implicit none
+contains
+  subroutine count_legs(x)
+    class(animal), intent(in) :: x
+    select type (x)
+    class is (animal)
+      print *, x%legs
+    end select
+  end subroutine
+end module
+program demo
+  use base
+  use kinds
+  use users
+  implicit none
+  type(bird) :: b
+  call count_legs(b)
+end program
+"""
+        text, findings = converted(src)
+        said = [m for _, kind, m in findings if kind == "todo"]
+        self.assertEqual(len(said), 1, said)
+        self.assertIn("also matches bird", said[0])
+        self.assertIn("TODO(convert): 'class is (animal)' also matches bird", text)
+        run_bor(text)                                  # what is left still runs

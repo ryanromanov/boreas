@@ -4255,12 +4255,15 @@ class FParser:
         import copy
         concrete = [t for t in self.types.values() if t.ok and t.wrapper is None and not t.abstract]
         for r in self.raw:
-            for sel in [n for n in iter_nodes(r.body) if isinstance(n, SelectType)]:
+            for sel in reversed([n for n in iter_nodes(r.body) if isinstance(n, SelectType)]):   # inner ones first
                 guards = [c for c in sel.cases if isinstance(c.values, tuple)]
                 if not guards:
                     continue
                 guards.sort(key=lambda c: -len(self.ancestors(self.types[c.values[1]])))     # the most specific first
                 if all(c.values[2] and self.interface_fits(self.types[c.values[1]], concrete) for c in guards):
+                    slots = [i for i, c in enumerate(sel.cases) if isinstance(c.values, tuple)]
+                    for i, c in zip(slots, guards):               # the more specific interface is tried first
+                        sel.cases[i] = c
                     for c in guards:
                         c.values = self.iface_name[c.values[1]]
                     continue
@@ -4268,12 +4271,20 @@ class FParser:
                 made_for = {}
                 for c in guards:
                     top = c.values[1]
-                    made = [t.name for t in concrete if t.name not in taken
-                            and any(a.name == top for a in self.ancestors(t))]
+                    family = [t for t in concrete if t.name not in taken and any(a.name == top for a in self.ancestors(t))]
+                    seen = self.imported_names(r.scope)
+                    made = [t.name for t in family if t.module is r.scope.module or t.name in seen]
+                    hidden = [t.name for t in family if t.name not in made]
                     taken |= set(made)
                     made_for[id(c)] = [Case(name, copy.deepcopy(c.body), c.line, c.col) for name in made]
                     self.note(c.line, f"'class is ({top})' is written out as a case for each type that extends it: "
                                       f"{', '.join(made) or 'none'}")
+                    if hidden:                                # Fortran matches them too, but this code cannot name them
+                        msg = (f"'class is ({top})' also matches {', '.join(hidden)}, which this code cannot see "
+                               f"(its module is not used here); add a case for it")
+                        self.todo(c.line, msg)
+                        home = made_for[id(c)][0] if made_for[id(c)] else next(x for x in sel.cases if x.values is None)
+                        home.body.insert(0, Comment("TODO(convert): " + msg))
                 out = []
                 for c in sel.cases:
                     out.extend(made_for[id(c)] if id(c) in made_for else [c])
@@ -4497,6 +4508,7 @@ class FParser:
             refs = self.references([d.init for d in mod.decls]) | {d.type for d in mod.decls}
             for r in mod.records.values():
                 refs |= self.references([fl.init for fl in r.fields]) | {fl.type for fl in r.fields}
+                refs |= {name for name, _ in r.implements}           # `record bird is animal_any` needs animal_any in scope
             for f in by_module.get(name, []):
                 refs |= self.references(f.body) | {n for p in f.params for n in type_names(p[0])} | ({base_type(f.ret)} if f.ret else set())
             mod.uses = self.make_uses(ms.uses, refs)
