@@ -724,10 +724,12 @@ report on stderr. Translations that change meaning are flagged, never silent:
   array of mixed types) is dropped: `type(wrapper) :: all(3)` is `figure[3] :: all` and `all(i)%s` is `all[i]`.
   A type called like a Boreas built-in (`shape`) is renamed (`shape_`). `class is (T)` becomes
   `case T_any` when its body only calls functions, and otherwise one case for each type that extends `T`.
+  An inherited procedure whose parent is in another module is copied into the child's module when everything it
+  uses is public there (the converter adds the imports); a private name it needs is a TODO that names it.
   A `final` binding is dropped with a TODO (Boreas has no destructors); the procedure stays and is not called
   automatically.
   Still TODOs: `class(*)`,
-  `allocated()` of a `class(T)` value, an inherited procedure whose type is in another module, a wrapper used as a
+  `allocated()` of a `class(T)` value, a wrapper used as a
   component, and a case that changes `p` and also leaves with `exit`, `cycle` or `return`. See `examples/shapes.f90`.
 - A local that Fortran keeps between calls (declared `save`, named in a `save` statement, or
   initialised in its declaration) matters only when the procedure changes it and can read the old value.

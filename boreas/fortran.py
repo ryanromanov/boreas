@@ -4367,9 +4367,13 @@ class FParser:
                     if fn is None:
                         problems.append(f"procedure '{b.impl}' of '{bname}' is not defined where the type is")
                         continue
+                    needs = []
                     if otype.module is not t.module:
-                        problems.append(f"'{bname}' is inherited from another module (implemented in '{b.impl}' there)")
-                        continue
+                        why, needs = self.foreign_names(unit, fn, b.impl, otype, t)
+                        if why:
+                            problems.append(f"'{bname}' is inherited from module '{otype.module.name}', and its "
+                                            f"implementation '{b.impl}' {why}")
+                            continue
                 elif not t.abstract:
                     problems.append(f"the deferred procedure '{bname}' is never implemented")
                     continue
@@ -4401,6 +4405,7 @@ class FParser:
                         if isinstance(n, (Var, Apply, Call, Allocate, Deallocate)) and n.name == old:
                             n.name = "self"
                 rec.functions[bname] = f
+                self.add_imports(unit, t, needs)
                 self.method_functions.append(f)
                 self.method_home[id(f)] = unit.modules[t.module.name] if t.module is not None else None
                 self.method_origin[id(f)] = (origin, b.impl)
@@ -4441,6 +4446,62 @@ class FParser:
                     if hasattr(owner, "comments"):
                         owner.comments.append("TODO(convert): " + msg)
                     self.todo(line, msg)
+
+    def foreign_names(self, unit, fn, impl, otype, t):
+        """An inherited procedure is copied into a record of another module, so its body runs where the parent's
+        module is not in scope. Every name it uses must still be reachable there: returns (why not, or None;
+        the imports the copy needs as (module, name))."""
+        home = unit.modules[otype.module.name]
+        mine = unit.modules[t.module.name] if t.module is not None else None
+        local = {q[1] for q in fn.params} | {impl}
+        for n in iter_nodes(fn.body):
+            if isinstance(n, Decl):
+                local.add(n.name)
+            elif isinstance(n, (Do, SelectType, Gen)):
+                local.add(getattr(n, "var", None))
+        refs = self.references(fn.body) | {x for q in fn.params[1:] for x in type_names(q[0])}
+        refs |= {base_type(fn.ret)} if fn.ret else set()
+        imported = {n: u.module for u in fn.uses + home.uses for n in u.names}
+        own = {x.name for x in (mine.decls if mine is not None else [])} | set(mine.functions if mine else {}) \
+            | set(mine.records if mine else {}) | set(mine.interfaces if mine else {})
+        here = {n: u.module for u in (mine.uses if mine is not None else unit.program.uses if unit.program else [])
+                for n in u.names}
+        private, clash, needs = [], [], []
+        for n in sorted(refs - local - set(BUILTINS) - set(ELEMENTAL)):
+            if n in imported:
+                source, public = imported[n], True
+            elif n in home.functions:
+                source, public = home.name, home.functions[n].public
+            elif n in home.records:
+                source, public = home.name, home.records[n].public
+            elif n in home.interfaces:
+                source, public = home.name, home.interfaces[n].public
+            elif any(d.name == n for d in home.decls):
+                source, public = home.name, next(d.public for d in home.decls if d.name == n)
+            else:
+                continue                                         # not something defined in a module
+            if not public:
+                private.append(n)
+            elif n in own or here.get(n, source) != source:
+                clash.append(n)
+            else:
+                needs.append((source, n))
+        if private:
+            return (f"uses {', '.join(repr(n) for n in private)}, private to module '{home.name}', which a copy in "
+                    f"another module cannot see"), []
+        if clash:
+            return (f"uses {', '.join(repr(n) for n in clash)}, a name this module already has for something else"), []
+        return None, needs
+
+    def add_imports(self, unit, t, needs):
+        """Make the names a copied procedure uses importable where the copy now lives."""
+        target = unit.modules[t.module.name].uses if t.module is not None else unit.program.uses
+        for module, name in needs:
+            use = next((u for u in target if u.module == module), None)
+            if use is None:
+                target.append(Use(module, [name], t.line))
+            elif name not in use.names:
+                use.names.append(name)
 
     def all_functions(self, unit):
         return list(unit.functions.values()) + [f for m in unit.modules.values() for f in m.functions.values()]

@@ -545,14 +545,36 @@ end program
 
 
 class OOLimitTests(unittest.TestCase):
-    def test_an_inherited_procedure_from_another_module_is_a_todo(self):
-        src = ("module base_m\n  implicit none\n  type :: base\n    integer :: v = 1\n  contains\n    procedure :: show\n"
-               "  end type\ncontains\n  subroutine show(self)\n    class(base), intent(in) :: self\n    print *, self%v\n"
-               "  end subroutine\nend module\nmodule child_m\n  use base_m\n  implicit none\n"
-               "  type, extends(base) :: child\n    integer :: w = 2\n  end type\nend module\n"
-               "program p\n  use child_m\n  implicit none\n  type(child) :: c\n  call c%show()\nend program\n")
-        text, findings = converted(src)
-        self.assertTrue(any("inherited from another module" in m for _, _, m in findings))
+    def parts(self, helper="", use_in_show=""):
+        return ("module base_m\n  implicit none\n  private\n  public :: base\n" + helper +
+                "  type :: base\n    integer :: v = 1\n  contains\n    procedure :: show => base_show\n  end type\n"
+                "contains\n  subroutine base_show(self)\n    class(base), intent(in) :: self\n" + use_in_show +
+                "    print *, self%v\n  end subroutine\nend module\n"
+                "module child_m\n  use base_m\n  implicit none\n"
+                "  type, extends(base) :: child\n    integer :: w = 2\n  end type\nend module\n"
+                "program p\n  use child_m\n  implicit none\n  type(child) :: c\n  call c%show()\nend program\n")
+
+    def test_an_inherited_procedure_from_another_module_is_copied(self):
+        text = OOConversionTests.check(self, self.parts())
+        self.assertIn("record child", text)
+
+    def test_an_inherited_procedure_may_use_the_parents_public_names(self):
+        src = self.parts("  integer, parameter, public :: scale = 10\n", "    print *, scale * self%v\n")
+        text = OOConversionTests.check(self, src)
+        self.assertIn("use base_m: scale", text.split("module child_m")[1])
+
+    def test_an_inherited_procedure_that_uses_a_private_name_is_a_todo(self):
+        src = self.parts("  integer, parameter :: width = 8\n", "    print *, width\n")
+        _, findings = converted(src)
+        said = " | ".join(m for _, kind, m in findings if kind == "todo")
+        self.assertIn("uses 'width', private to module 'base_m'", said)
+
+    def test_an_inherited_procedure_whose_name_clashes_is_a_todo(self):
+        src = self.parts("  integer, parameter, public :: scale = 10\n", "    print *, scale * self%v\n") \
+            .replace("  type, extends(base) :: child", "  integer, parameter :: scale = 3\n  type, extends(base) :: child")
+        _, findings = converted(src)
+        said = " | ".join(m for _, kind, m in findings if kind == "todo")
+        self.assertIn("a name this module already has for something else", said)
 
     def test_a_deferred_procedure_nobody_implements_is_a_todo(self):
         src = ("module m\n  implicit none\n  type, abstract :: a\n  contains\n    procedure(f), deferred :: go\n  end type\n"
