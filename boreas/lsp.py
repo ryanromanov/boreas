@@ -1,10 +1,12 @@
 """A minimal language server: `boreas lsp` speaks LSP over stdin/stdout and reports the
-errors `boreas check` finds as diagnostics, whenever a document is opened or changed, and
-completes names (see completion.py)."""
+errors `boreas check` finds as diagnostics, whenever a document is opened or changed. It also
+completes names (see completion.py) and formats documents (see formatter.py)."""
 import json
 import sys
+from .lexer import LangError
 
 PARSE_ERROR, METHOD_NOT_FOUND, INVALID_REQUEST, INVALID_PARAMS = -32700, -32601, -32600, -32602
+REQUEST_FAILED = -32803            # LSP: the request was valid but couldn't be carried out
 
 
 def diagnostics(src):
@@ -83,7 +85,8 @@ class Server:
         if method == "initialize":
             self.reply(id, {"capabilities": {"textDocumentSync": {"openClose": True, "change": 1},
                                              "completionProvider": {"triggerCharacters": ["."]},
-                                             "definitionProvider": True, "hoverProvider": True},
+                                             "definitionProvider": True, "hoverProvider": True,
+                                             "documentFormattingProvider": True},
                             "serverInfo": {"name": "boreas"}})
         elif method == "shutdown":
             self.shutting_down = True
@@ -117,6 +120,16 @@ class Server:
             src = self.docs.get(uri, "")
             self.reply(id, definition(src, uri, pos["line"], pos["character"]) if method == "textDocument/definition"
                        else hover(src, pos["line"], pos["character"]))
+        elif method == "textDocument/formatting":
+            from .formatter import formatting_edits
+            try:
+                uri = params["textDocument"]["uri"]
+            except (KeyError, TypeError):
+                return self.error(id, INVALID_PARAMS, "textDocument is required")
+            try:
+                self.reply(id, formatting_edits(self.docs.get(uri, ""), params.get("options")))
+            except LangError as e:        # a character Boreas can't read: leave the text alone
+                self.error(id, REQUEST_FAILED, f"can't format: {e}")
         elif id is not None:              # a request we do not support
             self.error(id, METHOD_NOT_FOUND, f"method not supported: {method}")
 

@@ -306,14 +306,14 @@ Choose between values without a chain of `if`s. Case values are literals or
 integer, string or logical (not real).
 
     select case grade
-    case 90:100
-      println("A")
-    case 80:89
-      println("B")
-    case 1, 3, 5
-      println("odd and small")
-    case default
-      println("other")
+      case 90:100
+        println("A")
+      case 80:89
+        println("B")
+      case 1, 3, 5
+        println("odd and small")
+      case default
+        println("other")
     end select
 
 - Each case runs only its own body; there is no implicit fallthrough.
@@ -330,13 +330,13 @@ a case body then continues into the next case's body in source order (including
 `case default`) until a `break` or the end of the select:
 
     select case fallthrough grade
-    case 3
-      println("bronze")
-    case 2
-      println("silver")
-      break
-    case 1
-      println("gold")
+      case 3
+        println("bronze")
+      case 2
+        println("silver")
+        break
+      case 1
+        println("gold")
     end select
 
 `grade = 3` prints bronze and silver; `grade = 2` prints silver; `grade = 1` prints gold.
@@ -665,6 +665,17 @@ stops the check, so it is reported alone. Errors print as `file:line:col: messag
 (column 1 when the error has no column) and the exit status is 1; a clean file prints
 nothing and exits 0. `--json` prints `{"file": ..., "errors": [{"line", "col", "message"}]}`.
 
+## Formatting
+
+    boreas fmt [--check] [--indent N | --tabs] FILE.bor [FILE...]
+
+Re-indents each file in place by its blocks: 2 spaces a level unless `--indent` or `--tabs`
+says otherwise. A `case` line sits one level inside its `select`, and its body one level
+deeper. Only the whitespace at the start and end of lines changes: comments, blank lines,
+`&` line breaks, the spacing inside a line and the capitalisation of names stay as written,
+and a line continued after `&` keeps how far it was indented past the statement's first line.
+`--check` changes nothing; it lists the files that would change and exits 1 if there are any.
+
 ## Language server
 
     boreas lsp
@@ -673,7 +684,8 @@ Speaks the Language Server Protocol on stdin/stdout. It reports the errors `bore
 finds as diagnostics when a document is opened or changed, and suggests completions:
 keywords, types, built-ins, the names declared in the file, and record fields after `.`.
 It also answers go to definition (a name's declaration in the file, including record fields
-and imported module names) and hover (the declaration, or "built-in function").
+and imported module names) and hover (the declaration, or "built-in function"), and formats
+a document the way `boreas fmt` does, with the indent width and tabs or spaces the editor sends.
 Point any editor with LSP support at that command for `.bor` files.
 [Graupel](https://github.com/ryanromanov/graupel), a Mac editor, finds it by itself;
 `editors/graupel` has its Run, Check and Convert scripts.
