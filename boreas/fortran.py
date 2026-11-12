@@ -3383,6 +3383,7 @@ class FParser:
         own, holder = [], Scope("type", name)
         holder.host = scope
         bindings, poly_comps, in_bindings = {}, [], False
+        self.finals = []
         while self.i < len(self.items):
             cur = self.items[self.i]
             self.i += 1
@@ -3451,6 +3452,13 @@ class FParser:
                 bad = bad or "a polymorphic component (class(T), allocatable) is only supported in a type that holds nothing else"
         if name in self.types:
             self.todo(it.line, f"derived type '{name}' is defined more than once")
+        notes = []
+        if self.finals and not bad:
+            names = ", ".join(self.finals)
+            msg = (f"'{names}' was a finalizer of '{name}': Boreas has no destructors, so it is no longer called "
+                   f"automatically; call it where a '{name}' goes away if that matters")
+            self.todo(it.line, msg)
+            notes.append(Comment("TODO(convert): " + msg))
         if bad:
             self.types[name] = TypeInfo(name, scope, [], it.line, ok=False)
             raise Unsupported(f"derived type '{name}' was not translated: {bad}")
@@ -3458,7 +3466,7 @@ class FParser:
             scope.access[name] = access
         self.types[name] = TypeInfo(name, scope, fields, it.line, parent=parent, abstract=abstract,
                                     bindings=bindings, wrapper=wrapper)
-        return []
+        return notes
 
     def poly_component(self):
         """`class(T), allocatable :: name` inside a type: (T, name)."""
@@ -3489,8 +3497,15 @@ class FParser:
         word = self.expect_name()
         if word in ("private", "public") and len(toks) == 1:
             return None
+        if word == "final":                               # a destructor: Boreas has none, the procedure stays
+            self.accept_op("::")
+            while True:
+                self.finals.append(self.rename(self.expect_name()))
+                if not self.accept_op(","):
+                    break
+            return None
         if word != "procedure":
-            return f"'{word}' (a generic, final or other type-bound statement) is not supported"
+            return f"'{word}' (a generic or other type-bound statement) is not supported"
         iface = None
         if self.accept_op("("):
             iface = self.rename(self.expect_name())

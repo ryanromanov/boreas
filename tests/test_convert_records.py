@@ -131,11 +131,21 @@ class UnsupportedTests(unittest.TestCase):
         self.assertEqual(run_bor(text), ["3"])         # the rest still converts and runs
         return text
 
-    def test_generic_and_final_bindings_are_still_unsupported(self):
-        self.check_todo("  type :: thing\n    integer :: v\n  contains\n    final :: tidy\n  end type thing\n",
-                        "generic, final or other type-bound statement")
+    def test_generic_bindings_are_still_unsupported(self):
         self.check_todo("  type :: thing\n    integer :: v\n  contains\n    generic :: write(formatted) => show\n"
-                        "  end type thing\n", "generic, final or other type-bound statement")
+                        "  end type thing\n", "generic or other type-bound statement")
+
+    def test_a_final_binding_is_dropped_and_the_procedure_stays(self):
+        src = ("module m\n  implicit none\n  type :: thing\n    integer :: v = 1\n  contains\n    final :: tidy\n"
+               "  end type thing\ncontains\n  subroutine tidy(t)\n    type(thing) :: t\n    t%v = 0\n  end subroutine\n"
+               "end module\nprogram p\n  use m\n  implicit none\n  type(thing) :: x\n  x%v = 5\n  print *, x%v\n"
+               "  call tidy(x)\n  print *, x%v\nend program\n")
+        text, findings = conv(src)
+        self.assertEqual(len(todos(findings)), 1, todos(findings))
+        self.assertIn("'tidy' was a finalizer of 'thing'", messages(todos(findings)))
+        self.assertIn("TODO(convert): 'tidy' was a finalizer", text)
+        self.assertEqual(run_bor(text), ["5", "0"])
+        self.assertIn("subroutine tidy(", text)
 
     def test_nopass_and_pass_bindings_are_unsupported(self):
         self.check_todo("  type :: thing\n    integer :: v\n  contains\n    procedure, nopass :: make\n"
