@@ -2331,6 +2331,9 @@ class Interp:
                             f"unpack them: ({names}) = {f.name}(...)")
         if len(args) != len(f.params):
             args = self.pad_optional(f, args, line)
+        if f.ret is not None and any(isinstance(v, Array) and self.takes_scalar(typ)
+                                     for (typ, _, _), v in zip(f.params, args)):
+            return self.elementwise(f, args, line)
         value = self.run_body(f, self.bind(f, args, line))
         if f.ret is None:
             return None
@@ -2341,6 +2344,30 @@ class Interp:
         if value is None:
             raise LangError(f"function {f.name} must return a {f.ret}")
         return self.result_value(f, f.ret, value)
+
+    @staticmethod
+    def takes_scalar(typ):
+        """True for a parameter declared as one number, string or logical (not an array, record or procedure)."""
+        return isinstance(typ, str) and typ in TYPES and typ != "file"
+
+    def elementwise(self, f, args, line):
+        """`f(v, 5.0)` where `f` wants single values and `v` is an array: call `f` for each element.
+        Arrays must share a shape; single values are reused for every element."""
+        if isinstance(f.ret, ResultList) or f.ret.endswith("]"):
+            raise LangError(f"line {line}: {f.name} returns an array or several results, so it cannot "
+                            f"be applied to each element of an array")
+        arrays = [v for (typ, _, _), v in zip(f.params, args) if isinstance(v, Array) and self.takes_scalar(typ)]
+        shape = arrays[0].shape
+        for a in arrays[1:]:
+            if a.shape != shape:
+                raise LangError(f"line {line}: {f.name} is applied to each element, but the arrays have "
+                                f"different shapes ({list(shape)} and {list(a.shape)})")
+        out = []
+        for k in range(len(arrays[0].data)):
+            one = [v.data[k] if isinstance(v, Array) and self.takes_scalar(typ) else v
+                   for (typ, _, _), v in zip(f.params, args)]
+            out.append(self.result_value(f, f.ret, self.run_body(f, self.bind(f, one, line))))
+        return Array(shape, out)
 
     def result_value(self, f, typ, value):
         """One result of `f`, converted to its declared type."""
