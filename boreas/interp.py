@@ -376,6 +376,56 @@ def _dot_product(a, b):
     return sum((x.conjugate() if isinstance(x, complex) else x) * y for x, y in zip(a.data, b.data))
 
 
+def _need_logical_array(name, a):
+    _need_array(name, a)
+    if not all(isinstance(x, bool) for x in a.data):
+        raise LangError(f"{name}() needs an array of logicals, got {type_of(a.data[0])}s")
+    return a
+
+
+def _count_true(mask):
+    """How many elements of a logical array are true."""
+    return sum(_need_logical_array("count", mask).data)
+
+
+def _merge(a, b, mask):
+    """`a` where `mask` is true, else `b` (an array or a single value for each; the arrays share a shape)."""
+    if not isinstance(mask, bool):
+        raise LangError(f"merge(): the mask must be logical, got {type_of(mask)}")
+    if type_of(a) != type_of(b):
+        raise LangError(f"merge(): both values must have the same type, got {type_of(a)} and {type_of(b)}")
+    return a if mask else b
+
+
+def _locate(name, pick):
+    def locate(a, dim=1):
+        _need_array(name, a, rank=(1,))
+        if dim != 1 or isinstance(dim, bool):
+            raise LangError(f"{name}(): dimension must be 1")
+        if not a.data:
+            raise LangError(f"{name}(): the array is empty")
+        if any(isinstance(x, (bool, complex)) for x in a.data):
+            raise LangError(f"{name}() needs numbers or strings that can be ordered, got {type_of(a.data[0])}s")
+        best = 0
+        for i, x in enumerate(a.data):
+            if pick(x, a.data[best]):
+                best = i
+        return best + 1
+    return locate
+
+
+def _pack(a, mask):
+    """The elements of `a` where `mask` is true, in column-major order, as a one-dimensional array."""
+    _need_array("pack", a)
+    if isinstance(mask, bool):
+        return Array((len(a.data) if mask else 0,), list(a.data) if mask else [])
+    _need_logical_array("pack", mask)
+    if mask.shape != a.shape:
+        raise LangError(f"pack(): the mask's shape {fmt_shape(mask.shape)} differs from the array's {fmt_shape(a.shape)}")
+    keep = [x for x, m in zip(a.data, mask.data) if m]
+    return Array((len(keep),), keep)
+
+
 def _allocated(x):
     raise LangError("allocated() needs the name of an allocatable array")   # apply() handles real calls
 
@@ -752,6 +802,8 @@ BUILTINS = {
     "transpose": _transpose, "cshift": _cshift, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
     "sum": _reduce("sum", sum), "maxval": _reduce("maxval", max), "minval": _reduce("minval", min),
     "any": _reduce("any", any), "all": _reduce("all", all),
+    "count": _count_true, "pack": _pack,
+    "maxloc": _locate("maxloc", lambda x, best: x > best), "minloc": _locate("minloc", lambda x, best: x < best),
     "max": max, "min": min, "product": _reduce("product", math.prod),
     "huge": _huge, "epsilon": _epsilon, "tiny": _tiny,
 }
@@ -765,7 +817,7 @@ ELEMENTAL = {
     "aint": lambda x: float(math.trunc(x)), "anint": _round_half_away,
     "sign": _sign, "modulo": _modulo, "dim": lambda a, b: max(a - b, 0),
     "mod": lambda a, b: int(math.fmod(a, b)) if isinstance(a, int) and isinstance(b, int) else math.fmod(a, b),
-    "cmplx": _cmplx, "aimag": _need_complex("aimag", lambda z: z.imag),
+    "merge": _merge, "cmplx": _cmplx, "aimag": _need_complex("aimag", lambda z: z.imag),
     "conjg": _need_complex("conjg", lambda z: z.conjugate()),
 }
 # These also take a complex argument and then give a complex result.

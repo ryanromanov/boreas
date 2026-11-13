@@ -261,8 +261,8 @@ default) or rows (`dim` 2) of a matrix. Elements pushed off one end come back at
 `result[i]` is `a[i + shift]`, so a positive shift moves elements toward the start
 (`cshift([1, 2, 3, 4, 5], 2)` is `[3, 4, 5, 1, 2]`) and a negative one toward the end.
 Built in: `size`, `shape`, `reshape`, `matmul`, `transpose`, `cshift`, `dot_product`,
-`sum`, `product`, `maxval`, `minval`, `any`, `all`, `max`, `min`, plus these, which apply to every
-element of an array:
+`sum`, `product`, `maxval`, `minval`, `any`, `all`, `count`, `maxloc`, `minloc`, `pack`, `merge`, `max`, `min`,
+plus these, which apply to every element of an array:
 
 - `sqrt`, `abs`, `exp`, `log`, `log10`, `gamma`, `log_gamma`, `erf`, `erfc`, `hypot(a, b)`
 - `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2(y, x)` (`atan(y, x)` works too), `sinh`,
@@ -270,6 +270,13 @@ element of an array:
 - `real`, `int` (truncates), `floor`, `ceiling`, `nint` (halves round away from zero), `aint`,
   `anint`
 - `mod` (sign of the first argument), `modulo` (sign of the second), `sign(a, b)`, `dim(a, b)`
+
+`count(mask)` is how many elements of a logical array are true (`count(v > 0)`). `merge(a, b, mask)` takes `a`
+where the mask is true and `b` where it is not, element by element (`merge(v, 0, v > 0)`; each of the three is an
+array or a single value, `a` and `b` must have the same type). `pack(a, mask)` is the elements of `a` where the mask is
+true, down the columns, as a one-dimensional array (`pack(v, v > 0)`; a single `true` keeps everything). `maxloc(v)` and
+`minloc(v)` are the position (counting from 1) of the first largest or smallest element of a one-dimensional array of
+numbers or strings; unlike Fortran they give a plain integer, not a one-element array, and a matrix is not supported yet.
 
 `huge(x)`, `epsilon(x)` and `tiny(x)` give the limits of `x`'s type (see Number kinds). A math error such as `asin(2.0)`
 or `modulo(1, 0)` stops the program with a message, where Fortran would give NaN.
