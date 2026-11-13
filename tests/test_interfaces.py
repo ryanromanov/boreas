@@ -24,7 +24,7 @@ record circle is figure
   end function
 
   subroutine grow(inout self, real :: factor)
-    update self.r = self.r * factor
+    @self.r = self.r * factor
   end subroutine
 end record
 
@@ -169,13 +169,13 @@ class InterfaceEdgeTests(unittest.TestCase):
         self.assertEqual(run("  println(pick().area())", DEFS + PICK), ["3.0"])
 
     def test_an_out_parameter_of_an_interface_type_starts_unassigned(self):
-        defs = DEFS + "\nsubroutine make(out figure :: g)\n  update g = rect(w = 2.0, h = 2.0)\nend subroutine\n"
+        defs = DEFS + "\nsubroutine make(out figure :: g)\n  @g = rect(w = 2.0, h = 2.0)\nend subroutine\n"
         self.assertEqual(run("  figure :: f\n  call make(f)\n  println(f.area())", defs), ["4.0"])
         defs = DEFS + "\nsubroutine lazy(out figure :: g)\n  println(1)\nend subroutine\n"
         self.fails("  figure :: f\n  call lazy(f)", "was never assigned", defs)
 
     def test_an_inout_parameter_can_replace_the_value(self):
-        defs = DEFS + "\nsubroutine swap_in(inout figure :: g)\n  update g = rect(w = 2.0, h = 5.0)\nend subroutine\n"
+        defs = DEFS + "\nsubroutine swap_in(inout figure :: g)\n  @g = rect(w = 2.0, h = 5.0)\nend subroutine\n"
         self.assertEqual(run("  figure :: f = circle()\n  call swap_in(f)\n  println(f.area())", defs), ["10.0"])
 
     def test_a_record_variable_can_be_passed_as_inout_to_an_interface_parameter(self):
@@ -185,13 +185,13 @@ class InterfaceEdgeTests(unittest.TestCase):
         self.assertEqual(run("  circle :: c = circle(r = 1.0)\n  call double_it(c)\n  println(c.r)", defs), ["2.0"])
 
     def test_the_routine_may_replace_the_value_with_one_of_the_same_kind(self):
-        defs = DEFS + "\nsubroutine reset(inout figure :: g)\n  update g = circle(r = 9.0)\nend subroutine\n"
+        defs = DEFS + "\nsubroutine reset(inout figure :: g)\n  @g = circle(r = 9.0)\nend subroutine\n"
         self.assertEqual(run("  circle :: c\n  call reset(c)\n  println(c.r)", defs), ["9.0"])
 
     def test_the_routine_may_not_change_what_kind_of_record_it_is(self):
-        defs = DEFS + "\nsubroutine swap_in(inout figure :: g)\n  update g = rect()\nend subroutine\n"
+        defs = DEFS + "\nsubroutine swap_in(inout figure :: g)\n  @g = rect()\nend subroutine\n"
         self.fails("  circle :: c\n  call swap_in(c)", "put a rect in 'g'", defs)
-        defs = DEFS + "\nsubroutine make(out figure :: g)\n  update g = rect()\nend subroutine\n"
+        defs = DEFS + "\nsubroutine make(out figure :: g)\n  @g = rect()\nend subroutine\n"
         self.fails("  circle :: c\n  call make(c)", "can change the value, not what kind of record it is", defs)
 
     def test_a_record_that_does_not_fit_is_still_refused(self):

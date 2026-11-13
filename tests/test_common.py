@@ -20,7 +20,7 @@ class CommonTests(unittest.TestCase):
         self.assertIn("module common_state", text)
         self.assertIn("public integer :: seed = 7", text)
         self.assertIn("use common_state: seed, count, table", text)
-        self.assertIn("update seed = seed + step", text)
+        self.assertIn("@seed = seed + step", text)
         self.assertIn("module common_blank", text)
 
     def test_function_that_changes_common_becomes_a_subroutine(self):

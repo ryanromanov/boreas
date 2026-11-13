@@ -108,9 +108,9 @@ class FixtureTests(unittest.TestCase):
                "  integer :: i\n  t = 0\n  do i = 1, n\n    t = t + i\n  end do\nend subroutine\n"
                "program p\n  integer :: k\n  call fill(4, k)\n  print *, k\nend program\n")
         text, _ = convert(src)
-        self.assertIn("  update t = 0", text)
-        self.assertIn("    update t = t + i", text)
-        self.assertNotIn("update i", text)
+        self.assertIn("  @t = 0", text)
+        self.assertIn("    @t = t + i", text)
+        self.assertNotIn("@i", text)
         self.assertEqual(run_bor(text), ["10"])
 
     def test_loop_over_a_dummy_argument_uses_a_local_counter(self):
@@ -119,7 +119,7 @@ class FixtureTests(unittest.TestCase):
         text, findings = convert(src)
         self.assertEqual(todos(findings), [])
         self.assertIn("do i_i = 1, 2", text)
-        self.assertIn("update i = max(1, 3)", text)
+        self.assertIn("@i = max(1, 3)", text)
 
     def test_variables_named_like_module_words_are_renamed(self):
         src = "program p\n  integer :: use\ninteger :: public\n  use = 1\n  public = 2\n  print *, use + public\nend program\n"
@@ -364,8 +364,8 @@ class TranslationTests(unittest.TestCase):
         text, findings = convert(src)
         self.assertEqual(todos(findings), [])
         self.assertIn("public integer :: counter = 0", text)
-        self.assertIn("update counter = counter + 1", text)
-        self.assertIn("update counter = 10", text)
+        self.assertIn("@counter = counter + 1", text)
+        self.assertIn("@counter = 10", text)
         self.assertEqual(run_bor(text), ["6 2", "11"])
 
     def test_function_that_changes_a_module_variable_becomes_a_subroutine(self):

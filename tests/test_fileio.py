@@ -109,7 +109,7 @@ class FileTests(unittest.TestCase):
 
     def test_a_file_in_a_module_variable(self):
         extra = ("module logging\n  public file :: log\n  public subroutine start(string :: name)\n"
-                 "    update log = open(name, \"write\")\n  end subroutine\n"
+                 "    @log = open(name, \"write\")\n  end subroutine\n"
                  "  public subroutine say(string :: s)\n    writeln(log, s)\n  end subroutine\nend module\n")
         self.run_body('  use logging: start, say, log\n  call start("PATH")\n  call say("one")\n  call say("two")\n  close log',
                       extra)

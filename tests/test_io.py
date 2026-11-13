@@ -44,7 +44,7 @@ class ReadTests(unittest.TestCase):
         fails(self, "  allocatable string[] :: p\n  p = fields(read_line())", "needs a string", "")
 
     def test_the_old_read_statement_is_gone(self):
-        for src in ("integer :: n\nread n", "integer :: n\nupdate read n", "integer :: n\nread n status n"):
+        for src in ("integer :: n\nread n", "integer :: n\n@read n", "integer :: n\nread n status n"):
             with self.assertRaises(LangError):
                 parse(f"program t\n{src}\nend program t\n")
 
@@ -80,7 +80,7 @@ class WriteAndStopTests(unittest.TestCase):
             expr(Str("it's \"odd\""))
 
     def test_round_trip_of_new_statements(self):
-        src = ("subroutine get(out integer :: n)\n  update n = 1\nend subroutine\n\n"
+        src = ("subroutine get(out integer :: n)\n  @n = 1\nend subroutine\n\n"
                "program t\n  integer :: a\n  print(\"x\")\n  stop 2\nend program t\n")
         self.assertEqual(to_source(parse(src)), src)
 
@@ -173,7 +173,7 @@ class ConvertTests(unittest.TestCase):
             "program p\n  integer :: k\n  call get(k)\n  print *, k\nend program\n")
         self.assertEqual(todos(findings), [])
         self.assertIn("subroutine get(out integer :: n)", text)
-        self.assertIn("update n = to_integer(read_parts[1])", text)
+        self.assertIn("@n = to_integer(read_parts[1])", text)
 
     def test_stop_forms(self):
         text, _ = convert("program p\n  integer :: i\n  i = 1\n  if (i == 1) stop 3\n  print *, i\nend program\n")

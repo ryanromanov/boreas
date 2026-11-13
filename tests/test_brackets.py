@@ -54,7 +54,7 @@ function total(real[] :: v) -> real
   return sum(v)
 end function
 subroutine zero(inout integer[] :: v)
-  update v = 0
+  @v = 0
 end subroutine
 """
         out = run_bor(funcs + """program t

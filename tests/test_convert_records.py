@@ -37,12 +37,12 @@ class FixtureTests(unittest.TestCase):
         text = self.check("records.f90")
         self.assertIn("public record point", text)
         self.assertIn("use shapes: point, segment, length, shift, make", text)
-        self.assertIn("update p.x = p.x + dx", text)
+        self.assertIn("@p.x = p.x + dx", text)
 
     def test_type_valued_functions_and_arrays_of_records_as_arguments(self):
         text = self.check("records3.f90")
         self.assertIn("public function add(v2 :: a, v2 :: b) -> v2", text)
-        self.assertIn("update vs[i].x = vs[i].x * k", text)
+        self.assertIn("@vs[i].x = vs[i].x * k", text)
 
     def test_types_in_a_program_are_hoisted_and_keep_their_defaults(self):
         text = self.check("records2.f90")
@@ -213,7 +213,7 @@ class IntentTests(unittest.TestCase):
                "contains\n  subroutine setx(q)\n    type(point) :: q\n    q%x = 1.0\n  end subroutine setx\nend program\n")
         text, findings = conv(src)
         self.assertIn("subroutine setx(inout point :: q)", text)
-        self.assertIn("update q.x = 1.0", text)
+        self.assertIn("@q.x = 1.0", text)
         self.assertEqual(run_bor(text), ["1.0"])
 
     def test_read_only_use_of_a_record_is_in(self):

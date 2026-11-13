@@ -33,7 +33,7 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(p.stdout.startswith(f"{name}:3:14: expected an expression"), p.stdout)
 
     def test_lexer_error_has_column(self):
-        p, name = check("program t\n  integer :: i = 1 @\nend program\n")
+        p, name = check("program t\n  integer :: i = 1 $\nend program\n")
         self.assertTrue(p.stdout.startswith(f"{name}:2:20: unexpected character"), p.stdout)
 
     def test_link_time_error_is_reported(self):

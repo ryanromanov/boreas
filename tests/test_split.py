@@ -115,5 +115,5 @@ class AllocateOnAssignmentTests(unittest.TestCase):
     def test_a_module_variable_needs_update(self):
         mod = "module m\n  public allocatable integer[] :: data\n  public subroutine load()\n    {}\n  end subroutine\nend module\n"
         prog = "use m: data, load\ncall load()\nprintln(data)"
-        self.assertEqual(run(prog, mod.format("update data = [1, 2]")), ["[1, 2]"])
-        fails(self, prog, "update", mod.format("data = [1, 2]"))
+        self.assertEqual(run(prog, mod.format("@data = [1, 2]")), ["[1, 2]"])
+        fails(self, prog, "@data", mod.format("data = [1, 2]"))

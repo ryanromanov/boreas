@@ -98,7 +98,7 @@ class InterfaceFieldTests(unittest.TestCase):
     def test_an_out_record_may_leave_an_interface_field_unassigned(self):
         out = run("""  scene :: sc
   call fill(sc)
-  println(sc.count)""", SCENE + "\nsubroutine fill(out scene :: s)\n  update s.count = 4\nend subroutine\n")
+  println(sc.count)""", SCENE + "\nsubroutine fill(out scene :: s)\n  @s.count = 4\nend subroutine\n")
         self.assertEqual(out, ["4"])
 
     def test_printing_a_record_with_an_unassigned_interface_field_is_an_error(self):

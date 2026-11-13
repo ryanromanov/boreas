@@ -229,7 +229,7 @@ class FieldDefaultTests(unittest.TestCase):
 
     def test_out_record_starts_with_defaults_and_needs_only_the_rest(self):
         defs = "record r\n  integer :: a = 1\n  integer :: b\nend record\n"
-        sub = "subroutine fill(out r :: x)\n  update x.b = x.a + 1\nend subroutine"
+        sub = "subroutine fill(out r :: x)\n  @x.b = x.a + 1\nend subroutine"
         self.assertEqual(run("r :: v\ncall fill(v)\nprintln(v)", sub, defs), ["r(a=1, b=2)"])
 
     def test_out_record_whose_fields_all_have_defaults_may_be_left_alone(self):
@@ -301,8 +301,8 @@ class FieldDefaultTests(unittest.TestCase):
 
 
 class ProcedureTests(unittest.TestCase):
-    MOVE = "subroutine move(inout point :: p, real :: dx)\n  update p.x = p.x + dx\nend subroutine"
-    MAKE = "subroutine make(out point :: p)\n  update p.x = 1.0\n  update p.y = 2.0\nend subroutine"
+    MOVE = "subroutine move(inout point :: p, real :: dx)\n  @p.x = p.x + dx\nend subroutine"
+    MAKE = "subroutine make(out point :: p)\n  @p.x = 1.0\n  @p.y = 2.0\nend subroutine"
 
     def test_inout_record(self):
         self.assertEqual(run("point :: p = point(1.0, 2.0)\ncall move(p, 2.0)\nprintln(p)", self.MOVE),
@@ -310,11 +310,11 @@ class ProcedureTests(unittest.TestCase):
 
     def test_out_record_must_be_fully_assigned(self):
         self.assertEqual(run("point :: p\ncall make(p)\nprintln(p)", self.MAKE), ["point(x=1.0, y=2.0)"])
-        half = "subroutine make(out point :: p)\n  update p.x = 1.0\nend subroutine"
+        half = "subroutine make(out point :: p)\n  @p.x = 1.0\nend subroutine"
         fails("point :: p\ncall make(p)", "not fully assigned in make: 'p.y' has no value", half)
 
     def test_out_record_starts_with_no_values(self):
-        peek = "subroutine peek(out point :: p)\n  update p.y = p.x\nend subroutine"
+        peek = "subroutine peek(out point :: p)\n  @p.y = p.x\nend subroutine"
         fails("point :: p = point(1.0, 2.0)\ncall peek(p)", "field 'p.x' is used before it is assigned", peek)
 
     def test_in_record_is_copied_and_read_only(self):
@@ -323,14 +323,14 @@ class ProcedureTests(unittest.TestCase):
 
     def test_missing_update_names_the_field(self):
         bad = "subroutine bad(inout point :: p)\n  p.x = 1.0\nend subroutine"
-        fails("println(1)", "write 'update p.x = ...'", bad)
+        fails("println(1)", "write '@p.x = ...'", bad)
 
     def test_update_needs_an_out_parameter(self):
-        fails("point :: p\nupdate p.x = 1.0", "'update' is for out and inout parameters")
+        fails("point :: p\n@p.x = 1.0", "'@' is for out and inout parameters")
 
     def test_update_works_through_nested_fields_and_elements(self):
         defs = POINT + "record line\n  point[2] :: ends\nend record\n"
-        sub = "subroutine f(inout line :: l)\n  update l.ends[2].y = 9.0\nend subroutine"
+        sub = "subroutine f(inout line :: l)\n  @l.ends[2].y = 9.0\nend subroutine"
         self.assertEqual(run("line :: l\nl.ends[1] = point(0.0, 0.0)\nl.ends[2] = point(0.0, 0.0)\n"
                              "call f(l)\nprintln(l.ends[2].y)", sub, defs), ["9.0"])
 
@@ -354,7 +354,7 @@ class ProcedureTests(unittest.TestCase):
 
     def test_distinct_fields_may_be_passed_together(self):
         swap = ("subroutine swap(inout real :: a, inout real :: b)\n  real :: t\n  t = a\n"
-                "  update a = b\n  update b = t\nend subroutine")
+                "  @a = b\n  @b = t\nend subroutine")
         self.assertEqual(run("point :: p = point(1.0, 2.0)\ncall swap(p.x, p.y)\nprintln(p)", swap),
                          ["point(x=2.0, y=1.0)"])
 
@@ -374,7 +374,7 @@ class ProcedureTests(unittest.TestCase):
         self.assertEqual(run(body), ["0.0"])
         fails("const point :: o = point(0.0, 0.0)\no.x = 1.0", "'o.x' is part of a constant")
         fails("const point :: o = point(0.0, 0.0)\no = point(1.0, 1.0)", "'o' is a constant")
-        move = "subroutine move(inout point :: p)\n  update p.x = 1.0\nend subroutine"
+        move = "subroutine move(inout point :: p)\n  @p.x = 1.0\nend subroutine"
         fails("const point :: o = point(0.0, 0.0)\ncall move(o)", "part of a constant|is a constant", move)
 
 

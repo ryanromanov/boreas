@@ -212,7 +212,7 @@ def root_name(target):
 
 KEYWORDS = {"if", "then", "else", "do", "while", "end", "program", "function", "subroutine", "module",
             "record", "interface", "const", "public", "private", "use", "call", "return", "exit", "cycle", "print", "println", "write", "writeln", "close", "stop",
-            "select", "case", "default", "fallthrough", "break", "update", "allocate", "deallocate",
+            "select", "case", "default", "fallthrough", "break", "allocate", "deallocate",
             "allocatable", "in", "out", "inout", "true", "false", "null", "and", "or", "not"}
 
 
@@ -246,7 +246,7 @@ def target_text(t):
 
 def check_writes(body, params, shared=None, is_sub=True):
     shared = shared or {}
-    """`update` marks exactly the writes that reach beyond the procedure: assignments to out/inout
+    """`@` marks exactly the writes that reach beyond the procedure: assignments to out/inout
     parameters and to module variables (`shared`, the ones declared in or imported into this
     procedure's module). `params` maps parameter name -> intent. A function stays free of side
     effects, so only a subroutine may change a module variable."""
@@ -263,10 +263,10 @@ def check_writes(body, params, shared=None, is_sub=True):
                             f"make it a subroutine")
         if what and not s.update:
             raise LangError(f"line {s.line}: '{name}' is {article(what)}, so other code sees this write; "
-                            f"write 'update {shown} = ...'")
+                            f"write '@{shown} = ...'")
         if s.update and not what and not imported:
             kind = "an 'in' parameter" if params.get(name) == "in" else "a local variable"
-            raise LangError(f"line {s.line}: 'update' is for out and inout parameters and module variables, "
+            raise LangError(f"line {s.line}: '@' is for out and inout parameters and module variables, "
                             f"but '{name}' is {kind}")
 
     for s in body:
@@ -441,7 +441,7 @@ def check_allocs(body, params, shared=None, is_sub=True):
                                 f"make it a subroutine")
             if not s.update:
                 raise LangError(f"line {s.line}: '{s.name}' is a module variable, so other code sees this; "
-                                f"write 'update {word} {s.name}{'(...)' if word == 'allocate' else ''}'")
+                                f"write '{word} @{s.name}{'[...]' if word == 'allocate' else ''}'")
             m = shared[s.name]
             if m is not None and not m.allocatable:
                 why = "not allocatable (declare it with 'allocatable')"
@@ -459,7 +459,7 @@ def check_allocs(body, params, shared=None, is_sub=True):
                             f"{len(s.dims)} extent(s) were given to allocate")
         else:
             if s.update:
-                raise LangError(f"line {s.line}: 'update' is for module variables, but '{s.name}' is a local array")
+                raise LangError(f"line {s.line}: '@' is for module variables, but '{s.name}' is a local array")
             continue
         raise LangError(f"line {s.line}: cannot {word} '{s.name}': it is {why}")
 
@@ -707,13 +707,13 @@ class Parser:
                 funcs[f.name] = f
             elif self.at("allocatable"):
                 self.next()
-                x = self.decl(allocatable=True)        # a shared array: allocated only with `update allocate`
+                x = self.decl(allocatable=True)        # a shared array: allocated only with `allocate @a[n]`
                 x.public = public
                 claim(x.name, x.line)
                 decls.append(x)
                 shared[x.name] = True
             elif self.tok.kind == "ident" and (self.tok.text in TYPES or self.typed_ahead()):
-                x = self.decl()                        # a module variable: shared, changed only with `update`
+                x = self.decl()                        # a module variable: shared, changed only with `@`
                 x.public = public
                 claim(x.name, x.line)
                 decls.append(x)
@@ -923,10 +923,12 @@ class Parser:
             return self.decl()
         if self.at("record"):
             self.error("records are defined at the top level or inside a module, not in a procedure")
-        if t.kind == "ident" and t.text in ("allocate", "deallocate") and self.toks[self.i + 1].kind == "ident":
+        if t.kind == "ident" and t.text in ("allocate", "deallocate") and (
+                self.toks[self.i + 1].kind == "ident" or self.toks[self.i + 1].text == "@"):
             return self.allocation()
-        if self.at("update") and self.toks[self.i + 1].text in ("allocate", "deallocate"):
-            return self.allocation()
+        if t.kind == "ident" and t.text == "update" and self.toks[self.i + 1].kind == "ident":
+            self.error("writes that reach the caller are marked with '@' now: '@x = ...', "
+                       "'allocate @a[n]', 'deallocate @a'")
         if self.at("if"):
             return self.if_stmt()
         if self.at("do"):
@@ -1009,7 +1011,7 @@ class Parser:
             return (Exit if word == "exit" else Cycle)(label, t.line)
         if t.kind == "ident" and self.toks[self.i + 1].text == ":" and self.toks[self.i + 2].text == "do":
             return self.do_stmt()                  # `outer: do ...`
-        update = bool(self.accept("update"))
+        update = bool(self.accept("@"))
         e = self.expr()
         if update or self.at("="):
             if not isinstance(e, (Var, Apply, FieldAccess)):
@@ -1023,8 +1025,8 @@ class Parser:
 
     def allocation(self):
         """`allocate a[n, m]` or `deallocate a`: one array per statement."""
-        update = bool(self.accept("update"))
         t = self.next()
+        update = bool(self.accept("@"))
         name = self.ident()
         if t.text == "deallocate":
             self.newline()

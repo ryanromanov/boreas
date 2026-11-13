@@ -19,7 +19,7 @@ function cube(integer :: n) -> real
 end function
 
 subroutine bump(string :: label, inout integer :: n)
-  update n = n + 1
+  @n = n + 1
   println(label, n)
 end subroutine
 

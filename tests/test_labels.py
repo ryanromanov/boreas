@@ -360,7 +360,7 @@ end program t
   integer :: i
   a: do i = 1, 10
     if i == 3 then
-      update r = i
+      @r = i
       exit a
     end if
   end do a
@@ -395,7 +395,7 @@ class UpdateTests(unittest.TestCase):
       if i == 4 then
         exit o
       end if
-      update total = total + 1
+      @total = total + 1
     end do
   end do o
 end subroutine
@@ -412,12 +412,12 @@ end program t
 
     def test_missing_update_still_caught_in_labeled_loop(self):
         with self.assertRaises(LangError) as cm:
-            parse(self.SUB.replace("update total = total + 1", "total = total + 1"))
-        self.assertIn("update total", str(cm.exception))
+            parse(self.SUB.replace("@total = total + 1", "total = total + 1"))
+        self.assertIn("@total", str(cm.exception))
 
     def test_update_on_loop_local_still_caught(self):
         with self.assertRaises(LangError):
-            parse(self.SUB.replace("update total = total + 1", "update i = 3"))
+            parse(self.SUB.replace("@total = total + 1", "@i = 3"))
 
     def test_loop_variable_cannot_be_a_parameter(self):
         with self.assertRaises(LangError):

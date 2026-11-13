@@ -16,8 +16,8 @@ function length(segment :: s) -> real
 end function
 
 subroutine shift(inout point :: p, real :: dx, real :: dy)
-  update p.x = p.x + dx          ! writes that reach the caller are marked `update`
-  update p.y = p.y + dy
+  @p.x = p.x + dx          ! writes that reach the caller are marked `@`
+  @p.y = p.y + dy
 end subroutine
 
 program demo

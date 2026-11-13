@@ -476,7 +476,7 @@ program demo
   call c%describe()
 end program
 """)
-        self.assertIn("update s = s_as", text)
+        self.assertIn("@s = s_as", text)
 
     def test_an_internal_procedure_keeps_a_local_that_hides_a_host_import(self):
         self.check("""module m
@@ -554,7 +554,7 @@ class OOLimitTests(unittest.TestCase):
         src = self.parts("  integer, public :: calls = 0\n", "    calls = calls + 1\n").replace(
             "  call c%show()\n", "  call c%show()\n  call c%show()\n  print *, calls\n").replace(
             "use child_m\n  implicit none\n  type(child)", "use child_m\n  use base_m, only: calls\n  implicit none\n  type(child)")
-        OOConversionTests.check(self, src)               # both copies update the one shared `calls`
+        OOConversionTests.check(self, src)               # both copies @the one shared `calls`
 
     def test_an_inherited_procedure_whose_name_clashes_is_a_todo(self):
         src = self.parts("  integer, parameter, public :: scale = 10\n", "    print *, scale * self%v\n") \
@@ -1188,7 +1188,7 @@ program demo
   call enlarge(c)
   call c%describe()
 end program
-""", ["if s is circle as s_as then", "update s = s_as"])
+""", ["if s is circle as s_as then", "@s = s_as"])
         self.assertNotIn("select type", text)
 
     def test_two_cases_stay_a_select_type(self):
