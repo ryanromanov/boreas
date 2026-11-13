@@ -15,7 +15,7 @@ into a block), so each label is handled where its mark is:
 Whatever cannot be rewritten stays as a TODO comment."""
 from dataclasses import dataclass
 
-from .parser import (Assign, Bool, Case, Comment, Cycle, Do, DoWhile, Exit, If, Num, Return, Select, Stop, Unary, Var)
+from .parser import (Assign, Bool, Case, Comment, Cycle, Do, DoWhile, Exit, If, IsType, Num, Return, Select, Stop, Unary, Var)
 
 
 @dataclass
@@ -202,6 +202,8 @@ class Structurer:
                 and isinstance(first, If) and len(first.branches) == 1 and not first.orelse):
             return False
         cond, body = first.branches[0]
+        if isinstance(cond, IsType):                  # a type test cannot be negated into a `do while` condition
+            return False
         back = stmts[a - 1].label
         if not (len(body) == 1 and isinstance(body[0], Goto) and body[0].label == exit_label) \
                 or len(gotos_to(stmts, back)) != len(gotos_to(stmts[a:b + 1], back)) or last.label != back:

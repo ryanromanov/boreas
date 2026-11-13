@@ -134,3 +134,11 @@ class InlineIsTests(unittest.TestCase):
 
     def test_names_called_is_and_as_still_work(self):
         self.assertEqual(run("  integer :: is = 1\n  integer :: as = 2\n  if is < as then\n    println(is + as)\n  end if"), ["3"])
+
+    def test_an_is_test_cannot_be_combined_with_other_conditions(self):
+        for cond in ("ok and f is circle as c", "not f is circle", "f is circle as c and c.r > 1.0"):
+            src = DEFS2 + f"\nprogram t\n  logical :: ok = true\n  figure :: f = circle()\n  if {cond} then\n    println(1)\n  end if\nend program\n"
+            with self.assertRaises(LangError, msg=cond):
+                run_bor(src)
+            errors = check_errors(src)
+            self.assertEqual(len(errors), 1, cond)

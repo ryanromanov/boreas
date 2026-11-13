@@ -1094,6 +1094,9 @@ class Parser:
         """An `if` condition: an expression, or the type test `x is circle [as c]`."""
         cond = self.expr()
         if self.tok.kind == "ident" and self.tok.text == "is":
+            if isinstance(cond, (Unary, Binary)):
+                raise LangError(f"line {self.tok.line}: an 'is' test must be the whole condition of the 'if'; to combine "
+                                f"it with other conditions, nest a second 'if'")
             line = self.next().line
             col = self.tok.col
             typ = self.ident()
