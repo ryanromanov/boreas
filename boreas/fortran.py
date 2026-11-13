@@ -2936,6 +2936,9 @@ class FParser:
                 self.write_back_before_exits(c.body, lambda: Assign(copy.deepcopy(subject), Var(assoc), c.line))
                 c.body.append(Assign(copy.deepcopy(subject), Var(assoc), c.line))
         if None not in {c.values for c in cases}:
+            if len(cases) == 1 and isinstance(cases[0].values, str):      # one `type is` and nothing else: an inline test
+                only = cases[0]
+                return lead + [If([(IsType(subject, only.values, assoc, line), only.body)], [])]
             cases.append(Case(None, [Comment("no other type is handled here (Fortran does nothing for them either)")], line))
         return lead + [SelectType(subject, cases, line, False, assoc)]
 
@@ -4586,6 +4589,8 @@ class FParser:
             if isinstance(n, Case) and isinstance(n.values, str):
                 out.add(n.values)                            # select type: `case circle`
                 continue
+            if isinstance(n, IsType):
+                out.add(n.type)                              # `x is circle as c`
             if isinstance(n, Call) and n.receiver is not None:
                 continue                                     # call x.grow(2.0): `grow` belongs to the record
             if isinstance(n, (Var, Apply, Call, Allocate, Deallocate)):
@@ -4673,7 +4678,7 @@ class FParser:
 
     def implicit_decls(self, scope, body, proc_names, line):
         known = set(scope.decls) | set(scope.dummies) | proc_names | self.imported_names(scope)
-        known |= {n.var for n in iter_nodes(body) if isinstance(n, SelectType)}      # select type (p => x)
+        known |= {n.var for n in iter_nodes(body) if isinstance(n, (SelectType, IsType)) and n.var}   # select type (p => x)
         if scope.module is not None:
             known |= set(scope.module.decls)
         host_names = set()
