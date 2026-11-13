@@ -102,6 +102,26 @@ end module
             parse(DIVMOD + "program t\ninteger :: x\n(x, @_) = divmod(1, 1)\nend program\n")
 
 
+class SameRulesAsAssignmentTests(unittest.TestCase):
+    def test_a_constant_cannot_be_a_target(self):
+        with self.assertRaisesRegex(LangError, "'c' is a constant and cannot be assigned"):
+            run("const integer :: c = 1\ninteger :: r\n(c, r) = divmod(1, 1)")
+
+    def test_an_in_parameter_cannot_be_a_target(self):
+        defs = DIVMOD + "function f(integer :: n) -> integer\n  integer :: r\n  (n, r) = divmod(n, 2)\n  return r\nend function\n"
+        with self.assertRaisesRegex(LangError, "'n' is an 'in' parameter and cannot be assigned"):
+            run("println(f(4))", defs)
+
+    def test_an_index_out_of_bounds_is_an_error(self):
+        with self.assertRaisesRegex(LangError, "index 5 out of bounds"):
+            run("integer[3] :: v\ninteger :: r\n(v[5], r) = divmod(1, 1)")
+
+    def test_two_results_that_are_the_same_record_are_separate_copies(self):
+        defs = "record pt\n  real :: x\nend record\nfunction f() -> (pt :: a, pt :: b)\n  pt :: p = pt(0.0)\n" \
+               "  return p, p\nend function\n"
+        self.assertEqual(run("pt :: a\npt :: b\n(a, b) = f()\na.x = 5.0\nprintln(a.x, b.x)", defs), ["5.0 0.0"])
+
+
 class MisuseTests(unittest.TestCase):
     def test_a_multi_result_call_is_not_a_value(self):
         for body in ("integer :: x\nx = divmod(1, 1)", "println(divmod(1, 1))", "divmod(1, 1)",

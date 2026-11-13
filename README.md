@@ -592,7 +592,8 @@ and the variable may instead be absent (`null`):
 
 ## Subroutines and parameter modes
 
-Results come back through `out` / `inout` parameters:
+Results come back through `out` / `inout` parameters (a function with several results is often clearer: see
+"Functions with several results" above):
 
     subroutine swap(inout integer :: a, inout integer :: b)
       integer :: t
