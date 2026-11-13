@@ -7,7 +7,7 @@ reported here should always be a real one. The interpreter still catches those c
 runs them."""
 from .interp import BUILTINS, ELEMENTAL
 from .parser import (Allocate, Apply, ArrayLit, Assign, Binary, Call, Close, Decl, Do, DoWhile,
-                     ExprStmt, FieldAccess, Gen, If, IsType, NamedArg, Print, Return, Select, SelectExpr, SelectType, Slice, Stop,
+                     ExprStmt, FieldAccess, Gen, If, IsType, MultiAssign, NamedArg, Print, Return, ReturnMany, Select, SelectExpr, SelectType, Slice, Stop,
                      Unary, Var, sub_bodies)
 
 
@@ -162,6 +162,10 @@ class Walker:
             self.expr(s.code)
         elif isinstance(s, Return):
             self.expr(s.value)
+        elif isinstance(s, ReturnMany):
+            self.expr(s.values)
+        elif isinstance(s, MultiAssign):
+            self.expr([t for t, _ in s.targets if t is not None] + [s.value])
         elif isinstance(s, ExprStmt):
             self.expr(s.expr)
         elif isinstance(s, Call):

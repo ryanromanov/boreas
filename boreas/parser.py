@@ -120,6 +120,18 @@ class Stop: code: object; line: int
 @dataclass
 class Return: value: object
 @dataclass
+class ReturnMany:
+    """`return a, b`: the values of a function declared `-> (type, type)`."""
+    values: list
+    line: int = 0
+@dataclass
+class MultiAssign:
+    """`(q, @r, _) = f(x)`: the results of a call, each into its own target. A target is (expression, update)
+    or (None, False) for `_`, which throws that result away."""
+    targets: list
+    value: object
+    line: int
+@dataclass
 class Exit: label: str = None; line: int = 0      # label names an enclosing loop
 @dataclass
 class Cycle: label: str = None; line: int = 0
@@ -136,6 +148,19 @@ class Allocate: name: str; dims: list; line: int; update: bool = False   # alloc
 class Deallocate: name: str; line: int; update: bool = False
 @dataclass
 class Comment: text: str          # only produced by `boreas convert`; the interpreter skips it
+
+@dataclass(frozen=True)
+class ResultList:
+    """The results of a function that gives back several values: `-> (integer :: q, integer :: r)`.
+    Only the types take part in comparing (a record fits an interface when they match in order); the names
+    are documentation."""
+    types: tuple
+    names: tuple = field(default=(), compare=False)
+
+    def __str__(self):
+        names = self.names or (None,) * len(self.types)
+        return "(" + ", ".join(t + (f" :: {n}" if n else "") for t, n in zip(self.types, names)) + ")"
+
 
 @dataclass(frozen=True)
 class ProcType:
@@ -169,7 +194,7 @@ class Function:
     """A function or, when is_sub is set, a subroutine."""
     name: str
     params: list          # [(type, name, intent)], intent in {"in", "out", "inout"}; type is a ProcType for a callback
-    ret: str | None
+    ret: object           # a type name, a ResultList for several results, or None
     body: list
     is_sub: bool = False
     comments: list = field(default_factory=list)   # printed above the header by `convert`
@@ -257,14 +282,14 @@ def check_writes(body, params, shared=None, is_sub=True):
             return "module variable" if shared[name] or update else None     # an import may be a constant
         return None
 
-    def write(s, name, shown, what, imported=False):
+    def write(s, update, name, shown, what, imported=False):
         if what == "module variable" and not is_sub:
             raise LangError(f"line {s.line}: a function cannot change the module variable '{name}'; "
                             f"make it a subroutine")
-        if what and not s.update:
+        if what and not update:
             raise LangError(f"line {s.line}: '{name}' is {article(what)}, so other code sees this write; "
                             f"write '@{shown} = ...'")
-        if s.update and not what and not imported:
+        if update and not what and not imported:
             kind = "an 'in' parameter" if params.get(name) == "in" else "a local variable"
             raise LangError(f"line {s.line}: '@' is for out and inout parameters and module variables, "
                             f"but '{name}' is {kind}")
@@ -274,8 +299,14 @@ def check_writes(body, params, shared=None, is_sub=True):
             check_writes(s, params, shared, is_sub)
         elif isinstance(s, Assign):
             name = root_name(s.target)
-            write(s, name, target_text(s.target) if isinstance(s.target, FieldAccess) else name,
+            write(s, s.update, name, target_text(s.target) if isinstance(s.target, FieldAccess) else name,
                   reaches(name, s.update), name in shared and not shared[name] and name not in params)
+        elif isinstance(s, MultiAssign):
+            for target, update in s.targets:
+                if target is not None:
+                    name = root_name(target)
+                    write(s, update, name, target_text(target) if isinstance(target, FieldAccess) else name,
+                          reaches(name, update), name in shared and not shared[name] and name not in params)
         elif isinstance(s, If):
             for _, b in s.branches:
                 check_writes(b, params, shared, is_sub)
@@ -470,6 +501,7 @@ class Parser:
         self.module_checks = []                     # one list per module being parsed: its procedures, checked at its end
         self.toks, self.i = lex(src), 0
         self.inside = []                  # enclosing "select" / "loop" constructs, innermost last
+        self.procs = []                   # (name, result) of the functions being parsed, innermost last
 
     @property
     def tok(self):
@@ -746,7 +778,11 @@ class Parser:
             ret = self.result_type()
         self.newline()
         uses = self.uses()
-        body = self.block(kind)
+        self.procs.append((name, ret))
+        try:
+            body = self.block(kind)
+        finally:
+            self.procs.pop()
         self.expect(kind)
         if self.tok.kind == "ident":
             self.next()
@@ -828,6 +864,8 @@ class Parser:
         if not is_sub:
             if not self.accept("->"):
                 self.error("a function signature needs its result type: function(real) -> real")
+            if self.at("("):
+                self.error("a procedure signature cannot return several results yet")
             ret = self.type_name(anywhere=True)
             if self.at("["):
                 self.error("a procedure signature cannot return an array")
@@ -852,8 +890,27 @@ class Parser:
         return "[" + "," * (rank - 1) + "]"
 
     def result_type(self):
-        """A function's result type: a type, or an array of one (`integer[]`, `real[,]`: a comma for each
-        extra dimension). An array result's length is only known after the call."""
+        """A function's result: a type, an array of one (`integer[]`, `real[,]`: a comma for each extra
+        dimension), or a list of two or more of those, `(integer :: q, integer :: r)`. An array result's length
+        is only known after the call."""
+        if not self.at("("):
+            return self.one_result()
+        self.next()
+        types, names = [], []
+        while True:
+            types.append(self.one_result())
+            name = self.ident() if self.accept("::") else None
+            if name is not None and name in names:
+                self.error(f"the result name '{name}' is used twice")
+            names.append(name)
+            if not self.accept(","):
+                break
+        self.expect(")")
+        if len(types) < 2:
+            self.error("a result list needs two or more results; for one, write '-> type'")
+        return ResultList(tuple(types), tuple(names) if any(names) else ())
+
+    def one_result(self):
         name = self.type_name(anywhere=True)
         if not self.at("["):
             return name
@@ -1002,6 +1059,20 @@ class Parser:
         if self.at("return"):
             self.next()
             val = None if self.tok.kind == "nl" else self.expr()
+            want = self.procs[-1] if self.procs else None
+            if self.at(","):
+                values = [val]
+                while self.accept(","):
+                    values.append(self.expr())
+                if want is None or not isinstance(want[1], ResultList):
+                    self.error("only a function declared with a result list, as in '-> (integer :: q, integer :: r)', "
+                               "can return several values")
+                if len(values) != len(want[1].types):
+                    self.error(f"{want[0]} returns {len(want[1].types)} results, but {len(values)} values are given")
+                self.newline()
+                return ReturnMany(values, t.line)
+            if val is not None and want is not None and isinstance(want[1], ResultList):
+                self.error(f"{want[0]} returns {len(want[1].types)} results: write 'return a, b'")
             self.newline()
             return Return(val)
         if self.at("exit", "cycle"):
@@ -1011,6 +1082,8 @@ class Parser:
             return (Exit if word == "exit" else Cycle)(label, t.line)
         if t.kind == "ident" and self.toks[self.i + 1].text == ":" and self.toks[self.i + 2].text == "do":
             return self.do_stmt()                  # `outer: do ...`
+        if self.at("("):
+            return self.unpack()
         update = bool(self.accept("@"))
         e = self.expr()
         if update or self.at("="):
@@ -1022,6 +1095,41 @@ class Parser:
             return Assign(e, v, t.line, update)
         self.newline()
         return ExprStmt(e)
+
+    def unpack(self):
+        """`(q, @r, _) = f(x)`: a function's several results, each into its own variable. `@` marks a target the
+        caller sees, as for a single assignment; `_` throws a result away."""
+        line = self.tok.line
+        self.expect("(")
+        targets = []
+        while True:
+            update = bool(self.accept("@"))
+            if self.tok.kind == "ident" and self.tok.text == "_" and self.toks[self.i + 1].text in (",", ")"):
+                if update:
+                    self.error("'_' throws a result away, so there is nothing to mark with '@'")
+                self.next()
+                targets.append((None, False))
+            else:
+                e = self.expr()
+                if not isinstance(e, (Var, Apply, FieldAccess)):
+                    self.error("cannot assign to this expression")
+                targets.append((e, update))
+            if not self.accept(","):
+                break
+        self.expect(")")
+        if len(targets) < 2:
+            self.error("an unpacking lists two or more targets; for one result, write 'x = f(...)'")
+        self.expect("=")
+        v = self.expr()
+        if not ((isinstance(v, Apply) and not v.bracket) or (isinstance(v, FieldAccess) and v.args is not None and not v.bracket)):
+            self.error("the right side of an unpacking is a call of a function that returns several results")
+        self.newline()
+        named = [t for t, _ in targets if t is not None]
+        for n, t in enumerate(named):
+            if t in named[:n]:
+                raise LangError(f"line {line}: '{target_text(t) if isinstance(t, FieldAccess) else root_name(t)}' "
+                                f"is assigned twice in one unpacking")
+        return MultiAssign(targets, v, line)
 
     def allocation(self):
         """`allocate a[n, m]` or `deallocate a`: one array per statement."""

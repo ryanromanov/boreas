@@ -175,6 +175,11 @@ def stmt(s, depth):
         return [f"{pad}call {who}{s.name}(" + ", ".join(expr(a) for a in s.args) + ")"]
     if k is Return:
         return [pad + "return" + (" " + expr(s.value) if s.value is not None else "")]
+    if k is ReturnMany:
+        return [pad + "return " + ", ".join(expr(v) for v in s.values)]
+    if k is MultiAssign:
+        targets = ", ".join("_" if t is None else ("@" if u else "") + expr(t) for t, u in s.targets)
+        return [f"{pad}({targets}) = {expr(s.value)}"]
     if k is Exit:
         return [pad + "exit" + (" " + s.label if s.label else "")]
     if k is Cycle:
