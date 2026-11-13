@@ -2933,12 +2933,31 @@ class FParser:
             if c.values is not None and not read_only and self.changes(c.body, assoc):
                 if not isinstance(subject, (Var, Apply)):
                     raise Unsupported(f"the guard for '{self.guard_name(c)}' changes '{assoc}', which is not a variable to write back to")
-                if any(isinstance(n, (Exit, Cycle, Return)) for n in iter_nodes(c.body)):
-                    raise Unsupported(f"the guard for '{self.guard_name(c)}' changes '{assoc}' and leaves early with exit, cycle or return")
+                self.write_back_before_exits(c.body, lambda: Assign(copy.deepcopy(subject), Var(assoc), c.line))
                 c.body.append(Assign(copy.deepcopy(subject), Var(assoc), c.line))
         if None not in {c.values for c in cases}:
             cases.append(Case(None, [Comment("no other type is handled here (Fortran does nothing for them either)")], line))
         return lead + [SelectType(subject, cases, line, False, assoc)]
+
+    @staticmethod
+    def write_back_before_exits(node, make):
+        """A case that leaves early (exit, cycle, return) would skip the write-back at its end, so the write-back
+        goes in front of each of them too. Statements are changed in place."""
+        if isinstance(node, list):
+            out = []
+            for x in node:
+                if isinstance(x, (Exit, Cycle, Return)):
+                    out.append(make())
+                else:
+                    FParser.write_back_before_exits(x, make)
+                out.append(x)
+            node[:] = out
+        elif isinstance(node, tuple):                    # an if's (condition, body) branches
+            for x in node:
+                FParser.write_back_before_exits(x, make)
+        elif is_dataclass(node):
+            for f in fields(node):
+                FParser.write_back_before_exits(getattr(node, f.name), make)
 
     @staticmethod
     def guard_name(c):

@@ -384,25 +384,6 @@ class SelectTypeLimitTests(unittest.TestCase):
         _, findings = self.convert("  print *, allocated(s)\n")
         self.assertIn("allocated() of a class(T) value", self.messages(findings))
 
-    def test_a_case_that_changes_the_value_and_exits_is_a_todo(self):
-        src = SHAPES_WITH_GROW + """program demo
-  use shapes
-  implicit none
-  class(shape), allocatable :: s
-  integer :: i
-  allocate(circle :: s)
-  do i = 1, 2
-    select type (p => s)
-    type is (circle)
-      call p%grow(2.0)
-      exit
-    end select
-  end do
-end program
-"""
-        _, findings = converted(src)
-        self.assertIn("leaves early with exit, cycle or return", self.messages(findings))
-
     def test_allocate_source_of_something_that_is_not_polymorphic_is_a_todo(self):
         src = "program p\n  implicit none\n  integer, allocatable :: a(:)\n  allocate(a, source=[1, 2])\n  print *, 1\nend program\n"
         _, findings = converted(src)
@@ -1053,5 +1034,130 @@ contains
     type(pet_owner), intent(out) :: x
     x%age = 7
   end subroutine
+end program
+""")
+
+
+class EarlyExitWriteBackTests(unittest.TestCase):
+    """A select type case that changes p and leaves early still writes p back first."""
+    check = OOConversionTests.check
+
+    def test_exit_cycle_and_return_write_back_first(self):
+        text = self.check(SHAPES_WITH_GROW + """module users
+  use shapes
+  implicit none
+contains
+  subroutine grow_until(s, limit)
+    class(shape), intent(inout) :: s
+    real, intent(in) :: limit
+    integer :: i
+    do i = 1, 10
+      select type (p => s)
+      type is (circle)
+        call p%grow(2.0)
+        if (p%r > limit) exit
+        if (i == 2) cycle
+        print *, "step", i
+      class default
+        return
+      end select
+    end do
+  end subroutine
+  subroutine once(s)
+    class(shape), intent(inout) :: s
+    select type (p => s)
+    type is (circle)
+      call p%grow(3.0)
+      return
+    end select
+    print *, "not a circle"
+  end subroutine
+end module
+program demo
+  use shapes
+  use users
+  implicit none
+  type(circle) :: c, d
+  c = circle(name="c", r=1.0)
+  d = circle(name="d", r=2.0)
+  call grow_until(c, 20.0)
+  call once(d)
+  call c%describe()
+  call d%describe()
+end program
+""")
+        self.assertGreaterEqual(text.count("s = p"), 4)             # before exit, cycle and return, and at the end
+
+    def test_a_loop_inside_the_case_with_its_own_exit(self):
+        self.check(SHAPES_WITH_GROW + """module users
+  use shapes
+  implicit none
+contains
+  subroutine bump(s)
+    class(shape), intent(inout) :: s
+    integer :: k
+    select type (p => s)
+    type is (circle)
+      do k = 1, 5
+        call p%grow(1.5)
+        if (k == 3) exit
+      end do
+    end select
+  end subroutine
+end module
+program demo
+  use shapes
+  use users
+  implicit none
+  type(circle) :: c
+  c = circle(name="c", r=1.0)
+  call bump(c)
+  call c%describe()
+end program
+""")
+
+    def test_exits_inside_else_branches_and_nested_selects(self):
+        self.check(SHAPES_WITH_GROW + """module users
+  use shapes
+  implicit none
+contains
+  subroutine bump(s, mode)
+    class(shape), intent(inout) :: s
+    integer, intent(in) :: mode
+    integer :: i
+    do i = 1, 3
+      select type (p => s)
+      type is (circle)
+        call p%grow(2.0)
+        if (mode == 1) then
+          print *, "one"
+        else if (mode == 2) then
+          cycle
+        else
+          select case (i)
+          case (2)
+            exit
+          case default
+            print *, "other"
+          end select
+        end if
+      end select
+    end do
+  end subroutine
+end module
+program demo
+  use shapes
+  use users
+  implicit none
+  type(circle) :: a, b, c
+  a = circle(name="a", r=1.0)
+  b = circle(name="b", r=1.0)
+  c = circle(name="c", r=1.0)
+  call bump(a, 1)
+  call bump(b, 2)
+  call bump(c, 3)
+  call a%describe()
+  call b%describe()
+  call c%describe()
 end program
 """)
