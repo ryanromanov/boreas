@@ -150,8 +150,8 @@ class UnsupportedTests(unittest.TestCase):
     def test_nopass_and_pass_bindings_are_unsupported(self):
         self.check_todo("  type :: thing\n    integer :: v\n  contains\n    procedure, nopass :: make\n"
                         "  end type thing\n", "'nopass' binding")
-        self.check_todo("  type :: thing\n    integer :: v\n  contains\n    procedure, pass(other) :: show\n"
-                        "  end type thing\n", "'pass' binding")
+        self.check_todo("  type :: thing\n    integer :: v\n  contains\n    procedure(f), pass(other), deferred :: show\n"
+                        "  end type thing\n", "deferred binding with pass(arg)")
 
     def test_extends_a_type_that_is_not_defined_here(self):
         self.check_todo("  type, extends(base) :: thing\n    integer :: v\n  end type thing\n",

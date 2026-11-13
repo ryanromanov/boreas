@@ -824,3 +824,86 @@ end program
         self.assertIn("also matches bird", said[0])
         self.assertIn("TODO(convert): 'class is (animal)' also matches bird", text)
         run_bor(text)                                  # what is left still runs
+
+
+COUNTER = """module counters
+  implicit none
+  type :: counter
+    integer :: n = 0
+  contains
+    procedure, pass(c) :: add
+    procedure, pass(c) :: show
+  end type
+  type, extends(counter) :: double_counter
+  contains
+    procedure, pass(c) :: add => double_add
+  end type
+contains
+  subroutine add(amount, c)
+    integer, intent(in) :: amount
+    class(counter), intent(inout) :: c
+    c%n = c%n + amount
+  end subroutine
+  subroutine double_add(amount, c)
+    integer, intent(in) :: amount
+    class(double_counter), intent(inout) :: c
+    c%n = c%n + 2 * amount
+  end subroutine
+  function show(label, c) result(r)
+    character(len=*), intent(in) :: label
+    class(counter), intent(in) :: c
+    integer :: r
+    print *, label, c%n
+    r = c%n
+  end function
+end module
+"""
+
+
+class PassArgTests(unittest.TestCase):
+    check = OOConversionTests.check
+
+    def test_the_object_goes_first_as_self_and_calls_are_unchanged(self):
+        text = self.check(COUNTER + """program demo
+  use counters
+  implicit none
+  type(counter) :: x
+  type(double_counter) :: y
+  integer :: k
+  call x%add(5)
+  call x%add(2)
+  call y%add(5)
+  k = x%show("x is")
+  k = y%show("y is")
+  print *, k
+end program
+""", ["subroutine add(inout self, integer :: amount)", "call x.add(5)"])
+        self.assertNotIn("subroutine add(integer", text)
+
+    def test_polymorphic_calls_dispatch_through_the_override(self):
+        self.check(COUNTER + """program demo
+  use counters
+  implicit none
+  type(double_counter) :: y
+  call bump(y)
+  print *, y%n
+contains
+  subroutine bump(z)
+    class(counter), intent(inout) :: z
+    call z%add(4)
+  end subroutine
+end program
+""")
+
+    def test_a_pass_argument_the_procedure_does_not_have_is_a_todo(self):
+        src = COUNTER.replace("procedure, pass(c) :: show", "procedure, pass(nobody) :: show") + """program demo
+  use counters
+  implicit none
+  type(counter) :: x
+  call x%add(1)
+  print *, x%n
+end program
+"""
+        _, findings = converted(src)
+        said = " | ".join(m for _, kind, m in findings if kind == "todo")
+        self.assertIn("says pass(nobody), but 'show' has no argument of that name", said)

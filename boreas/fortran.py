@@ -315,6 +315,7 @@ class Binding:
     impl: str | None              # the module procedure that implements it; None for a deferred one
     iface: str | None             # for a deferred binding: the abstract interface that gives its signature
     line: int
+    pass_arg: str | None = None   # `pass(c)`: the dummy argument that receives the object (None: the first)
 
 
 @dataclass
@@ -3510,15 +3511,21 @@ class FParser:
         if self.accept_op("("):
             iface = self.rename(self.expect_name())
             self.expect_op(")")
-        attrs = set()
+        attrs, pass_arg = set(), None
         while self.accept_op(","):
             a = self.expect_name()
             attrs.add(a)
-            if self.at_op("("):
+            if a == "pass" and self.at_op("("):
+                self.k += 1
+                pass_arg = self.rename(self.expect_name())
+                self.expect_op(")")
+            elif self.at_op("("):
                 self.skip_parens()
-        if attrs & {"nopass", "pass"}:
-            return f"a '{'nopass' if 'nopass' in attrs else 'pass'}' binding is not supported"
+        if "nopass" in attrs:
+            return "a 'nopass' binding is not supported (it gets no object, and Boreas functions in a record always do)"
         deferred = "deferred" in attrs
+        if deferred and pass_arg is not None:
+            return "a deferred binding with pass(arg) is not supported"
         if deferred and iface is None:
             return "a deferred binding needs an interface: procedure(name), deferred :: binding"
         if iface is not None and not deferred:
@@ -3529,7 +3536,7 @@ class FParser:
             impl = name
             if self.accept_op("=>"):
                 impl = self.rename(self.expect_name())
-            bindings[name] = Binding(name, None if deferred else impl, iface if deferred else None, line)
+            bindings[name] = Binding(name, None if deferred else impl, iface if deferred else None, line, pass_arg)
             if not self.accept_op(","):
                 break
         return None
@@ -4240,7 +4247,7 @@ class FParser:
             for b in t.bindings.values():
                 r = impls.get((t.module.name if t.module is not None else None, b.impl))
                 if r is not None and r.scope.dummies:
-                    passed.add((id(r.scope), r.scope.dummies[0]))
+                    passed.add((id(r.scope), b.pass_arg if b.pass_arg in r.scope.dummies else r.scope.dummies[0]))
         used = set()
         for sc in [r.scope for r in self.raw] + list(self.modules.values()):
             for name, info in sc.decls.items():
@@ -4325,12 +4332,20 @@ class FParser:
     def implemented_interfaces(self, t):
         return [(self.iface_name[a.name], t.line) for a in self.ancestors(t) if a.name in self.iface_name]
 
+    @staticmethod
+    def passed_first(params, b):
+        """The parameters with the one that receives the object first (it is the first unless `pass(arg)` says so)."""
+        names = [q[1] for q in params]
+        k = names.index(b.pass_arg) if b.pass_arg in names else 0
+        return [params[k]] + params[:k] + params[k + 1:]
+
     def binding_signature(self, t, b, origin, fn, iname):
         """The Function (no body) an interface lists for the binding `b` of type `t`: from the procedure that
         implements it, or from the abstract interface a deferred binding names."""
         if fn is not None:
-            first = fn.params[0][2] or "in"
-            return Function(b.name, [[iname, "self", first]] + [list(p) for p in fn.params[1:]], fn.ret, [], fn.is_sub)
+            params = self.passed_first(fn.params, b)
+            first = params[0][2] or "in"
+            return Function(b.name, [[iname, "self", first]] + [list(p) for p in params[1:]], fn.ret, [], fn.is_sub)
         pt = self.find_interface(self.types[origin].scope, b.iface)
         if pt is None:
             return None
@@ -4369,7 +4384,7 @@ class FParser:
                         continue
                     needs = []
                     if otype.module is not t.module:
-                        why, needs = self.foreign_names(unit, fn, b.impl, otype, t)
+                        why, needs = self.foreign_names(unit, fn, b, otype, t)
                         if why:
                             problems.append(f"'{bname}' is inherited from module '{otype.module.name}', and its "
                                             f"implementation '{b.impl}' {why}")
@@ -4393,6 +4408,10 @@ class FParser:
                     problems.append(f"'{bname}' is both a component and a procedure")
                     continue
                 f = copy.deepcopy(fn)
+                if b.pass_arg is not None and b.pass_arg not in [q[1] for q in f.params]:
+                    problems.append(f"'{bname}' says pass({b.pass_arg}), but '{b.impl}' has no argument of that name")
+                    continue
+                f.params = self.passed_first(f.params, b)
                 old = f.params[0][1]
                 if any(isinstance(d, Decl) and d.name == "self" for d in iter_nodes(f.body)) or \
                         (old != "self" and any(q[1] == "self" for q in f.params[1:])):
@@ -4447,19 +4466,20 @@ class FParser:
                         owner.comments.append("TODO(convert): " + msg)
                     self.todo(line, msg)
 
-    def foreign_names(self, unit, fn, impl, otype, t):
+    def foreign_names(self, unit, fn, b, otype, t):
         """An inherited procedure is copied into a record of another module, so its body runs where the parent's
         module is not in scope. Every name it uses must still be reachable there: returns (why not, or None;
         the imports the copy needs as (module, name))."""
         home = unit.modules[otype.module.name]
         mine = unit.modules[t.module.name] if t.module is not None else None
+        impl = b.impl
         local = {q[1] for q in fn.params} | {impl}
         for n in iter_nodes(fn.body):
             if isinstance(n, Decl):
                 local.add(n.name)
             elif isinstance(n, (Do, SelectType, Gen)):
                 local.add(getattr(n, "var", None))
-        refs = self.references(fn.body) | {x for q in fn.params[1:] for x in type_names(q[0])}
+        refs = self.references(fn.body) | {x for q in self.passed_first(fn.params, b)[1:] for x in type_names(q[0])}
         refs |= {base_type(fn.ret)} if fn.ret else set()
         imported = {n: u.module for u in fn.uses + home.uses for n in u.names}
         own = {x.name for x in (mine.decls if mine is not None else [])} | set(mine.functions if mine else {}) \

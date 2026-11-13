@@ -740,7 +740,8 @@ report on stderr. Translations that change meaning are flagged, never silent:
   uses is public there (the converter adds the imports); a private name it needs is a TODO that names it.
   A `final` binding is dropped with a TODO (Boreas has no destructors); the procedure stays and is not called
   automatically.
-  Still TODOs: `class(*)`,
+  `procedure, pass(c) :: add` moves the argument `c` to the front as `self` (calls do not change).
+  Still TODOs: `class(*)`, `nopass`, `generic` bindings,
   `allocated()` of a `class(T)` value, a wrapper used as a
   component, and a case that changes `p` and also leaves with `exit`, `cycle` or `return`. See `examples/shapes.f90`.
 - A local that Fortran keeps between calls (declared `save`, named in a `save` statement, or
