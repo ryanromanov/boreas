@@ -1,6 +1,30 @@
 {
   "keywords": [
     {
+      "begin": "(?<=\\bif\\b[^\\n]{1,300}[ \\t)\\]])is(?=[ \\t]+[A-Za-z_][A-Za-z0-9_]*[ \\t]+(?:as|then)\\b)",
+      "ignoreCase": true,
+      "regularExpression": true,
+      "description": "is in if x is T"
+    },
+    {
+      "begin": "(?<=\\bis[ \\t]{1,40}[A-Za-z_][A-Za-z0-9_]{0,62}[ \\t]{1,40})as\\b",
+      "ignoreCase": true,
+      "regularExpression": true,
+      "description": "as in if x is T as c"
+    },
+    {
+      "begin": "(?<=\\brecord[ \\t]{1,40}[A-Za-z_][A-Za-z0-9_]{0,62}[ \\t]{1,40})is\\b",
+      "ignoreCase": true,
+      "regularExpression": true,
+      "description": "is in record r is iface"
+    },
+    {
+      "begin": "(?<=\\bselect[ \\t]{1,40}type\\b[^\\n]{1,300}[ \\t])as\\b",
+      "ignoreCase": true,
+      "regularExpression": true,
+      "description": "as in select type x as p"
+    },
+    {
       "begin": "->|::|\\?\\?|\\+%|-%|\\*%",
       "ignoreCase": true,
       "regularExpression": true
