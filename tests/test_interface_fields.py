@@ -78,8 +78,30 @@ class InterfaceFieldTests(unittest.TestCase):
             run("  println(1)", defs)
         self.assertIn("cannot be optional", str(cm.exception))
 
+    def test_an_array_field_of_an_interface_needs_a_literal_size(self):
+        defs = DEFS + "\nrecord holder\n  figure[n] :: f\nend record\n"
+        with self.assertRaises(LangError) as cm:
+            run("  println(1)", defs)
+        self.assertIn("needs a literal size", str(cm.exception))
+
+    def test_the_checker_accepts_interface_fields(self):
+        from boreas.cli import check_errors
+        src = SCENE + "\nprogram t\n  scene :: sc\n  sc.items[1] = circle()\n  println(sc.items[1].area())\nend program\n"
+        self.assertEqual(check_errors(src), [])
+
     def test_an_interface_field_of_a_record_inside_an_array(self):
         out = run("""  scene[2] :: all
   all[2].highlight = rect(w = 1.0, h = 4.0)
   println(all[2].highlight.area())""")
         self.assertEqual(out, ["4.0"])
+
+    def test_an_out_record_may_leave_an_interface_field_unassigned(self):
+        out = run("""  scene :: sc
+  call fill(sc)
+  println(sc.count)""", SCENE + "\nsubroutine fill(out scene :: s)\n  update s.count = 4\nend subroutine\n")
+        self.assertEqual(out, ["4"])
+
+    def test_printing_a_record_with_an_unassigned_interface_field_is_an_error(self):
+        with self.assertRaises(LangError) as cm:
+            run("  scene :: sc\n  println(sc)")
+        self.assertIn("has no value yet", str(cm.exception))

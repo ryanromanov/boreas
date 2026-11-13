@@ -205,12 +205,15 @@ class Record:
         return Record(self.rdef, {n: [t, v.copy() if isinstance(v, (Record, Array)) else v, ia, None]
                                   for n, (t, v, ia, _) in self.fields.items()})
 
-    def first_unassigned(self, prefix=""):
-        """The dotted path of the first scalar field that holds no value yet, else None."""
-        for n, (_, v, _, _) in self.fields.items():
+    def first_unassigned(self, prefix="", interfaces=True):
+        """The dotted path of the first scalar field that holds no value yet, else None. With `interfaces` false a
+        field of an interface type may stay unassigned (it can be left empty in an `out` record)."""
+        for n, (t, v, _, _) in self.fields.items():
+            if not interfaces and isinstance(t, IfaceType):
+                continue
             for sub in (v.data if isinstance(v, Array) else [v]):
                 if isinstance(sub, Record):
-                    found = sub.first_unassigned(f"{prefix}{n}.")
+                    found = sub.first_unassigned(f"{prefix}{n}.", interfaces)
                     if found:
                         return found
                 elif sub is None:
@@ -956,12 +959,11 @@ class Interp:
                 if f.name in seen:
                     raise LangError(f"line {f.line}: record '{r.name}' has two fields called '{f.name}'")
                 seen.add(f.name)
-                if base_type(f.type) in scope.interfaces:
-                    if f.type != base_type(f.type):
-                        raise LangError(f"line {f.line}: field '{f.name}' of record '{r.name}': an interface type "
-                                        f"('{f.type}') cannot be optional")
-                    continue
-                if base_type(f.type) not in DEFAULTS and base_type(f.type) not in scope.records:
+                iface = base_type(f.type) in scope.interfaces
+                if iface and f.type != base_type(f.type):
+                    raise LangError(f"line {f.line}: field '{f.name}' of record '{r.name}': an interface type "
+                                    f"('{f.type}') cannot be optional")
+                if not iface and base_type(f.type) not in DEFAULTS and base_type(f.type) not in scope.records:
                     raise LangError(f"line {f.line}: field '{f.name}' of record '{r.name}' has unknown type '{f.type}'")
                 for d in f.dims or []:
                     if not (isinstance(d, Num) and isinstance(d.value, int) and d.value >= 0):
@@ -2297,7 +2299,7 @@ class Interp:
             if result is None:
                 raise LangError(f"line {s.line}: out parameter '{name}' was never assigned in {s.name}")
             if f.params[n][2] == "out" and isinstance(result, Record):
-                missing = result.first_unassigned()
+                missing = result.first_unassigned(interfaces=False)
                 if missing:
                     raise LangError(f"line {s.line}: out parameter '{name}' was not fully assigned in "
                                     f"{s.name}: '{name}.{missing}' has no value")

@@ -2719,6 +2719,9 @@ class FParser:
             if t is not None and t2 is not None and t.kind == "name" and t2.kind == "op" and t2.text == "=":
                 raise Unsupported(f"'{what}' with {t.text}= is not supported")
             name = self.rename(self.expect_name())
+            if self.at_op("%"):
+                raise Unsupported(f"'{what}' of a component ({name}%...): Boreas cannot unassign or resize one; "
+                                  f"a class(T) component is set by assigning to it")
             if self.at_op("::"):
                 raise Unsupported(f"'{what}' with a type-spec is not supported")
             info = scope.decls.get(name) if name not in scope.dummies else None
