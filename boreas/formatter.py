@@ -89,6 +89,13 @@ def _leading(text):
 def format_source(src, indent=DEFAULT_INDENT, tabs=False):
     """Returns `src` re-indented, `indent` spaces a level, or a tab a level when `tabs`.
     Raises LangError if the source has a character Boreas can't read."""
+    lines, formatted = _format_lines(src, indent, tabs)
+    return "".join(text + line.ending for line, text in zip(lines, formatted))
+
+
+def _format_lines(src, indent, tabs):
+    """The physical lines of `src`, and the formatted text of each one (without its line ending). Formatting
+    never adds or removes a line, so the two lists match one to one."""
     lines = _split(src)
     unit = "\t" if tabs else " " * indent
     tab_width = indent if indent > 0 else DEFAULT_INDENT
@@ -150,27 +157,48 @@ def format_source(src, indent=DEFAULT_INDENT, tabs=False):
         for i, line in enumerate(group):
             content = line.text.strip(" \t")
             if not content:
-                out.append(line.ending)
+                out.append("")
                 continue
             if i == 0:
                 prefix = unit * depth
             else:
                 offset = _width(_leading(line.text), tab_width) - first_width
                 prefix = unit * depth + (" " * offset if offset > 0 else unit)
-            out.append(prefix + content + line.ending)
-    return "".join(out)
+            out.append(prefix + content)
+    return lines, out
 
 
 def formatting_edits(src, options=None):
-    """The LSP answer to `textDocument/formatting`: one edit replacing the whole document, or none when
-    nothing changes. `options` may give `tabSize` and `insertSpaces`."""
+    """The LSP answer to `textDocument/formatting`: for each line that changes, an edit replacing only the
+    whitespace at its start and the whitespace at its end, so an editor keeps the rest of the text (and the
+    selection and scroll position in it) as it is. No edits when nothing changes. `options` may give `tabSize`
+    and `insertSpaces`."""
     options = options or {}
     size = options.get("tabSize")
     indent = size if isinstance(size, int) and not isinstance(size, bool) and size > 0 else DEFAULT_INDENT
     tabs = options.get("insertSpaces") is False
-    formatted = format_source(src, indent, tabs)
-    if formatted == src:
-        return []
-    lines = src.split("\n")
-    end = {"line": len(lines) - 1, "character": len(lines[-1].encode("utf-16-le")) // 2}
-    return [{"range": {"start": {"line": 0, "character": 0}, "end": end}, "newText": formatted}]
+    lines, formatted = _format_lines(src, indent, tabs)
+    edits = []
+    for number, (line, new) in enumerate(zip(lines, formatted)):
+        old = line.text
+        if old == new:
+            continue
+        def edit(start, end, text):
+            edits.append({"range": {"start": {"line": number, "character": start},
+                                    "end": {"line": number, "character": end}}, "newText": text})
+        if not new:                                     # a line of only spaces and tabs (all ASCII)
+            edit(0, len(old), "")
+            continue
+        old_lead, new_lead = _leading(old), _leading(new)
+        if old_lead != new_lead:                        # spaces and tabs: one UTF-16 unit each
+            edit(0, len(old_lead), new_lead)
+        trimmed = old.rstrip(" \t")
+        if len(trimmed) < len(old):
+            start = _utf16(trimmed)
+            edit(start, start + len(old) - len(trimmed), "")
+    return edits
+
+
+def _utf16(text):
+    """The length of `text` in UTF-16 code units, the unit LSP positions count in."""
+    return len(text.encode("utf-16-le")) // 2

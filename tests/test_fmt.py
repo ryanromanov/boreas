@@ -234,6 +234,21 @@ def sources():
     return found
 
 
+def apply(text, edits):
+    """`text` with LSP edits applied, positions counted in UTF-16 the way an editor counts them."""
+    units = text.encode("utf-16-le")
+    starts = [0]
+    for i in range(0, len(units), 2):
+        if units[i:i + 2] == b"\n\x00":
+            starts.append(i // 2 + 1)
+    def offset(p):
+        return 2 * (starts[p["line"]] + p["character"])
+    for e in sorted(edits, key=lambda e: offset(e["range"]["start"]), reverse=True):
+        units = (units[:offset(e["range"]["start"])] + e["newText"].encode("utf-16-le")
+                 + units[offset(e["range"]["end"]):])
+    return units.decode("utf-16-le")
+
+
 class OnEveryProgram(unittest.TestCase):
     """Formatting never changes what a program means, and formatting twice changes nothing more."""
 
@@ -275,21 +290,31 @@ class LanguageServer(unittest.TestCase):
                                            "params": {"textDocument": {"uri": URI}, "options": options}})
         return next(r for r in replies if r.get("id") == 2)
 
-    def test_whole_document_edit_with_the_options_sent(self):
-        text = "program t\nprintln(\"é😀\")\nend program"
+    def test_edits_touch_only_the_whitespace_that_changes(self):
+        text = "program t\nprintln(\"é😀\")   \n  \t\n  end program"
         reply = self.request(text, {"tabSize": 3, "insertSpaces": True})
-        self.assertEqual(reply["result"], [{
-            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 2, "character": 11}},
-            "newText": "program t\n   println(\"é😀\")\nend program"}])
+        self.assertEqual(reply["result"], [
+            {"range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 0}}, "newText": "   "},
+            {"range": {"start": {"line": 1, "character": 14}, "end": {"line": 1, "character": 17}}, "newText": ""},
+            {"range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 3}}, "newText": ""},
+            {"range": {"start": {"line": 3, "character": 0}, "end": {"line": 3, "character": 2}}, "newText": ""}])
         tabs = self.request(text, {"tabSize": 8, "insertSpaces": False})
-        self.assertEqual(tabs["result"][0]["newText"], "program t\n\tprintln(\"é😀\")\nend program")
+        self.assertEqual(apply(text, tabs["result"]), "program t\n\tprintln(\"é😀\")\n\nend program")
 
     def test_already_formatted_gives_no_edits(self):
         self.assertEqual(self.request("program t\n  println(1)\nend program\n", {"tabSize": 2, "insertSpaces": True})["result"], [])
 
-    def test_end_position_counts_utf16(self):
-        edits = formatting_edits("program t\nprintln(1)\n\"😀\"", {})
-        self.assertEqual(edits[0]["range"]["end"], {"line": 2, "character": 4})
+    def test_lines_already_right_get_no_edit(self):
+        src = "program t\n  println(1)\nprintln(2)\nend program\n"
+        self.assertEqual([e["range"]["start"]["line"] for e in formatting_edits(src, {})], [2])
+
+    def test_edits_give_what_fmt_gives(self):
+        for name, src in sources() + [("crlf", "program t\r\nprintln(1)  \r\n end program")]:
+            for options, indent, tabs in (({}, 2, False), ({"tabSize": 4}, 4, False),
+                                          ({"tabSize": 4, "insertSpaces": False}, 4, True)):
+                with self.subTest(name, options=options):
+                    edits = formatting_edits(src, options)
+                    self.assertEqual(apply(src, edits), format_source(src, indent, tabs))
 
     def test_unreadable_text_is_an_error_not_an_edit(self):
         reply = self.request("program t\nx = 1 @ 2\nend program\n", {"tabSize": 2, "insertSpaces": True})
