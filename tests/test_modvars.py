@@ -9,13 +9,13 @@ RNG = ("module rng\n"
        "  public integer :: seed = 7\n"
        "  integer :: calls\n"
        "  public subroutine reseed(integer :: s)\n"
-       "    update seed = s\n"
-       "    update calls = 0\n"
+       "    @seed = s\n"
+       "    @calls = 0\n"
        "  end subroutine\n"
        "  public subroutine next(out integer :: k)\n"
-       "    update seed = mod(seed * 3, 11) + 1\n"
-       "    update calls = calls + 1\n"
-       "    update k = seed\n"
+       "    @seed = mod(seed * 3, 11) + 1\n"
+       "    @calls = calls + 1\n"
+       "    @k = seed\n"
        "  end subroutine\n"
        "  public function count() -> integer\n"
        "    return calls\n"
@@ -48,7 +48,7 @@ class ModuleVariableTests(unittest.TestCase):
         self.assertEqual(run(body), ["7", "40"])
 
     def test_the_program_may_update_an_imported_variable(self):
-        self.assertEqual(run("  use rng: seed\n  update seed = seed + 1\n  println(seed)"), ["8"])
+        self.assertEqual(run("  use rng: seed\n  @seed = seed + 1\n  println(seed)"), ["8"])
 
     def test_writing_needs_update(self):
         fails(self, "  use rng: seed\n  seed = 1", "must be used exactly")
@@ -56,20 +56,20 @@ class ModuleVariableTests(unittest.TestCase):
               "module m\n  integer :: n\n  subroutine s()\n    n = 1\n  end subroutine\nend module\n")
 
     def test_update_on_a_local_is_still_wrong(self):
-        fails(self, "  integer :: k\n  update k = 1", "'update' is for out and inout parameters and module variables")
+        fails(self, "  integer :: k\n  @k = 1", "'@' is for out and inout parameters and module variables")
 
     def test_private_variable_cannot_be_imported(self):
         fails(self, "  use rng: calls\n  println(calls)", "private to module")
 
     def test_a_function_cannot_change_a_module_variable(self):
         fails(self, "", "a function cannot change the module variable",
-              "module m\n  integer :: n\n  function f() -> integer\n    update n = 1\n    return n\n  end function\nend module\n")
+              "module m\n  integer :: n\n  function f() -> integer\n    @n = 1\n    return n\n  end function\nend module\n")
 
     def test_arrays_and_records(self):
         src = ("module bank\n  record acct\n    integer :: total\n  end record\n"
                "  public integer[3] :: slots\n  public acct :: main\n"
-               "  public subroutine put(integer :: i)\n    update slots[i] = i * 10\n"
-               "    update main.total = main.total + i\n  end subroutine\nend module\n")
+               "  public subroutine put(integer :: i)\n    @slots[i] = i * 10\n"
+               "    @main.total = main.total + i\n  end subroutine\nend module\n")
         self.assertEqual(run("  use bank: slots, main, put\n  call put(2)\n  call put(3)\n  println(slots, main.total)", src),
                          ["[0, 20, 30] 5"])
 
@@ -79,10 +79,10 @@ class ModuleVariableTests(unittest.TestCase):
     def test_constants_stay_constant(self):
         src = "module m\n  public const integer :: k = 3\nend module\n"
         fails(self, "  use m: k\n  k = 4", "constant", src)
-        fails(self, "  use m: k\n  update k = 4", "must be used exactly", src)
+        fails(self, "  use m: k\n  @k = 4", "must be used exactly", src)
 
     def test_round_trip(self):
-        src = to_source(parse(RNG + "program t\n  use rng: seed\n  update seed = 1\nend program\n"))
+        src = to_source(parse(RNG + "program t\n  use rng: seed\n  @seed = 1\nend program\n"))
         self.assertEqual(to_source(parse(src)), src)
         self.assertIn("public integer :: seed = 7", src)
 

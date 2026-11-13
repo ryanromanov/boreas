@@ -23,7 +23,7 @@ record circle is figure
   end function
 
   subroutine grow(inout self, real :: factor)      ! not part of figure: only a circle has it
-    update self.r = self.r * factor
+    @self.r = self.r * factor
   end subroutine
 end record
 

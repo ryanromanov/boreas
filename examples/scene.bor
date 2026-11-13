@@ -40,8 +40,8 @@ record scene
 end record
 
 subroutine add(inout scene :: s, figure :: f)
-  update s.count = s.count + 1
-  update s.items[s.count] = f
+  @s.count = s.count + 1
+  @s.items[s.count] = f
 end subroutine
 
 program demo

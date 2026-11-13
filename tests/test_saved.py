@@ -36,7 +36,7 @@ class SavedLocalTests(unittest.TestCase):
         self.assertIn("module s_state", text)
         self.assertIn("public integer :: calls = 0", text)
         self.assertIn("use s_state: calls", text)
-        self.assertIn("update calls = calls + 1", text)
+        self.assertIn("@calls = calls + 1", text)
 
     def test_save_attribute_without_a_value(self):
         _, got = run_both(self, "subroutine s(n)\n  integer, intent(out) :: n\n  integer, save :: total\n"
@@ -61,7 +61,7 @@ class SavedLocalTests(unittest.TestCase):
         text, got = run_both(self, "subroutine s(n)\n  integer, intent(out) :: n\n  integer :: hist(3) = 0\n"
                                    "  hist(2) = hist(2) + 1\n  n = hist(2)\nend subroutine\n")
         self.assertEqual(got, ["2"])
-        self.assertIn("update hist[2] = hist[2] + 1", text)
+        self.assertIn("@hist[2] = hist[2] + 1", text)
 
     def test_passing_the_variable_to_an_inout_argument_counts(self):
         sub = ("subroutine bump(m)\n  integer, intent(inout) :: m\n  m = m + 1\nend subroutine\n"

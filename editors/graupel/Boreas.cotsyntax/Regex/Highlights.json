@@ -25,12 +25,12 @@
       "description": "as in select type x as p"
     },
     {
-      "begin": "->|::|\\?\\?|\\+%|-%|\\*%",
+      "begin": "@|->|::|\\?\\?|\\+%|-%|\\*%",
       "ignoreCase": true,
       "regularExpression": true
     },
     {
-      "begin": "\\b(program|module|function|subroutine|record|interface|const|use|call|return|exit|cycle|print|println|if|then|else|do|while|end|select|case|default|fallthrough|break|update|allocate|deallocate|allocatable|public|private|and|or|not|write|writeln|stop|close)\\b",
+      "begin": "\\b(program|module|function|subroutine|record|interface|const|use|call|return|exit|cycle|print|println|if|then|else|do|while|end|select|case|default|fallthrough|break|allocate|deallocate|allocatable|public|private|and|or|not|write|writeln|stop|close)\\b",
       "ignoreCase": true,
       "regularExpression": true
     }

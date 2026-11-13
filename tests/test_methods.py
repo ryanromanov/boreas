@@ -19,7 +19,7 @@ CIRCLE = """record circle
   end function
 
   subroutine grow(inout self, real :: factor)
-    update self.r = self.r * factor
+    @self.r = self.r * factor
   end subroutine
 
   subroutine show(self)

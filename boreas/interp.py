@@ -1074,7 +1074,7 @@ class Interp:
                     raise
                 raise LangError(f"line {d.line}: {e}") from None
             if not d.const:
-                env[d.name][INTENT] = "module"            # shared and changeable, but only with `update`
+                env[d.name][INTENT] = "module"            # shared and changeable, but only with `@`
             scope.consts[d.name] = env[d.name]
         self.scope = saved
         self.check_defaults(mod.records, scope)         # defaults may use the constants above
@@ -1131,7 +1131,7 @@ class Interp:
                 return
             ref = self.resolve(s.target, env, s.line)
             if (ref.root[INTENT] in ("out", "inout", "module")) != s.update:
-                raise LangError(f"line {s.line}: 'update' must be used exactly when assigning to an "
+                raise LangError(f"line {s.line}: '@' must be used exactly when assigning to an "
                                 f"out or inout parameter or a module variable ('{ref[2]}')")
             self.write(ref, self.eval(s.value, env), s.line)
         elif k is If:
@@ -1385,10 +1385,10 @@ class Interp:
         return slot
 
     def allocatable_for(self, s, env):
-        """The slot `allocate` / `deallocate` changes; a module variable's needs `update`."""
+        """The slot `allocate` / `deallocate` changes; a module variable's needs `@`."""
         slot = self.allocatable(s.name, env, s.line)
         if (slot[INTENT] == "module") != s.update:
-            raise LangError(f"line {s.line}: 'update' must be used exactly when allocating or freeing "
+            raise LangError(f"line {s.line}: '@' must be used exactly when allocating or freeing "
                             f"a module variable ('{s.name}')")
         return slot
 
@@ -1419,12 +1419,12 @@ class Interp:
                 raise self.not_allocated(s.target.name, s.line)
             self.write(self.resolve(s.target, env, s.line), v, s.line)
             if (slot[INTENT] == "module") != s.update:
-                raise LangError(f"line {s.line}: 'update' must be used exactly when assigning to an "
+                raise LangError(f"line {s.line}: '@' must be used exactly when assigning to an "
                                 f"out or inout parameter or a module variable ('{s.target.name}')")
             return True
         name = s.target.name
         if (slot[INTENT] == "module") != s.update:
-            raise LangError(f"line {s.line}: 'update' must be used exactly when assigning to an "
+            raise LangError(f"line {s.line}: '@' must be used exactly when assigning to an "
                             f"out or inout parameter or a module variable ('{name}')")
         if len(v.shape) != slot[RANK]:
             raise LangError(f"line {s.line}: '{name}' has {slot[RANK]} dimension(s) but the value has "

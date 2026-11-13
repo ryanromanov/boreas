@@ -27,7 +27,7 @@ class SubstringTests(unittest.TestCase):
         self.assertEqual(out('  string :: s = "Hello"\n  s[1:1] = "J"\n  s[4:5] = "ly"\n  println(s)'), ["Jelly"])
 
     def test_update_a_substring_of_an_inout_parameter(self):
-        extra = 'subroutine up(inout string :: s)\n  update s[1:1] = achar(iachar(s[1:1]) - 32)\nend subroutine\n'
+        extra = 'subroutine up(inout string :: s)\n  @s[1:1] = achar(iachar(s[1:1]) - 32)\nend subroutine\n'
         self.assertEqual(out('  string :: w = "hi"\n  call up(w)\n  println(w)', extra), ["Hi"])
 
     def test_substring_must_stay_inside_the_string(self):

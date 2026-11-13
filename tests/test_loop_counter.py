@@ -23,8 +23,8 @@ end subroutine
 """)
         self.assertEqual(todos, [])
         self.assertIn("do info_i = 1, n", text)
-        self.assertIn("update info = info_i\n    return", text.replace("      ", "    "))
-        self.assertNotIn("update info = max", text)       # `info = 0` follows, so no final value
+        self.assertIn("@info = info_i\n    return", text.replace("      ", "    "))
+        self.assertNotIn("@info = max", text)       # `info = 0` follows, so no final value
         parse(text + "\nprogram p\nend program p\n")
 
     def test_final_value_is_set_when_it_can_be_seen(self):
@@ -36,7 +36,7 @@ end subroutine
 end subroutine
 """)
         self.assertEqual(todos, [])
-        self.assertIn("update info = max(1, n + 1)", text)
+        self.assertIn("@info = max(1, n + 1)", text)
 
     def test_counting_down_and_constant_bound(self):
         text, _ = conv("""subroutine s(n, info)
@@ -46,7 +46,7 @@ end subroutine
   end do
 end subroutine
 """)
-        self.assertIn("update info = min(n, 0)", text)
+        self.assertIn("@info = min(n, 0)", text)
 
     def test_exit_with_a_visible_final_value_is_a_todo(self):
         text, todos = conv("""subroutine s(n, info)

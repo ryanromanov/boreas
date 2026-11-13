@@ -382,10 +382,10 @@ class UpdateTests(unittest.TestCase):
     SUB = """subroutine bump(integer :: k, out integer :: r, inout integer :: total)
   select case k
   case 1
-    update r = 10
+    @r = 10
   case default
-    update r = 0
-    update total = total + 1
+    @r = 0
+    @total = total + 1
   end select
 end subroutine"""
 
@@ -394,22 +394,22 @@ end subroutine"""
         self.assertEqual(run(body, self.SUB), ["10 0", "0 1"])
 
     def test_update_in_a_flowing_select_with_break(self):
-        sub = ("subroutine f(integer :: k, inout integer :: t)\n select case fallthrough k\n case 1\n update t = t + 1\n"
-               " case 2\n update t = t + 10\n break\n case 3\n update t = t + 100\n end select\nend subroutine")
+        sub = ("subroutine f(integer :: k, inout integer :: t)\n select case fallthrough k\n case 1\n @t = t + 1\n"
+               " case 2\n @t = t + 10\n break\n case 3\n @t = t + 100\n end select\nend subroutine")
         body = "integer :: t = 0\ncall f(1, t)\nprintln(t)\ncall f(2, t)\nprintln(t)\ncall f(3, t)\nprintln(t)"
         self.assertEqual(run(body, sub), ["11", "21", "121"])
-        bad = sub.replace("update t = t + 100", "t = t + 100")
-        with self.assertRaisesRegex(LangError, "write 'update t = ...'"):
+        bad = sub.replace("@t = t + 100", "t = t + 100")
+        with self.assertRaisesRegex(LangError, "write '@t = ...'"):
             parse(bad + "\nprogram p\nend program p\n")
 
     def test_missing_update_in_select_body(self):
         sub = "subroutine f(out integer :: r)\n select case 1\n case 1\n r = 2\n end select\nend subroutine"
-        with self.assertRaisesRegex(LangError, "write 'update r = ...'"):
+        with self.assertRaisesRegex(LangError, "write '@r = ...'"):
             parse(sub + "\nprogram t\nend program t\n")
 
     def test_update_of_local_in_select_body(self):
-        sub = "subroutine f(integer :: n)\n integer :: x\n select case n\n case 1\n update x = 2\n end select\nend subroutine"
-        with self.assertRaisesRegex(LangError, "'update' is for out and inout"):
+        sub = "subroutine f(integer :: n)\n integer :: x\n select case n\n case 1\n @x = 2\n end select\nend subroutine"
+        with self.assertRaisesRegex(LangError, "'@' is for out and inout"):
             parse(sub + "\nprogram t\nend program t\n")
 
     def test_loop_variable_cannot_be_parameter_inside_select(self):
@@ -595,14 +595,14 @@ class ConverterTests(unittest.TestCase):
                "  end select\nend subroutine\nprogram p\n  integer :: v\n  v = 0\n  call setit(1, v)\n  print *, v\nend program\n")
         text, _ = convert(src)
         self.assertIn("inout integer :: r", text)      # not always written, so it cannot be out
-        self.assertIn("update r = 5", text)
+        self.assertIn("@r = 5", text)
         self.assertEqual(run_bor(text), ["5"])
 
     def test_write_in_every_branch_is_still_only_conditional(self):
         src = ("subroutine setit(k, r)\n  integer, intent(in) :: k\n  integer :: r\n  select case (k)\n  case default\n    r = 5\n"
                "  end select\nend subroutine\nprogram p\n  integer :: v\n  call setit(1, v)\n  print *, v\nend program\n")
         text, _ = convert(src)
-        self.assertIn("update r = 5", text)
+        self.assertIn("@r = 5", text)
 
     def test_function_result_assigned_in_select_and_return_inside(self):
         src = ("integer function f(n)\n  integer, intent(in) :: n\n  select case (n)\n  case (1)\n    f = 10\n    return\n"

@@ -21,7 +21,7 @@ from .fformat import FormatError, parse_format, render, substitute
 # Words the Boreas parser treats specially; Fortran has no reserved words,
 # so a Fortran variable with one of these names is renamed.
 RESERVED = {"left", "right", "fixed", "scientific", "general", "tf", "text", "split", "fields", "field", "to_integer", "to_real", "to_logical", "exists", "open", "try_open", "read_line",     # built-ins the converter writes itself
-            "close", "file", "const", "update", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
+            "close", "file", "const", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "println", "write", "writeln", "read", "stop", "call", "return", "exit", "cycle",
             "select", "case", "default", "fallthrough", "break",
@@ -4905,7 +4905,7 @@ class FParser:
                         self.note(self.fn_lines.get(id(f), 0), f"{f.name}: intent(out) record '{p[1]}' "
                                   f"is not fully assigned; made inout")
         self.reconcile_callbacks(unit, funcs)
-        for f in funcs:                            # writes that reach the caller are marked `update`
+        for f in funcs:                            # writes that reach the caller are marked `@`
             modes = {p[1]: p[2] for p in f.params}
             for n in iter_nodes(f.body):
                 if isinstance(n, Assign) and modes.get(root_name(n.target)) in ("out", "inout"):
@@ -5358,7 +5358,7 @@ class FParser:
         """Fortran keeps `save`d locals (and ones initialised in their declaration) between calls;
         Boreas locals start fresh. That only matters if the procedure changes the variable and could
         read the old value, and if it runs more than once. When it does, the variable moves into a
-        module of its own, so the state is kept and every write to it is marked `update`."""
+        module of its own, so the state is kept and every write to it is marked `@`."""
         for fn, scope in built:
             if not isinstance(fn, Function):
                 continue
@@ -5404,7 +5404,7 @@ class FParser:
         host = next((m for m in unit.modules.values() if m.functions.get(fn.name) is fn), None)
         (host or fn).uses.append(Use(modname, names, line))
         self.note(line, f"{', '.join(names)} of '{fn.name}' keep their value between calls in Fortran, so they "
-                        f"moved to module {modname}; writes to them are marked update")
+                        f"moved to module {modname}; writes to them are marked @")
 
     def called_once(self, unit, name, seen=()):
         """Is the procedure called from exactly one place that runs once (the main program, outside

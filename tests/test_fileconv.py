@@ -49,7 +49,7 @@ class FileConversionTests(unittest.TestCase):
     def test_units_live_in_one_module(self):
         text, _ = convert(read(fixture("files.f90")), "files.f90")
         self.assertIn("module file_units", text)
-        self.assertIn("update unit_10 = open(name, \"write\")", text.replace("trim(name)", "name"))
+        self.assertIn("@unit_10 = open(name, \"write\")", text.replace("trim(name)", "name"))
 
     def test_mode_comes_from_how_the_unit_is_used(self):
         src = ("program p\n  open(7, file='a.txt')\n  write(7, *) 1\n  close(7)\n"

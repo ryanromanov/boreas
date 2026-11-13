@@ -159,7 +159,7 @@ def stmt(s, depth):
     if isinstance(s, Comment):
         return [pad + _comment(s.text)]
     if k is Assign:
-        return [f"{pad}{'update ' if s.update else ''}{expr(s.target)} = {expr(s.value)}"]
+        return [f"{pad}{'@' if s.update else ''}{expr(s.target)} = {expr(s.value)}"]
     if k is Print:
         if not s.args and not s.newline:
             raise LangError("print needs at least one value")
@@ -215,9 +215,9 @@ def stmt(s, depth):
     if k is DoWhile:
         return [f"{pad}{_label(s)}do while {expr(s.cond)}"] + stmts(s.body, depth + 1) + [pad + _end_do(s)]
     if k is Allocate:
-        return [f"{pad}{'update ' if s.update else ''}allocate {s.name}[" + ", ".join(expr(x) for x in s.dims) + "]"]
+        return [f"{pad}allocate {'@' if s.update else ''}{s.name}[" + ", ".join(expr(x) for x in s.dims) + "]"]
     if k is Deallocate:
-        return [f"{pad}{'update ' if s.update else ''}deallocate {s.name}"]
+        return [f"{pad}deallocate {'@' if s.update else ''}{s.name}"]
     if k is Decl:
         return [f"{pad}{_decl_head(s)} :: {_decl_entity(s)}"]
     raise LangError(f"cannot print statement {k.__name__}")

@@ -382,9 +382,9 @@ cannot themselves be `allocatable`, so a callee cannot allocate its caller's arr
 allocation is freed at the end of its scope.
 
 A module can hold an allocatable array too (`public allocatable integer[] :: data`). Because every
-importer sees it, allocating or freeing it is a write and says so with `update`, in a subroutine
-(a function cannot): `update allocate data[n]`, `update deallocate data`, `update data[i] = x`.
-Reading needs nothing special. `allocate` on a local array never takes `update`.
+importer sees it, allocating or freeing it is a write and says so with `@`, in a subroutine
+(a function cannot): `allocate @data[n]`, `deallocate @data`, `@data[i] = x`.
+Reading needs nothing special. `allocate` on a local array never takes `@`.
 
 ## Functions that return arrays
 
@@ -444,8 +444,8 @@ field per line, with no default values:
   A constructor overrides defaults, and fields it leaves out keep them.
 - `const point :: origin = point(0.0, 0.0)` makes a read-only record. Writing a field of a `const`
   record or an `in` parameter is an error.
-- A write to a field of an `out` or `inout` parameter needs `update`, like any write the caller sees:
-  `update p.x = p.x + dx`. An `out` record parameter starts with no values, except for fields that
+- A write to a field of an `out` or `inout` parameter needs `@`, like any write the caller sees:
+  `@p.x = p.x + dx`. An `out` record parameter starts with no values, except for fields that
   declare a default, and must have every field assigned before the subroutine returns. Two fields of one record may be passed as separate `out`/`inout` arguments;
   the same field twice (or a record and one of its fields) is an aliasing error.
 - Records cannot be compared or used in arithmetic (compare the fields), cannot be `select` subjects,
@@ -465,7 +465,7 @@ A record can hold the functions that work on it. The first parameter is `self`, 
       end function
 
       subroutine grow(inout self, real :: factor)
-        update self.r = self.r * factor
+        @self.r = self.r * factor
       end subroutine
     end record
 
@@ -473,7 +473,7 @@ A record can hold the functions that work on it. The first parameter is `self`, 
     println(c.area())
     call c.grow(2.0)               ! c.r is now 4.0
 
-A function in a record is an ordinary function otherwise: the same parameter modes, `update` rules and `const`
+A function in a record is an ordinary function otherwise: the same parameter modes, `@` rules and `const`
 checks apply (`call c.grow(2.0)` on a `const` record is an error). Two records can both have an `area`. A function
 and a field of one record cannot share a name, and a function can only be declared inside its record.
 
@@ -597,15 +597,16 @@ Results come back through `out` / `inout` parameters:
     subroutine swap(inout integer :: a, inout integer :: b)
       integer :: t
       t = a
-      update a = b
-      update b = t
+      @a = b
+      @b = t
     end subroutine
 
     call swap(x, y)
 
-Every write to an `out` / `inout` parameter is marked with `update`, so a reader
-can see which assignments change something outside the subroutine. Using
-`update` on anything else, or leaving it off for such a parameter, is an error.
+Every write to an `out` / `inout` parameter is marked with `@` in front of the variable: `@a = b` changes
+the caller's `a`, while `t = a` only changes a local. A reader can see which assignments reach outside the
+subroutine, and a module variable's writes carry the same mark. Using `@` on anything else, or leaving it off
+for such a parameter, is an error. (The old keyword `update` is an error that points to `@`.)
 Parameters default to `in` and cannot be assigned. Functions only take
 `in` parameters. An output variable may not be passed twice in one call, and an
 `out` parameter must be assigned before the subroutine returns.
@@ -663,13 +664,13 @@ error, an imported constant is read-only, and modules cannot import each other i
 a cycle. See `examples/modules.bor`.
 
 A module can also hold variables. They keep their value between calls, and every write
-to one is marked with `update`, the same word that marks a write to an `out` parameter:
+to one is marked with `@`, the same mark that marks a write to an `out` parameter:
 
     module counter
       public integer :: hits = 0
 
       public subroutine hit()
-        update hits = hits + 1
+        @hits = hits + 1
       end subroutine
     end module
 
@@ -678,10 +679,10 @@ to one is marked with `update`, the same word that marks a write to an `out` par
       call hit()
       call hit()
       println(hits)          ! 2
-      update hits = 0
+      @hits = 0
     end program
 
-Any code that imports a variable can read it, and can write it with `update`. A function
+Any code that imports a variable can read it, and can write it with `@`. A function
 cannot change a module variable (only a subroutine can), so functions stay free of side effects.
 A module variable can be `allocatable`; see Allocatable arrays above.
 
@@ -732,7 +733,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - `parameter` constants become `const`.
 - `allocatable` locals, `allocate` / `deallocate` (one statement per array) and `allocated()` are
   translated. `stat=`, `errmsg=`, `source=`, `mold=`, non-1 lower bounds, allocatable
-  dummy arguments and results become TODOs. Allocatable module variables work: `update` is added to their
+  dummy arguments and results become TODOs. Allocatable module variables work: `@` is added to their
   `allocate`, `deallocate` and element writes, and a function that allocates one becomes a subroutine. A whole-array assignment to an
   allocatable with no earlier `allocate` gets a note, since Fortran allocated it automatically.
 - Derived types become records, with `%` turned into `.` and `type(point)` into `point`. Component
@@ -769,7 +770,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
   initialised in its declaration) matters only when the procedure changes it and can read the old value.
   If the procedure is called from just one place that runs once, a fresh start each call behaves the same,
   so it stays a local (with a note). Otherwise the variable moves to a module of its own
-  (`<procedure>_state`) as a public module variable, and writes to it are marked `update`. A declaration
+  (`<procedure>_state`) as a public module variable, and writes to it are marked `@`. A declaration
   that uses other names (so it cannot move) stays a TODO. Ones that are never changed, or always assigned
   before they are read, convert without a note.
 - Kinds become fixed-width types: `real` and `real(4)` are `real32` (Fortran's default real is single
@@ -871,7 +872,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
 - Modules become Boreas modules. Fortran is public by default, so names get `public`
   unless the Fortran says `private`. `use m` becomes an explicit `use m: a, b` listing
   the names the code actually uses (names a module re-exports are imported from where
-  they are defined). Module variables stay module variables; every write to one gets `update`,
+  they are defined). Module variables stay module variables; every write to one gets `@`,
   and a function that changes one becomes a subroutine with an `out` result (like a function that
   changes its arguments). A `use` of a module that isn't defined earlier in the same file, or an
   import that renames, is a TODO.

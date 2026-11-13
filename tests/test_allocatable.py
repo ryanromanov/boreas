@@ -148,7 +148,7 @@ println(size(a))""")
         funcs = """subroutine fill(inout integer[] :: v)
   integer :: i
   do i = 1, size(v)
-    update v[i] = i * i
+    @v[i] = i * i
   end do
 end subroutine
 function total(integer[] :: v) -> integer
@@ -191,7 +191,7 @@ class RuntimeErrorTests(unittest.TestCase):
             run(self.DECL + body, funcs)
 
     def test_every_use_of_an_unallocated_array(self):
-        funcs = ("subroutine bump(inout integer :: v)\n  update v[1] = 1\nend subroutine\n"
+        funcs = ("subroutine bump(inout integer :: v)\n  @v[1] = 1\nend subroutine\n"
                  "function first(integer :: v) -> integer\n  return v[1]\nend function")
         cases = [
             "println(a)", "println(a[1])", "println(a[1:2])", "a[1] = 1", "a[1:2] = 1", "a = 1",
@@ -246,10 +246,10 @@ class RuntimeErrorTests(unittest.TestCase):
 
     def test_update_rules_still_apply(self):
         funcs = "subroutine s(inout integer :: v)\n  v[1] = 1\nend subroutine"
-        with self.assertRaisesRegex(LangError, "update"):
+        with self.assertRaisesRegex(LangError, "@"):
             run(self.DECL + "allocate a[2]\ncall s(a)", funcs)
-        with self.assertRaisesRegex(LangError, "'update' is for out and inout"):
-            parse("program t\nallocatable integer[] :: a\nallocate a[2]\nupdate a[1] = 1\nend program t")
+        with self.assertRaisesRegex(LangError, "'@' is for out and inout"):
+            parse("program t\nallocatable integer[] :: a\nallocate a[2]\n@a[1] = 1\nend program t")
 
     def test_in_parameter_receiving_allocatable_is_read_only(self):
         funcs = "subroutine s(integer[] :: v)\n  v[1] = 1\nend subroutine"
@@ -259,7 +259,7 @@ class RuntimeErrorTests(unittest.TestCase):
 
 class PrinterTests(unittest.TestCase):
     SRC = """subroutine fill(inout integer :: v)
-  update v = 1
+  @v = 1
 end subroutine
 
 program t
@@ -290,7 +290,7 @@ end program t
     def test_printed_program_runs(self):
         out = []
         from boreas.interp import Interp
-        Interp(parse(to_source(parse(self.SRC.replace("update v = 1", "update v[1] = 1")))), out.append).run()
+        Interp(parse(to_source(parse(self.SRC.replace("@v = 1", "@v[1] = 1")))), out.append).run()
         self.assertEqual(out, ["true"])
 
 
@@ -363,7 +363,7 @@ end program p
         reasons = [f[2] for f in todos(findings)]
         self.assertTrue(any("allocatable dummy argument 'a'" in r and "cannot be allocatable" in r for r in reasons))
         self.assertIn("TODO(convert): uses 'a'", text)      # the body that touches it is not translated
-        self.assertNotIn("update a(1)", text)
+        self.assertNotIn("@a(1)", text)
 
     def test_allocatable_function_result_is_an_array_result(self):
         src = """function make(n)

@@ -212,7 +212,7 @@ class WhatStaysTheSame(unittest.TestCase):
 
     def test_unreadable_character_is_an_error(self):
         with self.assertRaises(LangError):
-            fmt("program t\n  x = 1 @ 2\nend program\n")
+            fmt("program t\n  x = 1 $ 2\nend program\n")
 
 
 def sources():
@@ -317,7 +317,7 @@ class LanguageServer(unittest.TestCase):
                     self.assertEqual(apply(src, edits), format_source(src, indent, tabs))
 
     def test_unreadable_text_is_an_error_not_an_edit(self):
-        reply = self.request("program t\nx = 1 @ 2\nend program\n", {"tabSize": 2, "insertSpaces": True})
+        reply = self.request("program t\nx = 1 $ 2\nend program\n", {"tabSize": 2, "insertSpaces": True})
         self.assertIn("error", reply)
 
 

@@ -23,13 +23,13 @@ module counting
 
   public subroutine tally(integer :: n, out integer :: evens, out real :: tau)
     integer :: i
-    update evens = 0
+    @evens = 0
     do i = 1, n
       if mod(i, 2) == 0 then
-        update evens = evens + 1
+        @evens = evens + 1
       end if
     end do
-    update tau = 2.0 * pi
+    @tau = 2.0 * pi
   end subroutine
 end module
 
