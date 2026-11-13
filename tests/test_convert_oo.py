@@ -376,9 +376,9 @@ class SelectTypeLimitTests(unittest.TestCase):
     def messages(self, findings):
         return " | ".join(m for _, kind, m in findings if kind == "todo")
 
-    def test_class_is_and_intrinsic_type_guards_are_todos(self):
-        _, findings = self.convert("  select type (s)\n  class is (shape)\n    print *, 1\n  end select\n")
-        self.assertIn("'class is (T)' is not supported", self.messages(findings))
+    def test_intrinsic_type_guards_are_todos(self):
+        _, findings = self.convert("  select type (s)\n  type is (integer)\n    print *, 1\n  end select\n")
+        self.assertIn("only derived types are supported", self.messages(findings))
 
     def test_allocated_of_a_polymorphic_value_is_a_todo(self):
         _, findings = self.convert("  print *, allocated(s)\n")
@@ -545,14 +545,43 @@ end program
 
 
 class OOLimitTests(unittest.TestCase):
-    def test_an_inherited_procedure_from_another_module_is_a_todo(self):
-        src = ("module base_m\n  implicit none\n  type :: base\n    integer :: v = 1\n  contains\n    procedure :: show\n"
-               "  end type\ncontains\n  subroutine show(self)\n    class(base), intent(in) :: self\n    print *, self%v\n"
-               "  end subroutine\nend module\nmodule child_m\n  use base_m\n  implicit none\n"
-               "  type, extends(base) :: child\n    integer :: w = 2\n  end type\nend module\n"
-               "program p\n  use child_m\n  implicit none\n  type(child) :: c\n  call c%show()\nend program\n")
-        text, findings = converted(src)
-        self.assertTrue(any("inherited from another module" in m for _, _, m in findings))
+    def parts(self, helper="", use_in_show=""):
+        return ("module base_m\n  implicit none\n  private\n  public :: base\n" + helper +
+                "  type :: base\n    integer :: v = 1\n  contains\n    procedure :: show => base_show\n  end type\n"
+                "contains\n  subroutine base_show(self)\n    class(base), intent(in) :: self\n" + use_in_show +
+                "    print *, self%v\n  end subroutine\nend module\n"
+                "module child_m\n  use base_m\n  implicit none\n"
+                "  type, extends(base) :: child\n    integer :: w = 2\n  end type\nend module\n"
+                "program p\n  use child_m\n  implicit none\n  type(child) :: c\n  call c%show()\nend program\n")
+
+    def test_an_inherited_procedure_from_another_module_is_copied(self):
+        text = OOConversionTests.check(self, self.parts())
+        self.assertIn("record child", text)
+
+    def test_an_inherited_procedure_may_use_the_parents_public_names(self):
+        src = self.parts("  integer, parameter, public :: scale = 10\n", "    print *, scale * self%v\n")
+        text = OOConversionTests.check(self, src)
+        self.assertIn("use base_m: scale", text.split("module child_m")[1])
+
+    def test_an_inherited_procedure_that_uses_a_private_name_is_a_todo(self):
+        src = self.parts("  integer, parameter :: width = 8\n", "    print *, width\n")
+        _, findings = converted(src)
+        said = " | ".join(m for _, kind, m in findings if kind == "todo")
+        self.assertIn("uses 'width', private to module 'base_m'", said)
+
+    def test_an_inherited_procedure_that_writes_a_module_variable_of_the_parent(self):
+        src = self.parts("  integer, public :: calls = 0\n", "    calls = calls + 1\n").replace(
+            "  call c%show()\n", "  call c%show()\n  call c%show()\n  print *, calls\n").replace(
+            "use child_m\n  implicit none\n  type(child)", "use child_m\n  use base_m, only: calls\n  implicit none\n  type(child)")
+        OOConversionTests.check(self, src)               # both copies update the one shared `calls`
+
+    def test_an_inherited_procedure_whose_name_clashes_is_a_todo(self):
+        src = self.parts("  integer, parameter, public :: scale = 10\n", "    print *, scale * self%v\n") \
+            .replace("module child_m\n  use base_m\n", "module child_m\n  use base_m, only: base\n") \
+            .replace("  type, extends(base) :: child", "  integer, parameter :: scale = 3\n  type, extends(base) :: child")
+        _, findings = converted(src)
+        said = " | ".join(m for _, kind, m in findings if kind == "todo")
+        self.assertIn("a name this module already has for something else", said)
 
     def test_a_deferred_procedure_nobody_implements_is_a_todo(self):
         src = ("module m\n  implicit none\n  type, abstract :: a\n  contains\n    procedure(f), deferred :: go\n  end type\n"
@@ -571,3 +600,310 @@ class OOLimitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+MEET = """program demo
+  use animals
+  implicit none
+  type(animal) :: a
+  type(dog) :: d
+  type(puppy) :: p
+  d%name = "rex"
+  p%name = "bit"
+  call meet(a)
+  call meet(d)
+  call meet(p)
+contains
+  subroutine meet(x)
+    class(animal), intent(in) :: x
+    select type (x)
+BODY    end select
+  end subroutine
+end program
+"""
+
+
+class ClassIsGuardTests(unittest.TestCase):
+    """`class is (T)` matches T and everything that extends it."""
+    check = OOConversionTests.check
+
+    def test_a_guard_that_only_calls_functions_is_a_case_on_the_interface(self):
+        text = self.check(ANIMALS + MEET.replace("BODY", """    type is (puppy)
+      print *, "a puppy"
+    class is (animal)
+      call x%speak()
+    class default
+      print *, "other"
+"""), ["case animal_any", "case puppy"])
+        self.assertNotIn("case dog", text)
+
+    def test_a_guard_that_reads_fields_is_written_out_per_type(self):
+        text = self.check(ANIMALS + MEET.replace("BODY", """    type is (puppy)
+      print *, "a puppy"
+    class is (dog)
+      print *, "a dog with", x%tricks
+    class default
+      print *, "other"
+"""), ["case dog", "case puppy"])
+        self.assertNotIn("case dog_any", text)
+        self.assertEqual(text.count("with"), 1)                     # puppy has its own guard, so only dog gets the body
+
+    def test_an_interface_that_an_unrelated_type_also_fits_is_written_out(self):
+        # a plain `animal` has every function `dog` lists, so `case dog_any` would wrongly match it
+        self.check(ANIMALS + MEET.replace("BODY", """    class is (dog)
+      call x%speak()
+    class default
+      print *, "other"
+"""), ["case dog", "case puppy"])
+
+    def test_the_more_specific_guard_wins(self):
+        self.check(ANIMALS + MEET.replace("BODY", """    class is (animal)
+      print *, "an animal"
+    class is (dog)
+      print *, "a dog", x%tricks
+    class default
+      print *, "other"
+"""))
+
+    def test_a_guard_that_changes_the_value_writes_it_back(self):
+        src = SHAPES_WITH_GROW + """module users
+  use shapes
+  implicit none
+contains
+  subroutine enlarge(s)
+    class(shape), intent(inout) :: s
+    select type (s)
+    class is (circle)
+      call s%grow(2.0)
+    end select
+  end subroutine
+end module
+program demo
+  use shapes
+  use users
+  implicit none
+  type(circle) :: c
+  c = circle(name="c", r=2.0)
+  call enlarge(c)
+  call c%describe()
+end program
+"""
+        text, findings = converted(src)
+        self.assertEqual(todos(findings), [])
+        got = run_bor(text)
+        if GFORTRAN:
+            self.assertTrue(same_output("\n".join(got), fortran_output(src)), got)
+
+
+KENNEL = """module kennel
+  implicit none
+  type :: animal
+    integer :: legs = 4
+  contains
+    procedure :: speak
+  end type
+  type, extends(animal) :: dog
+  contains
+    procedure :: speak => dog_speak
+    procedure :: fetch
+  end type
+  type, extends(dog) :: puppy
+  end type
+contains
+  subroutine speak(self)
+    class(animal), intent(in) :: self
+    print *, "animal speaks"
+  end subroutine
+  subroutine dog_speak(self)
+    class(dog), intent(in) :: self
+    print *, "dog speaks"
+  end subroutine
+  subroutine fetch(self)
+    class(dog), intent(in) :: self
+    print *, "fetching"
+  end subroutine
+  subroutine walk(d)
+    class(dog), intent(in) :: d
+    call d%speak()
+  end subroutine
+end module
+"""
+
+
+class ClassIsReviewTests(unittest.TestCase):
+    check = OOConversionTests.check
+
+    def test_the_more_specific_interface_guard_is_tried_first(self):
+        text = self.check(KENNEL + """program demo
+  use kennel
+  implicit none
+  type(animal) :: a
+  type(dog) :: d
+  type(puppy) :: p
+  call meet(a)
+  call meet(d)
+  call meet(p)
+  call walk(p)
+contains
+  subroutine meet(x)
+    class(animal), intent(in) :: x
+    select type (x)
+    class is (animal)
+      call x%speak()
+    class is (dog)
+      call x%fetch()
+    end select
+  end subroutine
+end program
+""", ["case dog_any", "case animal_any"])
+        self.assertLess(text.index("case dog_any"), text.index("case animal_any"))
+
+    def test_a_guard_inside_a_guard_is_settled_too(self):
+        self.check(ANIMALS + MEET.replace("BODY", """    class is (dog)
+      select type (x)
+      class is (puppy)
+        print *, "puppy", x%tricks
+      class default
+        print *, "dog", x%tricks
+      end select
+    class default
+      print *, "other"
+"""))
+
+    def test_a_type_the_code_cannot_see_is_flagged_not_dropped(self):
+        src = """module base
+  implicit none
+  type :: animal
+    integer :: legs = 4
+  contains
+    procedure :: speak
+  end type
+contains
+  subroutine speak(self)
+    class(animal), intent(in) :: self
+    print *, "animal"
+  end subroutine
+end module
+module kinds
+  use base
+  implicit none
+  type, extends(animal) :: bird
+  contains
+    procedure :: speak => bird_speak
+  end type
+contains
+  subroutine bird_speak(self)
+    class(bird), intent(in) :: self
+    print *, "bird"
+  end subroutine
+end module
+module users
+  use base
+  implicit none
+contains
+  subroutine count_legs(x)
+    class(animal), intent(in) :: x
+    select type (x)
+    class is (animal)
+      print *, x%legs
+    end select
+  end subroutine
+end module
+program demo
+  use base
+  use kinds
+  use users
+  implicit none
+  type(bird) :: b
+  call count_legs(b)
+end program
+"""
+        text, findings = converted(src)
+        said = [m for _, kind, m in findings if kind == "todo"]
+        self.assertEqual(len(said), 1, said)
+        self.assertIn("also matches bird", said[0])
+        self.assertIn("TODO(convert): 'class is (animal)' also matches bird", text)
+        run_bor(text)                                  # what is left still runs
+
+
+COUNTER = """module counters
+  implicit none
+  type :: counter
+    integer :: n = 0
+  contains
+    procedure, pass(c) :: add
+    procedure, pass(c) :: show
+  end type
+  type, extends(counter) :: double_counter
+  contains
+    procedure, pass(c) :: add => double_add
+  end type
+contains
+  subroutine add(amount, c)
+    integer, intent(in) :: amount
+    class(counter), intent(inout) :: c
+    c%n = c%n + amount
+  end subroutine
+  subroutine double_add(amount, c)
+    integer, intent(in) :: amount
+    class(double_counter), intent(inout) :: c
+    c%n = c%n + 2 * amount
+  end subroutine
+  function show(label, c) result(r)
+    character(len=*), intent(in) :: label
+    class(counter), intent(in) :: c
+    integer :: r
+    print *, label, c%n
+    r = c%n
+  end function
+end module
+"""
+
+
+class PassArgTests(unittest.TestCase):
+    check = OOConversionTests.check
+
+    def test_the_object_goes_first_as_self_and_calls_are_unchanged(self):
+        text = self.check(COUNTER + """program demo
+  use counters
+  implicit none
+  type(counter) :: x
+  type(double_counter) :: y
+  integer :: k
+  call x%add(5)
+  call x%add(2)
+  call y%add(5)
+  k = x%show("x is")
+  k = y%show("y is")
+  print *, k
+end program
+""", ["subroutine add(inout self, integer :: amount)", "call x.add(5)"])
+        self.assertNotIn("subroutine add(integer", text)
+
+    def test_polymorphic_calls_dispatch_through_the_override(self):
+        self.check(COUNTER + """program demo
+  use counters
+  implicit none
+  type(double_counter) :: y
+  call bump(y)
+  print *, y%n
+contains
+  subroutine bump(z)
+    class(counter), intent(inout) :: z
+    call z%add(4)
+  end subroutine
+end program
+""")
+
+    def test_a_pass_argument_the_procedure_does_not_have_is_a_todo(self):
+        src = COUNTER.replace("procedure, pass(c) :: show", "procedure, pass(nobody) :: show") + """program demo
+  use counters
+  implicit none
+  type(counter) :: x
+  call x%add(1)
+  print *, x%n
+end program
+"""
+        _, findings = converted(src)
+        said = " | ".join(m for _, kind, m in findings if kind == "todo")
+        self.assertIn("says pass(nobody), but 'show' has no argument of that name", said)

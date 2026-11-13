@@ -530,7 +530,19 @@ runs the function of the record it holds:
     end select
 
 `case default` is required, because a new record can fit an interface at any time. The default may be empty. A case
-matches exactly one record, not any record that fits. In the default case `p` has the interface's type. `p` is a
+that names a record matches exactly that record. A case that names an interface matches any record that fits it, and
+inside it `p` has only that interface's functions:
+
+    select type all[2] as p
+      case circle                 ! a circle always takes this case
+        println("radius", p.r)
+      case sized                  ! any other record with sized's functions
+        println("area", p.area())
+      case default
+        println("something else")
+    end select
+
+Record cases come first, then the first interface case that fits. In the default case `p` has the interface's type. `p` is a
 copy: write it back (`all[2] = p`) to change the original. `break`, `exit` and `cycle` work as in `select case`.
 
 ## Optional values
@@ -722,8 +734,15 @@ report on stderr. Translations that change meaning are flagged, never silent:
   `select type x as p` (with an empty `case default` added when Fortran has none, and `x = p` written back after a
   case that changes `p`), and a type that only holds `class(T), allocatable` (the wrapper Fortran needs for an
   array of mixed types) is dropped: `type(wrapper) :: all(3)` is `figure[3] :: all` and `all(i)%s` is `all[i]`.
-  A type called like a Boreas built-in (`shape`) is renamed (`shape_`). Still TODOs: `class(*)`, `class is (T)`,
-  `allocated()` of a `class(T)` value, an inherited procedure whose type is in another module, a wrapper used as a
+  A type called like a Boreas built-in (`shape`) is renamed (`shape_`). `class is (T)` becomes
+  `case T_any` when its body only calls functions, and otherwise one case for each type that extends `T`.
+  An inherited procedure whose parent is in another module is copied into the child's module when everything it
+  uses is public there (the converter adds the imports); a private name it needs is a TODO that names it.
+  A `final` binding is dropped with a TODO (Boreas has no destructors); the procedure stays and is not called
+  automatically.
+  `procedure, pass(c) :: add` moves the argument `c` to the front as `self` (calls do not change).
+  Still TODOs: `class(*)`, `nopass`, `generic` bindings,
+  `allocated()` of a `class(T)` value, a wrapper used as a
   component, and a case that changes `p` and also leaves with `exit`, `cycle` or `return`. See `examples/shapes.f90`.
 - A local that Fortran keeps between calls (declared `save`, named in a `save` statement, or
   initialised in its declaration) matters only when the procedure changes it and can read the old value.

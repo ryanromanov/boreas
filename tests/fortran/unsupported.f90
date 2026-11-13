@@ -7,7 +7,7 @@ program mixed
   type point
     real :: x, y
   contains
-    final :: tidy
+    generic :: write(formatted) => show
   end type point
   type(point) :: p
 

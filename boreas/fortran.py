@@ -315,6 +315,7 @@ class Binding:
     impl: str | None              # the module procedure that implements it; None for a deferred one
     iface: str | None             # for a deferred binding: the abstract interface that gives its signature
     line: int
+    pass_arg: str | None = None   # `pass(c)`: the dummy argument that receives the object (None: the first)
 
 
 @dataclass
@@ -2868,12 +2869,23 @@ class FParser:
                 info = self.types.get(name)
                 if info is None or not info.ok or info.abstract or info.wrapper is not None:
                     raise Unsupported(f"'type is ({name})': not a record this conversion knows")
+            elif word == "class" and self.at_name("is"):
+                self.k += 1
+                self.expect_op("(")
+                if self.peek() is not None and self.peek().text in TYPE_WORDS:
+                    raise Unsupported(f"'class is ({self.peek().text})': only derived types are supported")
+                top = self.type_name(self.expect_name())
+                self.expect_op(")")
+                info = self.types.get(top)
+                if info is None or not info.ok or info.wrapper is not None:
+                    raise Unsupported(f"'class is ({top})': not a record this conversion knows")
+                name = ("class", top, False)                  # settled by guard_cases once every type is known
             else:
-                raise Unsupported("'class is (T)' is not supported")
+                raise Unsupported("this guard of 'select type' is not supported")
             shadowed = scope.decls.get(bound) if bound is not None else None
             if bound is not None:                             # inside the case the name has the narrowed type
                 if name is not None:
-                    scope.decls[bound] = Info(name, None, False, None, None, False, cur.line)
+                    scope.decls[bound] = Info(name[1] if isinstance(name, tuple) else name, None, False, None, None, False, cur.line)
                 elif base is not None:
                     scope.decls[bound] = replace(base, dims=None, shape_dropped=False, rank=0, intent=None,
                                                  allocatable=False, init=None, parameter=False)
@@ -2902,15 +2914,35 @@ class FParser:
                         n.name = assoc
         read_only = base is not None and (base.intent == "in" or base.parameter)     # Fortran cannot change it either
         for c in cases:                                       # the copy goes back if the case changed it
+            if isinstance(c.values, tuple):                   # class is (T): can the body do with just T's functions?
+                c.values = ("class", c.values[1], self.only_calls_methods(c.body, assoc))
             if c.values is not None and not read_only and self.changes(c.body, assoc):
                 if not isinstance(subject, (Var, Apply)):
-                    raise Unsupported(f"'type is ({c.values})' changes '{assoc}', which is not a variable to write back to")
+                    raise Unsupported(f"the guard for '{self.guard_name(c)}' changes '{assoc}', which is not a variable to write back to")
                 if any(isinstance(n, (Exit, Cycle, Return)) for n in iter_nodes(c.body)):
-                    raise Unsupported(f"'type is ({c.values})' changes '{assoc}' and leaves early with exit, cycle or return")
+                    raise Unsupported(f"the guard for '{self.guard_name(c)}' changes '{assoc}' and leaves early with exit, cycle or return")
                 c.body.append(Assign(copy.deepcopy(subject), Var(assoc), c.line))
         if None not in {c.values for c in cases}:
             cases.append(Case(None, [Comment("no other type is handled here (Fortran does nothing for them either)")], line))
         return lead + [SelectType(subject, cases, line, False, assoc)]
+
+    @staticmethod
+    def guard_name(c):
+        return c.values[1] if isinstance(c.values, tuple) else c.values
+
+    @staticmethod
+    def only_calls_methods(body, name):
+        """Does this code use the variable `name` only as `name.f(...)` or `call name.f(...)`?"""
+        allowed = set()
+        for n in iter_nodes(body):
+            if isinstance(n, FieldAccess) and n.call and isinstance(n.base, Var):
+                allowed.add(id(n.base))
+            elif isinstance(n, Call) and isinstance(n.receiver, Var):
+                allowed.add(id(n.receiver))
+        for n in iter_nodes(body):
+            if isinstance(n, (Var, Apply, Allocate, Deallocate)) and n.name == name and id(n) not in allowed:
+                return False
+        return True
 
     @staticmethod
     def changes(body, name):
@@ -3352,6 +3384,7 @@ class FParser:
         own, holder = [], Scope("type", name)
         holder.host = scope
         bindings, poly_comps, in_bindings = {}, [], False
+        self.finals = []
         while self.i < len(self.items):
             cur = self.items[self.i]
             self.i += 1
@@ -3420,6 +3453,13 @@ class FParser:
                 bad = bad or "a polymorphic component (class(T), allocatable) is only supported in a type that holds nothing else"
         if name in self.types:
             self.todo(it.line, f"derived type '{name}' is defined more than once")
+        notes = []
+        if self.finals and not bad:
+            names = ", ".join(self.finals)
+            msg = (f"'{names}' was a finalizer of '{name}': Boreas has no destructors, so it is no longer called "
+                   f"automatically; call it where a '{name}' goes away if that matters")
+            self.todo(it.line, msg)
+            notes.append(Comment("TODO(convert): " + msg))
         if bad:
             self.types[name] = TypeInfo(name, scope, [], it.line, ok=False)
             raise Unsupported(f"derived type '{name}' was not translated: {bad}")
@@ -3427,7 +3467,7 @@ class FParser:
             scope.access[name] = access
         self.types[name] = TypeInfo(name, scope, fields, it.line, parent=parent, abstract=abstract,
                                     bindings=bindings, wrapper=wrapper)
-        return []
+        return notes
 
     def poly_component(self):
         """`class(T), allocatable :: name` inside a type: (T, name)."""
@@ -3458,21 +3498,34 @@ class FParser:
         word = self.expect_name()
         if word in ("private", "public") and len(toks) == 1:
             return None
+        if word == "final":                               # a destructor: Boreas has none, the procedure stays
+            self.accept_op("::")
+            while True:
+                self.finals.append(self.rename(self.expect_name()))
+                if not self.accept_op(","):
+                    break
+            return None
         if word != "procedure":
-            return f"'{word}' (a generic, final or other type-bound statement) is not supported"
+            return f"'{word}' (a generic or other type-bound statement) is not supported"
         iface = None
         if self.accept_op("("):
             iface = self.rename(self.expect_name())
             self.expect_op(")")
-        attrs = set()
+        attrs, pass_arg = set(), None
         while self.accept_op(","):
             a = self.expect_name()
             attrs.add(a)
-            if self.at_op("("):
+            if a == "pass" and self.at_op("("):
+                self.k += 1
+                pass_arg = self.rename(self.expect_name())
+                self.expect_op(")")
+            elif self.at_op("("):
                 self.skip_parens()
-        if attrs & {"nopass", "pass"}:
-            return f"a '{'nopass' if 'nopass' in attrs else 'pass'}' binding is not supported"
+        if "nopass" in attrs:
+            return "a 'nopass' binding is not supported (it gets no object, and Boreas functions in a record always do)"
         deferred = "deferred" in attrs
+        if deferred and pass_arg is not None:
+            return "a deferred binding with pass(arg) is not supported"
         if deferred and iface is None:
             return "a deferred binding needs an interface: procedure(name), deferred :: binding"
         if iface is not None and not deferred:
@@ -3483,7 +3536,7 @@ class FParser:
             impl = name
             if self.accept_op("=>"):
                 impl = self.rename(self.expect_name())
-            bindings[name] = Binding(name, None if deferred else impl, iface if deferred else None, line)
+            bindings[name] = Binding(name, None if deferred else impl, iface if deferred else None, line, pass_arg)
             if not self.accept_op(","):
                 break
         return None
@@ -4194,7 +4247,7 @@ class FParser:
             for b in t.bindings.values():
                 r = impls.get((t.module.name if t.module is not None else None, b.impl))
                 if r is not None and r.scope.dummies:
-                    passed.add((id(r.scope), r.scope.dummies[0]))
+                    passed.add((id(r.scope), b.pass_arg if b.pass_arg in r.scope.dummies else r.scope.dummies[0]))
         used = set()
         for sc in [r.scope for r in self.raw] + list(self.modules.values()):
             for name, info in sc.decls.items():
@@ -4214,6 +4267,59 @@ class FParser:
                     t.scope.access[name] = t.scope.access.get(t.name, "public" if t.scope.default_public else "private")
                 self.note(t.line, f"'{t.name}' is also used as class({t.name}): the record keeps the name and the "
                                   f"interface for class({t.name}) is '{name}'")
+        self.guard_cases()
+
+    def guard_cases(self):
+        """`class is (T)` matches T and everything that extends it. Boreas matches a `case` on one record or on
+        an interface (any record that fits it), so a guard becomes `case T_any` when its body only calls T's
+        functions and no unrelated record could fit that interface; otherwise it becomes one case per concrete
+        type that extends T (a converted program is closed, so they are all known)."""
+        import copy
+        concrete = [t for t in self.types.values() if t.ok and t.wrapper is None and not t.abstract]
+        for r in self.raw:
+            for sel in reversed([n for n in iter_nodes(r.body) if isinstance(n, SelectType)]):   # inner ones first
+                guards = [c for c in sel.cases if isinstance(c.values, tuple)]
+                if not guards:
+                    continue
+                guards.sort(key=lambda c: -len(self.ancestors(self.types[c.values[1]])))     # the most specific first
+                if all(c.values[2] and self.interface_fits(self.types[c.values[1]], concrete) for c in guards):
+                    slots = [i for i, c in enumerate(sel.cases) if isinstance(c.values, tuple)]
+                    for i, c in zip(slots, guards):               # the more specific interface is tried first
+                        sel.cases[i] = c
+                    for c in guards:
+                        c.values = self.iface_name[c.values[1]]
+                    continue
+                taken = {c.values for c in sel.cases if isinstance(c.values, str)}
+                made_for = {}
+                for c in guards:
+                    top = c.values[1]
+                    family = [t for t in concrete if t.name not in taken and any(a.name == top for a in self.ancestors(t))]
+                    seen = self.imported_names(r.scope)
+                    made = [t.name for t in family if t.module is r.scope.module or t.name in seen]
+                    hidden = [t.name for t in family if t.name not in made]
+                    taken |= set(made)
+                    made_for[id(c)] = [Case(name, copy.deepcopy(c.body), c.line, c.col) for name in made]
+                    self.note(c.line, f"'class is ({top})' is written out as a case for each type that extends it: "
+                                      f"{', '.join(made) or 'none'}")
+                    if hidden:                                # Fortran matches them too, but this code cannot name them
+                        msg = (f"'class is ({top})' also matches {', '.join(hidden)}, which this code cannot see "
+                               f"(its module is not used here); add a case for it")
+                        self.todo(c.line, msg)
+                        home = made_for[id(c)][0] if made_for[id(c)] else next(x for x in sel.cases if x.values is None)
+                        home.body.insert(0, Comment("TODO(convert): " + msg))
+                out = []
+                for c in sel.cases:
+                    out.extend(made_for[id(c)] if id(c) in made_for else [c])
+                sel.cases[:] = out
+
+    def interface_fits(self, t, concrete):
+        """May a guard `class is (t)` be a case on t's interface? It needs one, with functions to tell the types
+        apart, and no record outside t's family may have all of them."""
+        if t.name not in self.iface_name or not self.eff.get(t.name):
+            return False
+        wanted = set(self.eff[t.name])
+        return not any(all(a.name != t.name for a in self.ancestors(c)) and wanted <= set(self.eff.get(c.name, {}))
+                       for c in concrete)
 
     def ancestors(self, t):
         """The type itself, then its parent, and so on."""
@@ -4226,12 +4332,20 @@ class FParser:
     def implemented_interfaces(self, t):
         return [(self.iface_name[a.name], t.line) for a in self.ancestors(t) if a.name in self.iface_name]
 
+    @staticmethod
+    def passed_first(params, b):
+        """The parameters with the one that receives the object first (it is the first unless `pass(arg)` says so)."""
+        names = [q[1] for q in params]
+        k = names.index(b.pass_arg) if b.pass_arg in names else 0
+        return [params[k]] + params[:k] + params[k + 1:]
+
     def binding_signature(self, t, b, origin, fn, iname):
         """The Function (no body) an interface lists for the binding `b` of type `t`: from the procedure that
         implements it, or from the abstract interface a deferred binding names."""
         if fn is not None:
-            first = fn.params[0][2] or "in"
-            return Function(b.name, [[iname, "self", first]] + [list(p) for p in fn.params[1:]], fn.ret, [], fn.is_sub)
+            params = self.passed_first(fn.params, b)
+            first = params[0][2] or "in"
+            return Function(b.name, [[iname, "self", first]] + [list(p) for p in params[1:]], fn.ret, [], fn.is_sub)
         pt = self.find_interface(self.types[origin].scope, b.iface)
         if pt is None:
             return None
@@ -4268,9 +4382,13 @@ class FParser:
                     if fn is None:
                         problems.append(f"procedure '{b.impl}' of '{bname}' is not defined where the type is")
                         continue
+                    needs = []
                     if otype.module is not t.module:
-                        problems.append(f"'{bname}' is inherited from another module (implemented in '{b.impl}' there)")
-                        continue
+                        why, needs = self.foreign_names(unit, fn, b, otype, t)
+                        if why:
+                            problems.append(f"'{bname}' is inherited from module '{otype.module.name}', and its "
+                                            f"implementation '{b.impl}' {why}")
+                            continue
                 elif not t.abstract:
                     problems.append(f"the deferred procedure '{bname}' is never implemented")
                     continue
@@ -4290,6 +4408,10 @@ class FParser:
                     problems.append(f"'{bname}' is both a component and a procedure")
                     continue
                 f = copy.deepcopy(fn)
+                if b.pass_arg is not None and b.pass_arg not in [q[1] for q in f.params]:
+                    problems.append(f"'{bname}' says pass({b.pass_arg}), but '{b.impl}' has no argument of that name")
+                    continue
+                f.params = self.passed_first(f.params, b)
                 old = f.params[0][1]
                 if any(isinstance(d, Decl) and d.name == "self" for d in iter_nodes(f.body)) or \
                         (old != "self" and any(q[1] == "self" for q in f.params[1:])):
@@ -4302,6 +4424,7 @@ class FParser:
                         if isinstance(n, (Var, Apply, Call, Allocate, Deallocate)) and n.name == old:
                             n.name = "self"
                 rec.functions[bname] = f
+                self.add_imports(unit, t, needs)
                 self.method_functions.append(f)
                 self.method_home[id(f)] = unit.modules[t.module.name] if t.module is not None else None
                 self.method_origin[id(f)] = (origin, b.impl)
@@ -4342,6 +4465,63 @@ class FParser:
                     if hasattr(owner, "comments"):
                         owner.comments.append("TODO(convert): " + msg)
                     self.todo(line, msg)
+
+    def foreign_names(self, unit, fn, b, otype, t):
+        """An inherited procedure is copied into a record of another module, so its body runs where the parent's
+        module is not in scope. Every name it uses must still be reachable there: returns (why not, or None;
+        the imports the copy needs as (module, name))."""
+        home = unit.modules[otype.module.name]
+        mine = unit.modules[t.module.name] if t.module is not None else None
+        impl = b.impl
+        local = {q[1] for q in fn.params} | {impl}
+        for n in iter_nodes(fn.body):
+            if isinstance(n, Decl):
+                local.add(n.name)
+            elif isinstance(n, (Do, SelectType, Gen)):
+                local.add(getattr(n, "var", None))
+        refs = self.references(fn.body) | {x for q in self.passed_first(fn.params, b)[1:] for x in type_names(q[0])}
+        refs |= {base_type(fn.ret)} if fn.ret else set()
+        imported = {n: u.module for u in fn.uses + home.uses for n in u.names}
+        own = {x.name for x in (mine.decls if mine is not None else [])} | set(mine.functions if mine else {}) \
+            | set(mine.records if mine else {}) | set(mine.interfaces if mine else {})
+        here = {n: u.module for u in (mine.uses if mine is not None else unit.program.uses if unit.program else [])
+                for n in u.names}
+        private, clash, needs = [], [], []
+        for n in sorted(refs - local - set(BUILTINS) - set(ELEMENTAL)):
+            if n in imported:
+                source, public = imported[n], True
+            elif n in home.functions:
+                source, public = home.name, home.functions[n].public
+            elif n in home.records:
+                source, public = home.name, home.records[n].public
+            elif n in home.interfaces:
+                source, public = home.name, home.interfaces[n].public
+            elif any(d.name == n for d in home.decls):
+                source, public = home.name, next(d.public for d in home.decls if d.name == n)
+            else:
+                continue                                         # not something defined in a module
+            if not public:
+                private.append(n)
+            elif n in own or here.get(n, source) != source:
+                clash.append(n)
+            else:
+                needs.append((source, n))
+        if private:
+            return (f"uses {', '.join(repr(n) for n in private)}, private to module '{home.name}', which a copy in "
+                    f"another module cannot see"), []
+        if clash:
+            return (f"uses {', '.join(repr(n) for n in clash)}, a name this module already has for something else"), []
+        return None, needs
+
+    def add_imports(self, unit, t, needs):
+        """Make the names a copied procedure uses importable where the copy now lives."""
+        target = unit.modules[t.module.name].uses if t.module is not None else unit.program.uses
+        for module, name in needs:
+            use = next((u for u in target if u.module == module), None)
+            if use is None:
+                target.append(Use(module, [name], t.line))
+            elif name not in use.names:
+                use.names.append(name)
 
     def all_functions(self, unit):
         return list(unit.functions.values()) + [f for m in unit.modules.values() for f in m.functions.values()]
@@ -4424,6 +4604,7 @@ class FParser:
             refs = self.references([d.init for d in mod.decls]) | {d.type for d in mod.decls}
             for r in mod.records.values():
                 refs |= self.references([fl.init for fl in r.fields]) | {fl.type for fl in r.fields}
+                refs |= {name for name, _ in r.implements}           # `record bird is animal_any` needs animal_any in scope
             for f in by_module.get(name, []):
                 refs |= self.references(f.body) | {n for p in f.params for n in type_names(p[0])} | ({base_type(f.ret)} if f.ret else set())
             mod.uses = self.make_uses(ms.uses, refs)

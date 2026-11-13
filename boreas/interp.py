@@ -1752,19 +1752,30 @@ class Interp:
         if not isinstance(v, Record):
             raise LangError(f"line {s.line}: select type needs a record or interface value, got {type_of(v)}")
         chosen = default = None
+        by_interface = []
         for c in s.cases:
             if c.values is None:
                 default = c
                 continue
+            idef = self.scope.interfaces.get(c.values)
+            if idef is not None:
+                by_interface.append((c, idef))
+                continue
             rdef = self.scope.records.get(c.values)
             if rdef is None:
-                raise LangError(f"line {c.line}: select type has no record called '{c.values}' here")
+                raise LangError(f"line {c.line}: select type has no record or interface called '{c.values}' here")
             if v.rdef is rdef:
                 chosen = c
+        if chosen is None:                            # a record case wins; then the first interface the record fits
+            for c, idef in by_interface:
+                if not conformance(v.rdef, idef):
+                    chosen = c
+                    break
         declared = self.iface_of(s.subject, env) or v.rdef.name
         c = chosen or default
         inner = dict(env)
-        inner[s.var] = [chosen.values if chosen else declared, v.copy(), False, None]
+        kind = self.typed(chosen.values) if chosen and chosen.values in self.scope.interfaces else None
+        inner[s.var] = [kind or (chosen.values if chosen else declared), v.copy(), False, None]
         try:
             self.exec_block(c.body, inner)
         except _Break:

@@ -115,7 +115,7 @@ class SelectTypeErrorTests(unittest.TestCase):
     def test_check_reports_an_unknown_record_and_p_outside_the_select(self):
         src = program("  figure :: f = circle()\n  select type f as p\n    case blob\n      println(1)\n    case default\n  end select\n  println(p)")
         messages = [e[2] for e in check_errors(src)]
-        self.assertEqual(messages, ["no record called 'blob'", "'p' is not declared"])
+        self.assertEqual(messages, ["no record or interface called 'blob'", "'p' is not declared"])
 
     def test_check_is_clean_for_a_good_select(self):
         self.assertEqual(check_errors(program("  figure :: f = circle()\n" + SEL)), [])
@@ -145,3 +145,46 @@ class SelectTypePrintTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterfaceCaseTests(unittest.TestCase):
+    """`case some_interface` matches every record that fits the interface."""
+    DEFS2 = DEFS + """
+interface sized
+  function area(self) -> real
+end interface
+"""
+
+    def sel(self, first):
+        return ("  figure :: f = " + first + "\n  select type f as p\n    case circle\n      println(\"circle\")\n"
+                "    case sized\n      println(\"sized\", p.area())\n    case default\n      println(\"other\")\n  end select")
+
+    def test_an_interface_case_matches_a_record_that_fits(self):
+        self.assertEqual(run(self.sel("rect(w = 2.0, h = 3.0)"), self.DEFS2), ["sized 6.0"])
+
+    def test_a_record_case_wins_over_an_interface_case(self):
+        self.assertEqual(run(self.sel("circle()"), self.DEFS2), ["circle"])
+
+    def test_a_record_that_does_not_fit_goes_to_default(self):
+        defs = self.DEFS2 + "\ninterface needy\n  function volume(self) -> real\nend interface\n"
+        body = ("  figure :: f = rect()\n  select type f as p\n    case needy\n      println(\"needy\")\n"
+                "    case default\n      println(\"other\")\n  end select")
+        self.assertEqual(run(body, defs), ["other"])
+
+    def test_the_first_interface_that_fits_wins(self):
+        defs = self.DEFS2 + "\ninterface named\n  function name(self) -> string\nend interface\n"
+        body = ("  figure :: f = rect()\n  select type f as p\n    case named\n      println(\"named\", p.name())\n"
+                "    case sized\n      println(\"sized\")\n    case default\n      println(\"other\")\n  end select")
+        self.assertEqual(run(body, defs), ["named rect"])
+
+    def test_inside_an_interface_case_only_its_functions_are_available(self):
+        body = ("  figure :: f = rect()\n  select type f as p\n    case sized\n      println(p.name())\n"
+                "    case default\n  end select")
+        with self.assertRaises(LangError) as cm:
+            run(body, self.DEFS2)
+        self.assertIn("not part of sized", str(cm.exception))
+
+    def test_the_checker_knows_interface_cases_and_printing_round_trips(self):
+        src = program(self.sel("circle()"), self.DEFS2)
+        self.assertEqual(check_errors(src), [])
+        self.assertIn("case sized", to_source(parse(src)))
