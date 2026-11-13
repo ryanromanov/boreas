@@ -746,8 +746,9 @@ report on stderr. Translations that change meaning are flagged, never silent:
   A type that holds a `class(T), allocatable` component next to other components, or an array of the wrapper type,
   becomes a record with a field of the interface type (`type(slot) :: items(2)` is `shape_[2] :: items`).
   `procedure, pass(c) :: add` moves the argument `c` to the front as `self` (calls do not change).
-  Still TODOs: `class(*)`, `nopass`, `generic` bindings,
-  `allocated()` of a `class(T)` value, and a case that changes `p` and also leaves with `exit`, `cycle` or `return`. See `examples/shapes.f90`.
+  A `select type` case that changes `p` writes it back at its end and before each `exit`, `cycle` and `return`.
+  Still TODOs: `class(*)`, `nopass`, `generic` bindings, and `allocated()` and `deallocate()` of a `class(T)`
+  value. See `examples/shapes.f90`.
 - A local that Fortran keeps between calls (declared `save`, named in a `save` statement, or
   initialised in its declaration) matters only when the procedure changes it and can read the old value.
   If the procedure is called from just one place that runs once, a fresh start each call behaves the same,
