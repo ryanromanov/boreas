@@ -73,7 +73,7 @@ class Walker:
         elif isinstance(e, NamedArg):       # the name is a record field; only the value is looked up
             self.expr(e.value)
         elif isinstance(e, Slice):
-            self.expr([e.lo, e.hi])
+            self.expr([e.lo, e.hi, e.step])
         elif isinstance(e, FieldAccess):    # the field depends on the value's type, so it is not checked
             self.expr(e.base)
             self.expr(e.args)

@@ -241,6 +241,12 @@ Fortran. A scalar subscript drops that dimension; `:` keeps it.
     m[2, :] = 0.0                          ! sections can be assigned
     println(matmul(m, transpose(m)))
 
+A section can take a step: `a[lo:hi:step]` picks `lo`, `lo + step`, ... up to `hi` (included when the step lands on it).
+Either end may be left off with a positive step (`a[::2]`, `a[2::3]`, `a[:5:2]`), each dimension has its own step
+(`m[::2, ::2]`), and a section can be assigned to (`a[1:9:2] = 0`). A negative step runs backwards and needs both
+ends written (`a[10:1:-1]` is `a` reversed; `a[::-1]` is an error, because in Fortran an omitted end stays at the
+array's own bound and the section is empty). A step of zero is an error, and a section with no elements is fine.
+
 Operators work elementwise and need matching shapes (scalars broadcast).
 
 An array literal can contain one-dimensional arrays, which are spliced in: with `x = [1, 2, 3]`, `[x, 4]` is

@@ -886,15 +886,25 @@ class FParser:
                 self.k += 2
                 return NamedArg(t.text, self.expr())
             raise Unsupported(f"keyword argument '{t.text}=' in {fname}()")
-        lo = None if self.at_op(":") else self.expr()
+        lo = None if self.at_op(":", "::") else self.expr()
         if isinstance(lo, Var) and lo.name in self.cur_scope.intrinsics:
             self.intrinsic_args[id(lo)] = (lo, self.line)         # wrapped in a function once the callee is known
+        if self.accept_op("::"):                                  # a(lo::step): the tokenizer reads two colons as one
+            return self.stepped(Slice(lo, None, self.expr()))
         if self.accept_op(":"):
             hi = None if self.at_op(",", ")") else self.expr()
-            if self.at_op(":"):
-                raise Unsupported("array stride in a section")
+            if self.accept_op(":"):
+                return self.stepped(Slice(lo, hi, self.expr()))
             return Slice(lo, hi)
         return lo
+
+    def stepped(self, s):
+        """Fortran leaves an omitted end at the array's own bound, so a(::-1) is empty; Boreas asks for both ends
+        when the step is negative (it would otherwise run backwards, which is not what the Fortran does)."""
+        negative = isinstance(s.step, Unary) and s.step.op == "-" or isinstance(s.step, Num) and s.step.value < 0
+        if negative and (s.lo is None or s.hi is None):
+            raise Unsupported("a negative stride with an omitted bound (empty in Fortran; Boreas needs both ends)")
+        return s
 
     # -- file structure
     def tokens(self, it):

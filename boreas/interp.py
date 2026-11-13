@@ -278,10 +278,10 @@ class Array:
         return out
 
     def section(self, subs):
-        """`subs` has one entry per dimension: an int, or an inclusive (lo, hi).
+        """`subs` has one entry per dimension: an int, an inclusive (lo, hi), or (lo, hi, step).
         Returns (flat positions in column-major order, shape of the result);
         integer subscripts drop their dimension."""
-        lists = [[s] if isinstance(s, int) else list(range(s[0], s[1] + 1)) for s in subs]
+        lists = [[s] if isinstance(s, int) else list(indices(s)) for s in subs]
         strides = self.strides()
         positions = [
             sum((c - 1) * st for c, st in zip(reversed(combo), strides))
@@ -898,15 +898,27 @@ DEFAULTS = {"integer": 0, "real": 0.0, "logical": False, "string": "", "complex"
 # the whole variable, else one entry per dimension: an int or an inclusive (lo, hi).
 
 
-def _span(s):
-    return (s, s) if isinstance(s, int) else s
+def indices(s):
+    """The subscripts one entry of a section picks: an int, (lo, hi) or (lo, hi, step); both ends are included."""
+    if isinstance(s, int):
+        return range(s, s + 1)
+    if len(s) == 2:
+        return range(s[0], s[1] + 1)
+    return range(s[0], s[1] + (1 if s[2] > 0 else -1), s[2])
 
 
 def overlaps(a, b):
     """Could two subscript lists of the same array touch a common element?"""
     if a is None or b is None:
         return True
-    return all(max(_span(x)[0], _span(y)[0]) <= min(_span(x)[1], _span(y)[1]) for x, y in zip(a, b))
+    return all(_share(x, y) for x, y in zip(a, b))
+
+
+def _share(x, y):
+    if not (isinstance(x, tuple) and len(x) == 3 or isinstance(y, tuple) and len(y) == 3):
+        x, y = (x, x) if isinstance(x, int) else x, (y, y) if isinstance(y, int) else y
+        return max(x[0], y[0]) <= min(x[1], y[1])
+    return not set(indices(x)).isdisjoint(indices(y))
 
 
 IEEE_MATH = {"sqrt", "log", "log10", "asin", "acos", "acosh", "atanh", "exp", "sinh", "cosh", "mod", "modulo",
@@ -1626,12 +1638,20 @@ class Interp:
         for d, (a, n) in enumerate(zip(args, arr.shape), 1):
             where = f" in dimension {d}" if arr.rank > 1 else ""
             if isinstance(a, Slice):
+                step = 1 if a.step is None else self.eval(a.step, env)
+                self.require_int(step, line)
+                if step == 0:
+                    raise LangError(f"line {line}: the step of a section cannot be zero")
+                if step < 0 and (a.lo is None or a.hi is None):
+                    raise LangError(f"line {line}: a section with a negative step needs both ends: "
+                                    f"write {name}[{n}:1:{step}] to run backwards")
                 lo = self.eval(a.lo, env) if a.lo else 1
                 hi = self.eval(a.hi, env) if a.hi else n
                 self.require_int(lo, line); self.require_int(hi, line)
-                if lo <= hi and (lo < 1 or hi > n):
-                    raise LangError(f"line {line}: slice {lo}:{hi} out of bounds 1..{n}{where}")
-                subs.append((lo, hi))
+                if (lo <= hi if step > 0 else lo >= hi) and (not 1 <= lo <= n or not 1 <= hi <= n):
+                    text = f"{lo}:{hi}" if a.step is None else f"{lo}:{hi}:{step}"
+                    raise LangError(f"line {line}: slice {text} out of bounds 1..{n}{where}")
+                subs.append((lo, hi) if step == 1 else (lo, hi, step))
             else:
                 i = self.eval(a, env)
                 self.require_int(i, line)
@@ -1670,6 +1690,8 @@ class Interp:
             raise LangError(f"line {line}: '{name}' is used before it is assigned")
         if len(args) != 1 or not isinstance(args[0], Slice):
             raise LangError(f"line {line}: '{name}' is a string; take part of it with {name}[lo:hi]")
+        if args[0].step is not None:
+            raise LangError(f"line {line}: a substring has no step; write {name}[lo:hi]")
         lo = 1 if args[0].lo is None else self.eval(args[0].lo, env)
         hi = len(text) if args[0].hi is None else self.eval(args[0].hi, env)
         if type_of(lo) not in INT_RANGE or type_of(hi) not in INT_RANGE:
