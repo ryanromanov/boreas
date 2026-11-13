@@ -142,3 +142,13 @@ class InlineIsTests(unittest.TestCase):
                 run_bor(src)
             errors = check_errors(src)
             self.assertEqual(len(errors), 1, cond)
+
+
+class SceneExampleTests(unittest.TestCase):
+    def test_the_scene_example_runs_and_checks_clean(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "examples", "scene.bor")
+        with open(path) as f:
+            src = f.read()
+        self.assertEqual(check_errors(src), [])
+        self.assertEqual(run_bor(src), ["circle area = 12.566", "rect area = 12.000", "circle area = 3.142",
+                                        "total = 27.708", "first radius: 2.0", "second is not a circle"])

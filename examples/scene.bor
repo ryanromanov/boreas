@@ -1,0 +1,71 @@
+! A record that holds mixed shapes in a field of an interface type, and the inline `is` test.
+!
+! `figure[3] :: items` can hold circles and rectangles alike. Each element starts unassigned,
+! so set it before using it. `if x is circle as c then` runs when `x` holds a circle; `c` is a
+! copy of it, as a circle, and exists only in that branch.
+
+interface figure
+  function name(self) -> string
+  function area(self) -> real
+end interface
+
+record circle is figure
+  real :: r = 1.0
+
+  function name(self) -> string
+    return "circle"
+  end function
+
+  function area(self) -> real
+    return 3.14159 * self.r ** 2
+  end function
+end record
+
+record rect is figure
+  real :: w = 1.0
+  real :: h = 1.0
+
+  function name(self) -> string
+    return "rect"
+  end function
+
+  function area(self) -> real
+    return self.w * self.h
+  end function
+end record
+
+record scene
+  figure[3] :: items
+  integer :: count = 0
+end record
+
+subroutine add(inout scene :: s, figure :: f)
+  update s.count = s.count + 1
+  update s.items[s.count] = f
+end subroutine
+
+program demo
+  scene :: sc
+  real :: total = 0.0
+  integer :: i
+
+  call add(sc, circle(r = 2.0))
+  call add(sc, rect(w = 3.0, h = 4.0))
+  call add(sc, circle())
+
+  do i = 1, sc.count
+    println(sc.items[i].name(), "area =", fixed(sc.items[i].area(), 3))
+    total = total + sc.items[i].area()
+  end do
+  println("total =", fixed(total, 3))
+
+  if sc.items[1] is circle as c then
+    println("first radius:", c.r)
+  end if
+
+  if sc.items[2] is circle as c then
+    println("second radius:", c.r)
+  else
+    println("second is not a circle")
+  end if
+end program
