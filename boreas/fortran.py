@@ -231,7 +231,9 @@ REAL_KINDS = {4: "real32", 8: "real"}
 # puts them in this order. (Looking into keyword arguments for Boreas parameters is on the list: see D52.)
 INTRINSIC_PARAMS = {"cshift": ["array", "shift", "dim"], "merge": ["tsource", "fsource", "mask"],
                     "count": ["mask", "dim"], "pack": ["array", "mask", "vector"],
-                    "maxloc": ["array", "dim"], "minloc": ["array", "dim"]}
+                    "maxloc": ["array", "dim"], "minloc": ["array", "dim"], "norm2": ["x", "dim"],
+                    "spread": ["source", "dim", "ncopies"], "findloc": ["array", "value", "dim"],
+                    "lbound": ["array", "dim"], "ubound": ["array", "dim"]}
 UNSET = object()          # "not given", for an argument that may be None
 KIND_ARGUMENT = {"real", "int", "cmplx", "dble", "dcmplx", "float", "sngl", "nint", "floor", "ceiling"}
 

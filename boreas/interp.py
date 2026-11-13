@@ -414,6 +414,56 @@ def _locate(name, pick):
     return locate
 
 
+def _norm2(a):
+    """The Euclidean length of a real array: the square root of the sum of its squares."""
+    _need_array("norm2", a)
+    if not all(isinstance(x, float) for x in a.data):
+        raise LangError(f"norm2() needs an array of reals, got {type_of(a.data[0])}s" if a.data else "norm2() needs an array of reals")
+    return math.sqrt(math.fsum(x * x for x in a.data))
+
+
+def _spread(source, dim, ncopies):
+    """`source` repeated `ncopies` times along a new dimension `dim`: a scalar gives a vector, a vector a matrix."""
+    shape = source.shape if isinstance(source, Array) else ()
+    data = source.data if isinstance(source, Array) else [source]
+    if isinstance(dim, bool) or not isinstance(dim, int) or not 1 <= dim <= len(shape) + 1:
+        raise LangError(f"spread(): dimension must be 1..{len(shape) + 1}")
+    if isinstance(ncopies, bool) or not isinstance(ncopies, int) or ncopies < 0:
+        raise LangError("spread(): the number of copies must be a non-negative integer")
+    new = shape[:dim - 1] + (ncopies,) + shape[dim - 1:]
+    out = []
+    for combo in product(*reversed([range(n) for n in new])):       # the first dimension varies fastest
+        idx = list(reversed(combo))
+        del idx[dim - 1]
+        pos = sum(i * st for i, st in zip(idx, Array(shape, data).strides()))
+        out.append(data[pos])
+    return Array(new, out)
+
+
+def _findloc(a, value, dim=1):
+    """The position (from 1) of the first element equal to `value`, 0 when there is none."""
+    _need_array("findloc", a, rank=(1,))
+    if isinstance(dim, bool) or dim != 1:
+        raise LangError("findloc(): dimension must be 1")
+    if isinstance(value, Array):
+        raise LangError("findloc(): the value to look for must be a single value")
+    for i, x in enumerate(a.data):
+        if x == value:
+            return i + 1
+    return 0
+
+
+def _bound(name, low):
+    def bound(a, dim=None):
+        _need_array(name, a)
+        if dim is None:
+            return Array((a.rank,), [1] * a.rank if low else list(a.shape))
+        if isinstance(dim, bool) or not isinstance(dim, int) or not 1 <= dim <= a.rank:
+            raise LangError(f"{name}(): dimension must be 1..{a.rank}")
+        return 1 if low else a.shape[dim - 1]
+    return bound
+
+
 def _pack(a, mask):
     """The elements of `a` where `mask` is true, in column-major order, as a one-dimensional array."""
     _need_array("pack", a)
@@ -802,7 +852,8 @@ BUILTINS = {
     "transpose": _transpose, "cshift": _cshift, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
     "sum": _reduce("sum", sum), "maxval": _reduce("maxval", max), "minval": _reduce("minval", min),
     "any": _reduce("any", any), "all": _reduce("all", all),
-    "count": _count_true, "pack": _pack,
+    "count": _count_true, "pack": _pack, "norm2": _norm2, "spread": _spread, "findloc": _findloc,
+    "lbound": _bound("lbound", True), "ubound": _bound("ubound", False),
     "maxloc": _locate("maxloc", lambda x, best: x > best), "minloc": _locate("minloc", lambda x, best: x < best),
     "max": max, "min": min, "product": _reduce("product", math.prod),
     "huge": _huge, "epsilon": _epsilon, "tiny": _tiny,
@@ -832,7 +883,7 @@ ELEMENTAL.update({name: _complex_aware(getattr(math, name), getattr(cmath, name)
 KEEPS_KIND = {"sqrt", "abs", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
               "asinh", "acosh", "atanh", "exp", "log", "log10", "gamma", "log_gamma", "erf", "erfc", "hypot",
               "sign", "modulo", "dim", "mod", "aint", "anint", "sum", "product", "maxval", "minval",
-              "dot_product", "matmul", "max", "min"}
+              "dot_product", "matmul", "max", "min", "norm2"}
 
 
 # A variable slot is [type, value, is_array, intent]. `value` is None until

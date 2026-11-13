@@ -49,7 +49,7 @@
   ],
   "commands": [
     {
-      "begin": "\\b(size|shape|reshape|matmul|transpose|cshift|dot_product|allocated|present|sum|product|maxval|minval|any|all|count|pack|maxloc|minloc|merge|max|min|huge|epsilon|tiny|sqrt|abs|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|log|log10|gamma|log_gamma|erf|erfc|hypot|real|int|floor|ceiling|nint|aint|anint|mod|modulo|sign|dim|cmplx|aimag|conjg|int8|int16|int32|int64|real32|real64|trim|len_trim|len|index|achar|iachar|fixed|scientific|general|tf|text|split|fields|field|to_integer|to_real|to_logical|right|left|repeat|random|argument|argument_count|read_line|open|try_open|exists|isnan|isinf|nan|infinity)(?=\\s*\\()",
+      "begin": "\\b(size|shape|reshape|matmul|transpose|cshift|dot_product|allocated|present|sum|product|maxval|minval|any|all|count|pack|maxloc|minloc|merge|norm2|spread|findloc|lbound|ubound|max|min|huge|epsilon|tiny|sqrt|abs|sin|cos|tan|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|log|log10|gamma|log_gamma|erf|erfc|hypot|real|int|floor|ceiling|nint|aint|anint|mod|modulo|sign|dim|cmplx|aimag|conjg|int8|int16|int32|int64|real32|real64|trim|len_trim|len|index|achar|iachar|fixed|scientific|general|tf|text|split|fields|field|to_integer|to_real|to_logical|right|left|repeat|random|argument|argument_count|read_line|open|try_open|exists|isnan|isinf|nan|infinity)(?=\\s*\\()",
       "ignoreCase": true,
       "regularExpression": true
     }
