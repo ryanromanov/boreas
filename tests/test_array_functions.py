@@ -1,4 +1,4 @@
-"""count, merge, maxloc, minloc and pack."""
+"""count, merge, maxloc, minloc, pack, norm2, spread, findloc, lbound and ubound."""
 import os, sys, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from test_callback_convert import converted, fortran_output
@@ -105,6 +105,79 @@ class ConversionTests(unittest.TestCase):
                           "  print *, minloc(a, dim=1)\n  print *, merge(tsource=a, fsource=-a, mask=a > 0)")
         self.assertNotIn("TODO", text)
         self.assertIn("merge(a, -a, a > 0)", text)
+
+
+class Norm2Tests(unittest.TestCase):
+    def test_the_length_of_a_vector_and_a_matrix(self):
+        self.assertEqual(show("  println(norm2([3.0, 4.0]), norm2(reshape([1.0, 2.0, 2.0, 0.0], [2, 2])))"), ["5.0 3.0"])
+
+    def test_keeps_single_precision(self):
+        self.assertEqual(show("  real32[2] :: v = [3.0, 4.0]\n  real32 :: n = norm2(v)\n  println(n)"), ["5.0"])
+
+    def test_needs_reals(self):
+        with self.assertRaisesRegex(LangError, "norm2\\(\\) needs an array of reals"):
+            show("  println(norm2([1, 2]))")
+
+
+class SpreadTests(unittest.TestCase):
+    def test_a_scalar_becomes_a_vector(self):
+        self.assertEqual(show("  println(spread(7, 1, 3))"), ["[7, 7, 7]"])
+
+    def test_a_vector_becomes_a_matrix_along_either_dimension(self):
+        self.assertEqual(show("  println(spread([1, 2, 3], 1, 2))"), ["[[1, 2, 3], [1, 2, 3]]"])
+        self.assertEqual(show("  println(spread([1, 2, 3], 2, 2))"), ["[[1, 1], [2, 2], [3, 3]]"])
+        self.assertEqual(show("  println(shape(spread([1, 2, 3], 2, 4)))"), ["[3, 4]"])
+
+    def test_zero_copies_and_errors(self):
+        self.assertEqual(show("  println(size(spread([1, 2], 1, 0)))"), ["0"])
+        for body, text in [("spread([1, 2], 3, 2)", "dimension must be 1..2"), ("spread([1, 2], 1, -1)", "non-negative"),
+                           ("spread(1, 2, 2)", "dimension must be 1..1")]:
+            with self.subTest(body):
+                with self.assertRaisesRegex(LangError, text):
+                    show("  println(" + body + ")")
+
+
+class FindlocTests(unittest.TestCase):
+    def test_the_first_match_or_zero(self):
+        self.assertEqual(show('  println(findloc([4, 9, 9], 9), findloc([4, 9, 9], 5), findloc(["a", "b"], "b"))'), ["2 0 2"])
+
+    def test_errors(self):
+        for body, text in [("findloc([1, 2], 1, 2)", "dimension must be 1"), ("findloc(3, 3)", "needs an array"),
+                           ("findloc([1, 2], [1])", "single value")]:
+            with self.subTest(body):
+                with self.assertRaisesRegex(LangError, text):
+                    show("  println(" + body + ")")
+
+
+class BoundsTests(unittest.TestCase):
+    M = "  integer[2, 3] :: m\n"
+
+    def test_all_dimensions_or_one(self):
+        self.assertEqual(show(self.M + "  println(lbound(m), ubound(m), ubound(m, 2), lbound(m, 1))"), ["[1, 1] [2, 3] 3 1"])
+
+    def test_errors(self):
+        with self.assertRaisesRegex(LangError, "dimension must be 1..2"):
+            show(self.M + "  println(ubound(m, 3))")
+        with self.assertRaisesRegex(LangError, "needs an array"):
+            show("  println(ubound(5))")
+
+
+class ConversionTests2(unittest.TestCase):
+    def test_the_second_batch_converts_and_matches_gfortran(self):
+        text, findings = converted("program t\n  double precision :: a(4)\n  integer :: b(3)\n  integer :: i\n"
+                                   "  a = [3.0d0, 4.0d0, 12.0d0, 84.0d0]\n  b = [5, 7, 7]\n"
+                                   "  print *, norm2(a)\n  print *, norm2(x=a)\n  i = findloc(b, 7, dim=1)\n  print *, i\n"
+                                   "  print *, findloc(b, value=9, dim=1)\n  print *, ubound(b, 1), lbound(b, dim=1)\n"
+                                   "  print *, size(spread(b, 2, 3)), sum(spread(b, dim=1, ncopies=2))\nend program\n")
+        self.assertEqual(todos(findings), [])
+        got = run_bor(text)
+        if GFORTRAN:
+            want = fortran_output("program t\n  double precision :: a(4)\n  integer :: b(3)\n  integer :: i\n"
+                                  "  a = [3.0d0, 4.0d0, 12.0d0, 84.0d0]\n  b = [5, 7, 7]\n"
+                                  "  print *, norm2(a)\n  print *, norm2(x=a)\n  i = findloc(b, 7, dim=1)\n  print *, i\n"
+                                  "  print *, findloc(b, value=9, dim=1)\n  print *, ubound(b, 1), lbound(b, dim=1)\n"
+                                  "  print *, size(spread(b, 2, 3)), sum(spread(b, dim=1, ncopies=2))\nend program\n")
+            self.assertTrue(same_output("\n".join(got), want), f"\nBoreas:\n{chr(10).join(got)}\n\ngfortran:\n{want}")
 
 
 if __name__ == "__main__":
