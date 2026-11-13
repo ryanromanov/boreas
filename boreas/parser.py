@@ -28,7 +28,7 @@ class Gen:
     body: list; var: str; lo: object; hi: object; step: object; line: int = 0
     var_col: int = field(default=0, compare=False, repr=False)
 @dataclass
-class Slice: lo: object; hi: object
+class Slice: lo: object; hi: object; step: object = None   # a[lo:hi:step]
 @dataclass
 class Apply:   # index, slice, or call
     name: str; args: list; line: int
@@ -1591,9 +1591,19 @@ class Parser:
             name = self.next().text
             self.next()
             return NamedArg(name, self.expr())
-        lo = None if self.at(":") else self.expr()
+        lo = None if self.at(":", "::") else self.expr()
+        if self.accept("::"):                       # a[lo::step]: the lexer reads two colons as one token
+            if self.at(",", close):
+                self.error("a section's step goes after the second ':', as in a[::2]")
+            return Slice(lo, None, self.expr())
         if self.accept(":"):
-            hi = None if self.at(",", close) else self.expr()
+            hi = None if self.at(",", close, ":") else self.expr()
+            if self.at("::"):
+                self.error("a section is lo:hi:step, with one ':' between the parts")
+            if self.accept(":"):
+                if self.at(",", close):
+                    self.error("a section's step goes after the second ':', as in a[1:9:2]")
+                return Slice(lo, hi, self.expr())
             return Slice(lo, hi)
         return lo
 

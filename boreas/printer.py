@@ -61,7 +61,8 @@ def _expr(e):
             return "[" + generator(e.items[0]) + "]"            # shorthand: [value do i = 1, n]
         return "[" + ", ".join(f"({generator(x)})" if isinstance(x, Gen) else expr(x) for x in e.items) + "]"
     if k is Slice:
-        return (expr(e.lo) if e.lo is not None else "") + ":" + (expr(e.hi) if e.hi is not None else "")
+        return ((expr(e.lo) if e.lo is not None else "") + ":" + (expr(e.hi) if e.hi is not None else "")
+                + (":" + expr(e.step) if e.step is not None else ""))
     if k is Apply:
         return f"{e.name}{_args(e.args, e.bracket)}"
     if k is NamedArg:
