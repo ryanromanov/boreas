@@ -205,12 +205,15 @@ class Record:
         return Record(self.rdef, {n: [t, v.copy() if isinstance(v, (Record, Array)) else v, ia, None]
                                   for n, (t, v, ia, _) in self.fields.items()})
 
-    def first_unassigned(self, prefix=""):
-        """The dotted path of the first scalar field that holds no value yet, else None."""
-        for n, (_, v, _, _) in self.fields.items():
+    def first_unassigned(self, prefix="", interfaces=True):
+        """The dotted path of the first scalar field that holds no value yet, else None. With `interfaces` false a
+        field of an interface type may stay unassigned (it can be left empty in an `out` record)."""
+        for n, (t, v, _, _) in self.fields.items():
+            if not interfaces and isinstance(t, IfaceType):
+                continue
             for sub in (v.data if isinstance(v, Array) else [v]):
                 if isinstance(sub, Record):
-                    found = sub.first_unassigned(f"{prefix}{n}.")
+                    found = sub.first_unassigned(f"{prefix}{n}.", interfaces)
                     if found:
                         return found
                 elif sub is None:
@@ -956,10 +959,11 @@ class Interp:
                 if f.name in seen:
                     raise LangError(f"line {f.line}: record '{r.name}' has two fields called '{f.name}'")
                 seen.add(f.name)
-                if base_type(f.type) in scope.interfaces:
-                    raise LangError(f"line {f.line}: field '{f.name}' of record '{r.name}' cannot have an interface type "
-                                    f"('{f.type}') yet")
-                if base_type(f.type) not in DEFAULTS and base_type(f.type) not in scope.records:
+                iface = base_type(f.type) in scope.interfaces
+                if iface and f.type != base_type(f.type):
+                    raise LangError(f"line {f.line}: field '{f.name}' of record '{r.name}': an interface type "
+                                    f"('{f.type}') cannot be optional")
+                if not iface and base_type(f.type) not in DEFAULTS and base_type(f.type) not in scope.records:
                     raise LangError(f"line {f.line}: field '{f.name}' of record '{r.name}' has unknown type '{f.type}'")
                 for d in f.dims or []:
                     if not (isinstance(d, Num) and isinstance(d.value, int) and d.value >= 0):
@@ -1279,6 +1283,14 @@ class Interp:
         fields = {}
         for f in rdef.fields:
             sub = owner.records.get(base_type(f.type))
+            if f.type in owner.interfaces:                    # no default value: it starts unassigned
+                kind = self.typed(f.type, owner)
+                if f.dims is None:
+                    fields[f.name] = [kind, None, False, None]
+                else:
+                    shape = [d.value for d in f.dims]
+                    fields[f.name] = [kind, Array(shape, [None] * math.prod(shape)), True, None]
+                continue
             if f.dims is None:
                 if f.type.endswith("?"):
                     value = None if blank else NULL      # an optional field starts absent
@@ -1706,9 +1718,35 @@ class Interp:
         elif isinstance(base, Apply) and base.name not in env:
             f = self.scope.funcs.get(base.name)
             typ = self.typed(f.ret, self.scopes[id(f)]) if f is not None and f.ret else None
+        elif isinstance(base, FieldAccess) and (base.args is None or base.bracket) and self.plain_path(base.base, env):
+            owner = self.eval(base.base, env)
+            slot = owner.fields.get(base.field) if isinstance(owner, Record) else None
+            typ = slot[TYPE] if slot is not None else None
         else:
             typ = None
         return typ if isinstance(typ, IfaceType) else None
+
+    def plain_path(self, e, env):
+        """Is `e` a variable, an element or a field path whose value can be looked at twice without side effects?"""
+        if isinstance(e, Var):
+            return e.name in env
+        if isinstance(e, Apply):
+            return e.bracket and e.name in env and all(self.plain_index(a, env) for a in e.args)
+        if isinstance(e, FieldAccess):
+            return (e.args is None or e.bracket and all(self.plain_index(a, env) for a in e.args)) \
+                and self.plain_path(e.base, env)
+        return False
+
+    def plain_index(self, e, env):
+        if isinstance(e, (Num, Str, Bool)):
+            return True
+        if isinstance(e, Var):
+            return e.name in env
+        if isinstance(e, Unary):
+            return self.plain_index(e.operand, env)
+        if isinstance(e, Binary):
+            return self.plain_index(e.left, env) and self.plain_index(e.right, env)
+        return False
 
     def check_in_interface(self, base, name, env, line):
         """A value whose type is an interface may only use the functions that interface lists."""
@@ -2261,7 +2299,7 @@ class Interp:
             if result is None:
                 raise LangError(f"line {s.line}: out parameter '{name}' was never assigned in {s.name}")
             if f.params[n][2] == "out" and isinstance(result, Record):
-                missing = result.first_unassigned()
+                missing = result.first_unassigned(interfaces=False)
                 if missing:
                     raise LangError(f"line {s.line}: out parameter '{name}' was not fully assigned in "
                                     f"{s.name}: '{name}.{missing}' has no value")

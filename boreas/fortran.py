@@ -331,6 +331,7 @@ class TypeInfo:
     abstract: bool = False
     bindings: dict = field(default_factory=dict)    # its own type-bound procedures: name -> Binding
     wrapper: tuple | None = None  # (T, component) for a type that only holds `class(T), allocatable :: component`
+    poly_fields: dict = field(default_factory=dict)   # component -> (T, the wrapper TypeInfo it was declared with, or None)
 
     @property
     def module(self):
@@ -662,10 +663,9 @@ class FParser:
             else:
                 self.k += 1
                 args = self.call_arguments(name)
-                if name == "allocated" and len(args) == 1 and isinstance(args[0], (Var, Apply)):
-                    holder = self.lookup_decl(args[0].name)
-                    if holder is not None and holder.poly:
-                        raise Unsupported("allocated() of a class(T) value: Boreas interface values are always set")
+                if name == "allocated" and len(args) == 1 and isinstance(args[0], (Var, Apply, FieldAccess)) \
+                        and self.is_poly(args[0]):
+                    raise Unsupported("allocated() of a class(T) value: Boreas interface values are always set")
                 name = SPECIFIC_NAMES.get(name, name)
                 name, args = self.convert_intrinsic(name, args)
                 intrinsic = name in BUILTINS or name in ELEMENTAL
@@ -716,11 +716,24 @@ class FParser:
         return False
 
     def wrapped_by(self, e):
-        """The wrapper type a variable or array element was declared with, or None."""
+        """The wrapper type a variable, array element or component was declared with, or None."""
         if isinstance(e, (Var, Apply)):
             info = self.lookup_decl(e.name)
             return info.wrapped if info is not None else None
+        if isinstance(e, FieldAccess):
+            owner = self.types.get(self.record_type_of(e.base))
+            return owner.poly_fields.get(e.field, (None, None))[1] if owner is not None else None
         return None
+
+    def is_poly(self, e):
+        """Is this expression a class(T) value: a variable, element or component declared that way?"""
+        if isinstance(e, (Var, Apply)):
+            info = self.lookup_decl(e.name)
+            return info is not None and info.poly
+        if isinstance(e, FieldAccess):
+            owner = self.types.get(self.record_type_of(e.base))
+            return owner is not None and e.field in owner.poly_fields
+        return False
 
     def literal_kind(self, raw):
         """The kind number after the underscore in 5_8 or 1.0_dp, or None."""
@@ -2706,6 +2719,9 @@ class FParser:
             if t is not None and t2 is not None and t.kind == "name" and t2.kind == "op" and t2.text == "=":
                 raise Unsupported(f"'{what}' with {t.text}= is not supported")
             name = self.rename(self.expect_name())
+            if self.at_op("%"):
+                raise Unsupported(f"'{what}' of a component ({name}%...): Boreas cannot unassign or resize one; "
+                                  f"a class(T) component is set by assigning to it")
             if self.at_op("::"):
                 raise Unsupported(f"'{what}' with a type-spec is not supported")
             info = scope.decls.get(name) if name not in scope.dummies else None
@@ -2774,9 +2790,7 @@ class FParser:
             type_spec = self.type_name(self.expect_name())
             self.expect_op("::")
         target = self.primary()
-        root = self.root_name_of(target)
-        info = self.lookup_decl(root) if root is not None else None
-        if not isinstance(target, (Var, Apply)) or info is None or not info.poly:
+        if not isinstance(target, (Var, Apply, FieldAccess)) or not self.is_poly(target):
             raise Unsupported("'allocate' of something that is not a class(T) value")
         value = None
         while self.accept_op(","):
@@ -2845,7 +2859,7 @@ class FParser:
         if any(not isinstance(n, Comment) for n in lead):
             raise Unsupported("statements before the first 'type is'")
         bound = assoc or (subject.name if isinstance(subject, Var) else None)
-        base = self.lookup_decl(self.root_name_of(subject))
+        base = self.lookup_decl(self.root_name_of(subject)) if not isinstance(subject, FieldAccess) else None
         cases = []
         while True:
             cur = self.items[self.i]
@@ -3414,7 +3428,7 @@ class FParser:
             self.toks, self.k = toks, 0
             if word == "class":
                 try:
-                    poly_comps.append(self.poly_component())
+                    poly_comps.append(self.poly_component() + (cur.line,))
                 except Unsupported as e:
                     bad = bad or f"{e}: {cur.text}"
             elif word in TYPE_WORDS and word != "type" or word == "type":
@@ -3427,11 +3441,11 @@ class FParser:
                 bad = bad or f"unsupported statement in a type: {cur.text}"
         else:
             raise LangError("unexpected end of file: 'type' is missing its 'end type'")
+        polys = dict(pinfo.poly_fields) if pinfo is not None and pinfo.ok else {}
         for cname, info in holder.decls.items():
             dims = None
-            if info.poly:
-                bad = bad or f"component '{cname}' is a polymorphic value, which Boreas records cannot hold"
-                continue
+            if info.poly:                                  # type(wrapper) :: items(2): an interface-typed field
+                polys[cname] = (info.type, info.wrapped)
             if info.dims is not None:
                 dims = [self.literal_size(d, holder) for d in info.dims]
                 if None in dims:
@@ -3440,17 +3454,20 @@ class FParser:
             own.append(Decl(info.type, cname, dims, self.component_default(cname, info, scope, holder),
                             info.line))
         fields = [replace(d) for d in pinfo.fields] if pinfo is not None and pinfo.ok else []
+        wrapper = None
+        if poly_comps:
+            if len(poly_comps) == 1 and not own and parent is None and not bindings and not abstract:
+                wrapper = poly_comps[0][:2]           # only holds a polymorphic value: it is dropped (see primary)
+            else:                                     # class(T), allocatable :: item: a field of T's interface
+                for t, cname, line in poly_comps:
+                    polys[cname] = (t, None)
+                    own.append(Decl(t, cname, None, None, line))
+                own.sort(key=lambda d: d.line)
         taken = {d.name for d in fields}
         for d in own:
             if d.name in taken:
                 bad = bad or f"component '{d.name}' is already a component of the parent type"
         fields += own
-        wrapper = None
-        if poly_comps:
-            if len(poly_comps) == 1 and not own and parent is None and not bindings and not abstract:
-                wrapper = poly_comps[0]               # only holds a polymorphic value: it is dropped (see primary)
-            else:
-                bad = bad or "a polymorphic component (class(T), allocatable) is only supported in a type that holds nothing else"
         if name in self.types:
             self.todo(it.line, f"derived type '{name}' is defined more than once")
         notes = []
@@ -3466,7 +3483,7 @@ class FParser:
         if scope.kind == "module" and access:
             scope.access[name] = access
         self.types[name] = TypeInfo(name, scope, fields, it.line, parent=parent, abstract=abstract,
-                                    bindings=bindings, wrapper=wrapper)
+                                    bindings=bindings, wrapper=wrapper, poly_fields=polys)
         return notes
 
     def poly_component(self):
@@ -4153,7 +4170,9 @@ class FParser:
             if not t.ok or t.wrapper is not None:
                 continue
             if not t.abstract:
-                rd = RecordDef(t.name, t.fields, t.module is not None and self.is_public(t.module, t.name), t.line,
+                fields = [replace(d, type=self.iface_name.get(d.type, d.type)) if d.name in t.poly_fields else d
+                          for d in t.fields]
+                rd = RecordDef(t.name, fields, t.module is not None and self.is_public(t.module, t.name), t.line,
                                implements=self.implemented_interfaces(t))
                 (modules[t.module.name].records if t.module is not None else records)[t.name] = rd
             if t.name in self.iface_name:
@@ -4253,6 +4272,8 @@ class FParser:
             for name, info in sc.decls.items():
                 if info.poly and (id(sc), name) not in passed:
                     used.add(info.type)
+        for t in types.values():
+            used |= {T for T, _ in t.poly_fields.values()}
         taken = set(self.types) | {r.scope.name for r in self.raw} | {n for m in self.modules.values() for n in m.decls}
         for t in types.values():
             if t.abstract:

@@ -514,7 +514,10 @@ runs the function of the record it holds:
 - A variable of a record type can be passed to an `inout` or `out` parameter of an interface type (as Fortran allows
   for `class(shape), intent(inout)`). The routine can change the record, or put in a new one of the same kind, but it
   is an error if it puts in a different kind (a `rect` into a `circle` variable).
-- An interface cannot be named like a built-in (`shape` is one) or a record. Not supported yet: a record field or an
+- A record field can have an interface type (`figure :: highlight`, `figure[2] :: items`). It starts unassigned,
+  and using it before it is set is an error, as for an interface variable. Only the interface's functions are
+  available through it (`sc.items[1].area()`).
+- An interface cannot be named like a built-in (`shape` is one) or a record. Not supported yet: an
   `allocatable` array of an interface type, and optional interface values (`figure?`).
 - Interfaces are exported and imported by name from a module (`public interface figure`, `use shapes: figure`).
 
@@ -740,10 +743,11 @@ report on stderr. Translations that change meaning are flagged, never silent:
   uses is public there (the converter adds the imports); a private name it needs is a TODO that names it.
   A `final` binding is dropped with a TODO (Boreas has no destructors); the procedure stays and is not called
   automatically.
+  A type that holds a `class(T), allocatable` component next to other components, or an array of the wrapper type,
+  becomes a record with a field of the interface type (`type(slot) :: items(2)` is `shape_[2] :: items`).
   `procedure, pass(c) :: add` moves the argument `c` to the front as `self` (calls do not change).
   Still TODOs: `class(*)`, `nopass`, `generic` bindings,
-  `allocated()` of a `class(T)` value, a wrapper used as a
-  component, and a case that changes `p` and also leaves with `exit`, `cycle` or `return`. See `examples/shapes.f90`.
+  `allocated()` of a `class(T)` value, and a case that changes `p` and also leaves with `exit`, `cycle` or `return`. See `examples/shapes.f90`.
 - A local that Fortran keeps between calls (declared `save`, named in a `save` statement, or
   initialised in its declaration) matters only when the procedure changes it and can read the old value.
   If the procedure is called from just one place that runs once, a fresh start each call behaves the same,

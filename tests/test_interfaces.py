@@ -143,9 +143,7 @@ class InterfaceErrorTests(unittest.TestCase):
         with self.assertRaises(LangError) as cm:
             run("  println(1)", "interface shape\n  function area(self) -> real\nend interface\n")
         self.assertIn("built-in function", str(cm.exception))
-        with self.assertRaises(LangError) as cm:
-            run("  println(1)", DEFS + "\nrecord holder\n  figure :: f\nend record\n")
-        self.assertIn("cannot have an interface type", str(cm.exception))
+        run("  println(1)", DEFS + "\nrecord holder\n  figure :: f\nend record\n")     # a field may have an interface type
         self.fails("  figure? :: f", "cannot be optional")
         self.fails("  allocatable figure[] :: f", "not supported")
 

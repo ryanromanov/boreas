@@ -907,3 +907,151 @@ end program
         _, findings = converted(src)
         said = " | ".join(m for _, kind, m in findings if kind == "todo")
         self.assertIn("says pass(nobody), but 'show' has no argument of that name", said)
+
+
+SCENE_TYPES = """  type :: slot
+    class(shape), allocatable :: s
+  end type
+  type :: scene
+    type(slot) :: items(2)
+    integer :: count = 0
+  end type
+  type :: pet_owner
+    integer :: age = 30
+    class(shape), allocatable :: favourite
+    character(len=8) :: name = "pat"
+  end type
+"""
+
+
+class InterfaceFieldConversionTests(unittest.TestCase):
+    """A type that holds a class(T) value (directly or through a wrapper) next to other components."""
+    check = OOConversionTests.check
+
+    def module(self):
+        base = SHAPES[:SHAPES.rindex("end module")]
+        base = base.replace("public :: shape, circle, rect", "public :: shape, circle, rect, slot, scene, pet_owner")
+        k = base.index("\ncontains")
+        return base[:k] + "\n" + SCENE_TYPES + base[k:] + "end module\n"
+
+    def test_an_array_of_a_wrapper_inside_another_type(self):
+        text = self.check(self.module() + """program demo
+  use shapes
+  implicit none
+  type(scene) :: sc
+  integer :: i
+  allocate(sc%items(1)%s, source=circle(name="c", r=1.0))
+  allocate(sc%items(2)%s, source=rect(name="r", w=2.0, h=3.0))
+  sc%count = 2
+  do i = 1, sc%count
+    call sc%items(i)%s%describe()
+  end do
+end program
+""", ["shape_[2] :: items", "sc.items[1] = circle(", "call sc.items[i].describe()"])
+        self.assertNotIn("slot", text)
+
+    def test_a_polymorphic_component_next_to_other_components(self):
+        text = self.check(self.module() + """program demo
+  use shapes
+  implicit none
+  type(pet_owner) :: o
+  o%age = 41
+  allocate(o%favourite, source=circle(name="round", r=2.0))
+  call o%favourite%describe()
+  print *, o%age, o%name
+end program
+""", ["shape_ :: favourite", "integer :: age = 30"])
+        record = text[text.index("record pet_owner"):]
+        self.assertLess(record.index("integer :: age"), record.index("shape_ :: favourite"))   # declaration order kept
+        self.assertLess(record.index("shape_ :: favourite"), record.index("string :: name"))
+
+    def test_select_type_on_a_component(self):
+        self.check(self.module() + """program demo
+  use shapes
+  implicit none
+  type(scene) :: sc
+  allocate(sc%items(1)%s, source=circle(name="c", r=2.0))
+  select type (p => sc%items(1)%s)
+  type is (circle)
+    print *, "radius", p%r
+  class default
+    print *, "other"
+  end select
+end program
+""")
+
+    def test_a_normal_type_used_only_as_a_component(self):
+        self.check(ANIMALS.replace("end module", "") .replace("contains\n\n  subroutine speak", "  type :: keeper\n    class(animal), allocatable :: pet\n    integer :: n = 1\n  end type\ncontains\n\n  subroutine speak", 1) + "end module\n" + """program demo
+  use animals
+  implicit none
+  type(keeper) :: k
+  allocate(k%pet, source=dog(name="rex", tricks=3))
+  call k%pet%speak()
+  print *, k%n
+end program
+""")
+
+    def test_allocated_of_a_component_is_a_todo(self):
+        src = self.module() + """program demo
+  use shapes
+  implicit none
+  type(pet_owner) :: o
+  print *, allocated(o%favourite)
+end program
+"""
+        _, findings = converted(src)
+        said = " | ".join(m for _, kind, m in findings if kind == "todo")
+        self.assertIn("allocated() of a class(T) value", said)
+
+    def test_a_component_in_another_module_imports_the_interface(self):
+        text = self.check(SHAPES + """module holders
+  use shapes
+  implicit none
+  type :: slot
+    class(shape), allocatable :: s
+  end type
+  type :: scene
+    type(slot) :: items(2)
+    integer :: count = 0
+  end type
+end module
+program demo
+  use shapes
+  use holders
+  implicit none
+  type(scene) :: sc
+  allocate(sc%items(1)%s, source=circle(name="c", r=1.0))
+  allocate(sc%items(2)%s, source=rect(name="r", w=2.0, h=3.0))
+  call sc%items(2)%s%describe()
+  print *, sc%count
+end program
+""", ["shape_[2] :: items"])
+        self.assertIn("use shapes: shape_", text.split("module holders")[1])
+
+    def test_deallocate_of_a_component_is_a_todo(self):
+        src = self.module() + """program demo
+  use shapes
+  implicit none
+  type(pet_owner) :: o
+  allocate(o%favourite, source=circle(name="round", r=2.0))
+  deallocate(o%favourite)
+end program
+"""
+        _, findings = converted(src)
+        said = " | ".join(m for _, kind, m in findings if kind == "todo")
+        self.assertIn("'deallocate' of a component", said)
+
+    def test_an_out_argument_may_leave_a_polymorphic_component_unset(self):
+        self.check(self.module() + """program demo
+  use shapes
+  implicit none
+  type(pet_owner) :: o
+  call fill(o)
+  print *, o%age
+contains
+  subroutine fill(x)
+    type(pet_owner), intent(out) :: x
+    x%age = 7
+  end subroutine
+end program
+""")
