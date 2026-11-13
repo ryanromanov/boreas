@@ -611,6 +611,35 @@ Parameters default to `in` and cannot be assigned. Functions only take
 `in` parameters. An output variable may not be passed twice in one call, and an
 `out` parameter must be assigned before the subroutine returns.
 
+## Functions with several results
+
+A function can give back more than one value. List the results in the header, `return` that many values, and
+unpack them at the call:
+
+    function divmod(integer :: a, integer :: b) -> (integer :: quotient, integer :: remainder)
+      return a / b, mod(a, b)
+    end function
+
+    integer :: q
+    integer :: r
+    (q, r) = divmod(17, 5)            ! q is 3, r is 2
+    (q, _) = divmod(100, 7)           ! `_` throws a result away: only the quotient
+
+- The names in the result list are documentation (they can be left off: `-> (integer, real)`) and are not
+  compared. At least two results; for one, write `-> integer` as before.
+- The unpacking is the only place that can receive several results: `x = divmod(1, 1)`, `println(divmod(1, 1))`,
+  an argument, or a call on its own line are errors that tell you to unpack. It needs exactly as many targets
+  as the function has results (checked when it runs), and the same variable cannot appear twice.
+- Each result is converted to its declared type, as for a single result, and then assigned like any
+  assignment (an array result into an `allocatable` target allocates it).
+- A target the caller sees (an `out` / `inout` parameter or a module variable) carries its own `@`, exactly
+  as a single assignment does: `(@quotient, rest) = divmod(n, 5)`. A function cannot write a module variable.
+- Results can be any type: numbers, strings, records, arrays (`-> (real[] :: values, integer :: n)`) or optional
+  (`integer?`). They work for functions in records and in interfaces (a record fits when the result types
+  match in order, names aside): `(lo, hi) = s.bounds()`.
+- Not supported yet: a result list in a callback's signature, `return g()` to pass on another function's
+  results, and subroutines (which keep `out` / `inout`). See `examples/multiple_results.bor`.
+
 ## Procedure parameters (callbacks)
 
 A parameter can be a procedure. Its signature is written inline, like a header without the name; the

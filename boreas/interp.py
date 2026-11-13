@@ -14,6 +14,18 @@ from . import kinds
 from .kinds import _F32
 
 
+class MultiValue(tuple):
+    """What a function with several results gives back. Only an unpacking statement may receive one."""
+
+
+class Evaluated:
+    """An expression whose value is already known: one result of an unpacking, assigned like any value."""
+    __slots__ = ("value",)
+
+    def __init__(self, value):
+        self.value = value
+
+
 class _Stop(Exception):
     def __init__(self, code): self.code = code
 class _Return(Exception):
@@ -915,6 +927,7 @@ class Interp:
         kinds.set_ieee(getattr(unit, "ieee", False))
         self.input = LineInput(stdin)
         self.pending = ""                 # text written with `write` that is waiting for its newline
+        self.unpack_node = None           # the call an unpacking statement is evaluating: the only one that may return several results
         self.open_files = []              # every file the program opened; closed when it ends
         self.args = list(args)            # the program's command-line arguments, for argument(n)
         self.scopes = {}                  # id(procedure) -> Scope
@@ -1216,6 +1229,10 @@ class Interp:
             slot[VALUE] = None
         elif k is Return:
             raise _Return(self.eval(s.value, env) if s.value else None)
+        elif k is ReturnMany:
+            raise _Return(MultiValue(self.eval(v, env) for v in s.values))
+        elif k is MultiAssign:
+            self.unpack(s, env)
         elif k is Exit:
             raise _Exit(s.label)
         elif k is Cycle:
@@ -1653,6 +1670,7 @@ class Interp:
     def eval(self, e, env):
         k = type(e)
         if k in (Num, Str, Bool): return e.value
+        if k is Evaluated: return e.value
         if k is Var:
             slot = self.lookup(e.name, env)
             v = slot[VALUE]
@@ -1722,7 +1740,7 @@ class Interp:
             typ = slot[TYPE] if slot is not None else None
         elif isinstance(base, Apply) and base.name not in env:
             f = self.scope.funcs.get(base.name)
-            typ = self.typed(f.ret, self.scopes[id(f)]) if f is not None and f.ret else None
+            typ = self.typed(f.ret, self.scopes[id(f)]) if f is not None and isinstance(f.ret, str) else None
         elif isinstance(base, FieldAccess) and (base.args is None or base.bracket) and self.plain_path(base.base, env):
             owner = self.eval(base.base, env)
             slot = owner.fields.get(base.field) if isinstance(owner, Record) else None
@@ -1772,7 +1790,7 @@ class Interp:
         for n, a in enumerate(e.args, 1):
             typ = f.params[n][0] if n < len(f.params) else None
             values.append(self.procedure_argument(f, n, a, env, e.line) if isinstance(typ, ProcType) else self.eval(a, env))
-        return self.call_function(f, values, e.line)
+        return self.call_function(f, values, e.line, e)
 
     def field_value(self, e, env):
         if e.args is not None and not e.bracket:
@@ -2039,7 +2057,7 @@ class Interp:
         if f is not None:
             if f.is_sub:
                 raise LangError(f"line {e.line}: '{e.name}' is a subroutine; use 'call {e.name}(...)'")
-            return self.call_function(f, args, e.line)
+            return self.call_function(f, args, e.line, e)
         if e.name in BUILTINS or e.name in ELEMENTAL:
             return self.call_builtin(e.name, args, e.line)
         raise LangError(f"line {e.line}: unknown function or array '{e.name}'")
@@ -2180,25 +2198,57 @@ class Interp:
             raise LangError(f"line {line}: {f.name} expects {count} arguments, got {len(args)}")
         return list(args) + [NULL] * (most - len(args))
 
-    def call_function(self, f, args, line):
+    def call_function(self, f, args, line, node=None):
+        many = isinstance(f.ret, ResultList)
+        if many and (node is None or node is not self.unpack_node):
+            names = ", ".join("abcdefgh"[:len(f.ret.types)])
+            raise LangError(f"line {line}: '{f.name}' returns {len(f.ret.types)} results; "
+                            f"unpack them: ({names}) = {f.name}(...)")
         if len(args) != len(f.params):
             args = self.pad_optional(f, args, line)
         value = self.run_body(f, self.bind(f, args, line))
         if f.ret is None:
             return None
+        if many:
+            if not isinstance(value, MultiValue):
+                raise LangError(f"function {f.name} must return {len(f.ret.types)} values: return a, b")
+            return MultiValue(self.result_value(f, typ, v) for typ, v in zip(f.ret.types, value))
         if value is None:
             raise LangError(f"function {f.name} must return a {f.ret}")
-        if f.ret.endswith("]"):
-            return self.array_result(f, value)
-        return coerce(self.typed(f.ret, self.scopes[id(f)]), value, f"function {f.name}")
+        return self.result_value(f, f.ret, value)
 
-    def array_result(self, f, value):
+    def result_value(self, f, typ, value):
+        """One result of `f`, converted to its declared type."""
+        if typ.endswith("]"):
+            return self.array_result(f, value, typ)
+        return coerce(self.typed(typ, self.scopes[id(f)]), value, f"function {f.name}")
+
+    def unpack(self, s, env):
+        """`(q, @r, _) = f(x)`: call, check the count, then assign each result like a single assignment."""
+        saved, self.unpack_node = self.unpack_node, s.value
+        try:
+            values = self.eval(s.value, env)
+        finally:
+            self.unpack_node = saved
+        who = s.value.field if isinstance(s.value, FieldAccess) else s.value.name
+        if not isinstance(values, MultiValue):
+            raise LangError(f"line {s.line}: '{who}' returns one result; an unpacking needs a function with "
+                            f"several results (write 'x = {who}(...)')")
+        if len(values) != len(s.targets):
+            raise LangError(f"line {s.line}: '{who}' returns {len(values)} results, "
+                            f"but {len(s.targets)} targets are listed")
+        for (target, update), value in zip(s.targets, values):
+            if target is not None:
+                self.exec(Assign(target, Evaluated(value), s.line, update), env)
+
+    def array_result(self, f, value, typ=None):
         """The array a function declared `-> integer[]` returns: the right rank, each element of the element type."""
-        elem, rank = f.ret[:f.ret.index("[")], f.ret.count(",") + 1
+        typ = typ or f.ret
+        elem, rank = typ[:typ.index("[")], typ.count(",") + 1
         if not isinstance(value, Array):
-            raise LangError(f"function {f.name} must return {describe_array_type(f.ret)}, not {type_of(value)}")
+            raise LangError(f"function {f.name} must return {describe_array_type(typ)}, not {type_of(value)}")
         if value.rank != rank:
-            raise LangError(f"function {f.name} must return {describe_array_type(f.ret)}, "
+            raise LangError(f"function {f.name} must return {describe_array_type(typ)}, "
                             f"not a {value.rank}-dimensional array")
         elem = self.typed(elem, self.scopes[id(f)])
         return Array(value.shape, [coerce(elem, x, f"function {f.name}") for x in value.data])

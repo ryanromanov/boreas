@@ -1,0 +1,49 @@
+! A function can give back several values. List them in the result and
+! unpack them into variables at the call. `_` throws a value away.
+
+function divmod(integer :: a, integer :: b) -> (integer :: quotient, integer :: remainder)
+  return a / b, mod(a, b)
+end function
+
+function spread(real[] :: xs) -> (real :: low, real :: high)
+  return minval(xs), maxval(xs)
+end function
+
+record span
+  real :: a = 1.0
+  real :: b = 4.0
+
+  function bounds(self) -> (real :: lo, real :: hi)
+    return min(self.a, self.b), max(self.a, self.b)
+  end function
+end record
+
+! A target that reaches the caller carries its own `@`, as in any assignment.
+subroutine report(integer :: n, out integer :: quotient)
+  integer :: rest
+  (@quotient, rest) = divmod(n, 5)
+  println("left over", rest)
+end subroutine
+
+program demo
+  integer :: q
+  integer :: r
+  (q, r) = divmod(17, 5)
+  println(q, r)                      ! 3 2
+
+  (q, _) = divmod(100, 7)            ! only the quotient
+  println(q)                         ! 14
+
+  real :: lo
+  real :: hi
+  (lo, hi) = spread([3.5, 1.0, 7.25])
+  println(lo, hi)                    ! 1.0 7.25
+
+  span :: s = span(5.0, 2.0)
+  (lo, hi) = s.bounds()
+  println(lo, hi)                    ! 2.0 5.0
+
+  integer :: x
+  call report(23, x)                 ! left over 3
+  println(x)                         ! 4
+end program
