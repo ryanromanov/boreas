@@ -548,6 +548,21 @@ inside it `p` has only that interface's functions:
 Record cases come first, then the first interface case that fits. In the default case `p` has the interface's type. `p` is a
 copy: write it back (`all[2] = p`) to change the original. `break`, `exit` and `cycle` work as in `select case`.
 
+To test for one type, an `if` can ask directly:
+
+    if all[2] is rect as r then
+      println("width", r.w)         ! r is a copy of the value, as a rect
+    else if all[2] is sized as s then
+      println("area", s.area())     ! an interface name matches any record that fits it
+    else
+      println("something else")
+    end if
+
+`as r` is optional (`if x is rect then` only tests). The name exists only in its own branch, and it is a copy, so write
+it back to change the original. No `else` is needed. The test is only allowed as the whole condition of an `if` or
+`else if`; combine it with other conditions by nesting a second `if`. `is` and `as` are only special in this position,
+so variables with those names still work.
+
 ## Optional values
 
 A plain `integer`, `real`, `logical`, `string` or record always holds a value. Add `?` to the type
@@ -735,7 +750,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
   (for a normal type the record keeps its name and the interface is `T_any`); `class(T)` is that interface, and
   `x%f()` is `x.f()`. `allocate(s, source=e)` and `allocate(T :: s)` are assignments, `select type (p => x)` is
   `select type x as p` (with an empty `case default` added when Fortran has none, and `x = p` written back after a
-  case that changes `p`), and a type that only holds `class(T), allocatable` (the wrapper Fortran needs for an
+  case that changes `p`; a select with a single `type is` and no default becomes `if x is T as p then`), and a type that only holds `class(T), allocatable` (the wrapper Fortran needs for an
   array of mixed types) is dropped: `type(wrapper) :: all(3)` is `figure[3] :: all` and `all(i)%s` is `all[i]`.
   A type called like a Boreas built-in (`shape`) is renamed (`shape_`). `class is (T)` becomes
   `case T_any` when its body only calls functions, and otherwise one case for each type that extends `T`.

@@ -100,6 +100,15 @@ class SelectType(Select):
     and inside it `p` is a copy of the value, as that record."""
     var: str = None
 @dataclass
+class IsType:
+    """`x is circle as c` as the condition of an `if` / `else if`: true when `x` holds that record (or a record
+    that fits that interface); `c`, if given, is a copy of the value as that type inside the branch."""
+    subject: object
+    type: str
+    var: str | None
+    line: int
+    col: int = field(default=0, compare=False, repr=False)       # where the type's name starts
+@dataclass
 class Break: pass       # leaves the nearest enclosing select statement
 @dataclass
 class Print:   # print/println go to the screen, write/writeln to the file `to`; the `ln` forms end the line
@@ -1081,10 +1090,27 @@ class Parser:
         self.expect("]")
         return dims
 
+    def condition(self):
+        """An `if` condition: an expression, or the type test `x is circle [as c]`."""
+        cond = self.expr()
+        if self.tok.kind == "ident" and self.tok.text == "is":
+            if isinstance(cond, (Unary, Binary)):
+                raise LangError(f"line {self.tok.line}: an 'is' test must be the whole condition of the 'if'; to combine "
+                                f"it with other conditions, nest a second 'if'")
+            line = self.next().line
+            col = self.tok.col
+            typ = self.ident()
+            var = None
+            if self.tok.kind == "ident" and self.tok.text == "as":
+                self.next()
+                var = self.ident()
+            return IsType(cond, typ, var, line, col)
+        return cond
+
     def if_stmt(self):
         self.expect("if")
         branches, orelse = [], []
-        cond = self.expr()
+        cond = self.condition()
         self.expect("then")
         self.newline()
         branches.append((cond, self.block("if")))
@@ -1092,7 +1118,7 @@ class Parser:
         while self.at("else"):
             self.expect("else")
             if self.accept("if"):
-                cond = self.expr()
+                cond = self.condition()
                 self.expect("then")
                 self.newline()
                 branches.append((cond, self.block("if")))

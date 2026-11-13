@@ -7,7 +7,7 @@ reported here should always be a real one. The interpreter still catches those c
 runs them."""
 from .interp import BUILTINS, ELEMENTAL
 from .parser import (Allocate, Apply, ArrayLit, Assign, Binary, Call, Close, Decl, Do, DoWhile,
-                     ExprStmt, FieldAccess, Gen, If, NamedArg, Print, Return, Select, SelectExpr, SelectType, Slice, Stop,
+                     ExprStmt, FieldAccess, Gen, If, IsType, NamedArg, Print, Return, Select, SelectExpr, SelectType, Slice, Stop,
                      Unary, Var, sub_bodies)
 
 
@@ -116,8 +116,19 @@ class Walker:
             self.expr([s.target, s.value])
         elif isinstance(s, If):
             for cond, body in s.branches:
-                self.expr(cond)
+                added = False
+                if isinstance(cond, IsType):                  # `x is circle as c`: c exists only in this branch
+                    self.expr(cond.subject)
+                    if cond.type not in self.scope.records and cond.type not in self.scope.interfaces:
+                        self.report(cond.type, cond.line, cond.col, f"no record or interface called '{cond.type}'")
+                    added = cond.var is not None and cond.var not in self.variables
+                    if cond.var is not None:
+                        self.variables.add(cond.var)
+                else:
+                    self.expr(cond)
                 self.statements(body)
+                if added:
+                    self.variables.discard(cond.var)
             self.statements(s.orelse)
         elif isinstance(s, Do):
             self.variable(s.var, s.line, s.var_col)

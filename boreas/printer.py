@@ -186,7 +186,9 @@ def stmt(s, depth):
     if k is If:
         lines = []
         for n, (cond, body) in enumerate(s.branches):
-            lines.append(f"{pad}{'if' if n == 0 else 'else if'} {expr(cond)} then")
+            text = (f"{expr(cond.subject)} is {cond.type}" + (f" as {cond.var}" if cond.var else "")
+                    if isinstance(cond, IsType) else expr(cond))
+            lines.append(f"{pad}{'if' if n == 0 else 'else if'} {text} then")
             lines.extend(stmts(body, depth + 1))
         if s.orelse:
             lines.append(pad + "else")

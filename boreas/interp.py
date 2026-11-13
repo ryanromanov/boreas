@@ -1136,7 +1136,12 @@ class Interp:
             self.write(ref, self.eval(s.value, env), s.line)
         elif k is If:
             for cond, body in s.branches:
-                if self.truth(self.eval(cond, env)):
+                if isinstance(cond, IsType):
+                    inner = self.type_test(cond, env)
+                    if inner is not None:
+                        self.exec_block(body, inner)
+                        return
+                elif self.truth(self.eval(cond, env)):
                     self.exec_block(body, env)
                     return
             self.exec_block(s.orelse, env)
@@ -1818,6 +1823,32 @@ class Interp:
             self.exec_block(c.body, inner)
         except _Break:
             pass
+
+    def holds(self, v, name, line):
+        """Does the record value `v` fit the record or interface called `name`?"""
+        idef = self.scope.interfaces.get(name)
+        if idef is not None:
+            return not conformance(v.rdef, idef)
+        rdef = self.scope.records.get(name)
+        if rdef is None:
+            raise LangError(f"line {line}: there is no record or interface called '{name}' here")
+        return v.rdef is rdef
+
+    def type_test(self, t, env):
+        """`x is circle as c`: the environment for the branch (with `c` a copy of the value as that type), or None
+        when `x` holds something else."""
+        v = self.eval(t.subject, env)
+        if v is None:
+            raise LangError(f"line {t.line}: the value tested with 'is' is used before it is assigned")
+        if not isinstance(v, Record):
+            raise LangError(f"line {t.line}: 'is' needs a record or interface value, got {type_of(v)}")
+        if not self.holds(v, t.type, t.line):
+            return None
+        if t.var is None:
+            return env
+        inner = dict(env)
+        inner[t.var] = [self.typed(t.type), v.copy(), False, None]
+        return inner
 
     def case_value(self, e, env, line):
         """A case value is a literal, a signed number or a `const` name."""

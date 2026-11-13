@@ -1,6 +1,6 @@
 ! Object-oriented Fortran: an abstract type, extensions, type-bound procedures, a wrapper type for
 ! an array of mixed shapes, allocate with source=, and select type.
-! `boreas convert examples/shapes.f90` turns it into Boreas interfaces, records and `select type`
+! `boreas convert examples/shapes.f90` turns it into Boreas interfaces, records and an `if x is T as p` test
 ! (compare examples/shapes.bor, which is the same program written by hand).
 module shapes
   implicit none

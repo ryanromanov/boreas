@@ -290,9 +290,9 @@ program demo
     print '(a, f6.1)', "width of the rect:", p%w
   end select
 end program
-""", ["shape_[3] :: all", "all[1] = circle(", "select type all[2] as p", "case rect"])
+""", ["shape_[3] :: all", "all[1] = circle(", "if all[2] is rect as p then"])
         self.assertNotIn("shape_ref", text)                                    # the wrapper type is gone
-        self.assertIn("case default", text)                                    # Fortran has none; Boreas needs one
+        self.assertNotIn("case default", text)                                 # one `type is` and no default: an inline test
 
     def test_a_case_that_changes_the_value_writes_it_back(self):
         self.check(SHAPES_WITH_GROW + """program demo
@@ -1161,3 +1161,63 @@ program demo
   call c%describe()
 end program
 """)
+
+
+class InlineIsConversionTests(unittest.TestCase):
+    check = OOConversionTests.check
+
+    def test_one_type_is_and_no_default_becomes_an_inline_test(self):
+        text = self.check(SHAPES_WITH_GROW + """module users
+  use shapes
+  implicit none
+contains
+  subroutine enlarge(s)
+    class(shape), intent(inout) :: s
+    select type (s)
+    type is (circle)
+      call s%grow(2.0)
+    end select
+  end subroutine
+end module
+program demo
+  use shapes
+  use users
+  implicit none
+  type(circle) :: c
+  c = circle(name="c", r=2.0)
+  call enlarge(c)
+  call c%describe()
+end program
+""", ["if s is circle as s_as then", "update s = s_as"])
+        self.assertNotIn("select type", text)
+
+    def test_two_cases_stay_a_select_type(self):
+        text = self.check(SHAPES + """program demo
+  use shapes
+  implicit none
+  class(shape), allocatable :: s
+  allocate(circle :: s)
+  select type (s)
+  type is (circle)
+    print *, "circle"
+  type is (rect)
+    print *, "rect"
+  end select
+end program
+""", ["select type s as s_as", "case default"])
+        self.assertNotIn("if s is", text)
+
+    def test_an_explicit_default_keeps_the_select_type(self):
+        self.check(SHAPES + """program demo
+  use shapes
+  implicit none
+  class(shape), allocatable :: s
+  allocate(circle :: s)
+  select type (s)
+  type is (circle)
+    print *, "circle"
+  class default
+    print *, "other"
+  end select
+end program
+""", ["select type s as s_as"])
