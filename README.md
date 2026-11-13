@@ -516,7 +516,7 @@ runs the function of the record it holds:
   is an error if it puts in a different kind (a `rect` into a `circle` variable).
 - A record field can have an interface type (`figure :: highlight`, `figure[2] :: items`). It starts unassigned,
   and using it before it is set is an error, as for an interface variable. Only the interface's functions are
-  available through it (`sc.items[1].area()`).
+  available through it (`sc.items[1].area()`). See `examples/scene.bor`.
 - An interface cannot be named like a built-in (`shape` is one) or a record. Not supported yet: an
   `allocatable` array of an interface type, and optional interface values (`figure?`).
 - Interfaces are exported and imported by name from a module (`public interface figure`, `use shapes: figure`).
@@ -750,8 +750,9 @@ report on stderr. Translations that change meaning are flagged, never silent:
   (for a normal type the record keeps its name and the interface is `T_any`); `class(T)` is that interface, and
   `x%f()` is `x.f()`. `allocate(s, source=e)` and `allocate(T :: s)` are assignments, `select type (p => x)` is
   `select type x as p` (with an empty `case default` added when Fortran has none, and `x = p` written back after a
-  case that changes `p`; a select with a single `type is` and no default becomes `if x is T as p then`), and a type that only holds `class(T), allocatable` (the wrapper Fortran needs for an
-  array of mixed types) is dropped: `type(wrapper) :: all(3)` is `figure[3] :: all` and `all(i)%s` is `all[i]`.
+  case that changes `p`; a select with a single `type is` and no default becomes `if x is T as p then`), and a
+  type that only holds `class(T), allocatable` (the wrapper Fortran needs for an array of mixed types) is dropped:
+  `type(wrapper) :: all(3)` is `figure[3] :: all` and `all(i)%s` is `all[i]`.
   A type called like a Boreas built-in (`shape`) is renamed (`shape_`). `class is (T)` becomes
   `case T_any` when its body only calls functions, and otherwise one case for each type that extends `T`.
   An inherited procedure whose parent is in another module is copied into the child's module when everything it
