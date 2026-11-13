@@ -1273,6 +1273,8 @@ class Interp:
                     self.exec_block(body, env)
                     return
             self.exec_block(s.orelse, env)
+        elif k is Where:
+            self.exec_where(s, env)
         elif k is SelectType:
             self.select_type(s, env)
         elif k is Select:
@@ -2368,6 +2370,31 @@ class Interp:
                    for (typ, _, _), v in zip(f.params, args)]
             out.append(self.result_value(f, f.ret, self.run_body(f, self.bind(f, one, line))))
         return Array(shape, out)
+
+    def exec_where(self, s, env):
+        """`where mask then ... elsewhere ... end where`: each assignment changes only the elements the mask
+        selects (or, after `elsewhere`, the ones it does not). The mask is evaluated once, and each right-hand
+        side is evaluated for every element, like any array expression."""
+        mask = self.eval(s.cond, env)
+        if not isinstance(mask, Array) or not all(isinstance(x, bool) for x in mask.data):
+            raise LangError(f"line {s.line}: 'where' needs an array of logicals, such as a > 0")
+        for body, want in ((s.body, True), (s.orelse, False)):
+            for st in body:
+                if isinstance(st, Comment):
+                    continue
+                current = self.eval(st.target, env)
+                value = self.eval(st.value, env)
+                if not isinstance(current, Array) or current.shape != mask.shape:
+                    raise LangError(f"line {st.line}: inside 'where' every target must be an array with the "
+                                    f"mask's shape {list(mask.shape)}")
+                if isinstance(value, Array):
+                    if value.shape != mask.shape:
+                        raise LangError(f"line {st.line}: the value has shape {list(value.shape)}, "
+                                        f"but the mask has shape {list(mask.shape)}")
+                    new = [v if m == want else c for m, v, c in zip(mask.data, value.data, current.data)]
+                else:
+                    new = [value if m == want else c for m, c in zip(mask.data, current.data)]
+                self.exec(Assign(st.target, Evaluated(Array(mask.shape, new)), st.line, st.update), env)
 
     def result_value(self, f, typ, value):
         """One result of `f`, converted to its declared type."""

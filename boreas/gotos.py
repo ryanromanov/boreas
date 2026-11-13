@@ -15,7 +15,7 @@ into a block), so each label is handled where its mark is:
 Whatever cannot be rewritten stays as a TODO comment."""
 from dataclasses import dataclass
 
-from .parser import (Assign, Bool, Case, Comment, Cycle, Do, DoWhile, Exit, If, IsType, Num, Return, Select, Stop, Unary, Var)
+from .parser import (Assign, Bool, Case, Comment, Cycle, Do, DoWhile, Exit, If, IsType, Num, Return, Select, Stop, Unary, Var, Where)
 
 
 @dataclass
@@ -36,6 +36,8 @@ def child_lists(s):
         return [c.body for c in s.cases]
     if isinstance(s, (Do, DoWhile)):
         return [s.body]
+    if isinstance(s, Where):
+        return [s.body, s.orelse]
     return []
 
 

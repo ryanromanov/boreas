@@ -186,7 +186,7 @@ def classify(toks):
     if t0 in ("type", "class") and nxt is not None and nxt.kind == "name" and nxt.text in ("is", "default"):
         return ("guard",)                           # type is (T) / class is (T) / class default
     if nxt is not None and nxt.kind == "op" and nxt.text in ("=", "("):
-        if nxt.text == "=" or t0 not in ("else", "elseif", "end"):
+        if nxt.text == "=" or t0 not in ("else", "elseif", "end", "elsewhere"):
             return None
     if t0.startswith("end") and t0 in ("enddo", "endif", "endprogram", "endfunction",
                                        "endsubroutine", "endselect", "endblock", "endmodule",
@@ -198,6 +198,8 @@ def classify(toks):
             return ("end", None)
         if nxt.kind == "name":
             return ("end", nxt.text)
+    if t0 == "elsewhere" or (t0 == "else" and nxt is not None and nxt.text == "where"):
+        return ("elsewhere",)
     if t0 == "else":
         return ("elseif",) if nxt is not None and nxt.text == "if" else ("else",)
     if t0 == "elseif":
@@ -3364,7 +3366,30 @@ class FParser:
         raise Unsupported(f"'{kind}' is not supported")
 
     def st_where(self, it, scope):
-        self.block_form("where")
+        self.expect_op("(")
+        cond = self.expr()
+        self.expect_op(")")
+        if self.peek() is not None:                     # where (mask) a = b
+            inner = self.statement(it, self.toks[self.k:], scope)
+            return [self.where_node(cond, inner, [], it)]
+        body = self.parse_body(scope, {("end", "where"), ("elsewhere",)})
+        orelse = []
+        cur = self.items[self.i]
+        self.i += 1
+        toks = self.tokens(cur)
+        if classify(toks) == ("elsewhere",):
+            if len(toks) > (2 if toks[0].text == "else" else 1):
+                self.skip_block("where")
+                raise Unsupported("'elsewhere' with its own mask is not supported; skipped")
+            orelse = self.parse_body(scope, {("end", "where")})
+            self.i += 1
+        return [self.where_node(cond, body, orelse, it)]
+
+    def where_node(self, cond, body, orelse, it):
+        for st in body + orelse:
+            if not isinstance(st, (Assign, Comment)):
+                raise Unsupported("only assignments are supported inside 'where'")
+        return Where(cond, body, orelse, it.line)
 
     def st_forall(self, it, scope):
         self.block_form("forall")
@@ -5532,6 +5557,12 @@ class FParser:
                     for cond, b in s.branches:
                         read_expr(cond)
                         scan(b, False)
+                    scan(s.orelse, False)
+                elif isinstance(s, Where):          # the elements the mask skips keep their old value: a read too
+                    read_expr(s.cond)
+                    counts[0] += sum(1 for st in s.body + s.orelse
+                                     if isinstance(st, Assign) and ref_name(st.target) == name)
+                    scan(s.body, False)
                     scan(s.orelse, False)
                 elif isinstance(s, Select):
                     read_expr(s.subject)

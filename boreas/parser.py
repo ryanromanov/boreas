@@ -76,6 +76,8 @@ class Assign: target: object; value: object; line: int; update: bool = False
 @dataclass
 class If: branches: list; orelse: list   # branches: [(cond, body)]
 @dataclass
+class Where: cond: object; body: list; orelse: list; line: int   # where cond then ... elsewhere ... end where
+@dataclass
 class Do:
     var: str; lo: object; hi: object; step: object; body: list; line: int
     label: str = None          # `outer: do ...` / `end do outer`
@@ -311,6 +313,9 @@ def check_writes(body, params, shared=None, is_sub=True):
             for _, b in s.branches:
                 check_writes(b, params, shared, is_sub)
             check_writes(s.orelse, params, shared, is_sub)
+        elif isinstance(s, Where):
+            check_writes(s.body, params, shared, is_sub)
+            check_writes(s.orelse, params, shared, is_sub)
         elif isinstance(s, Select):
             for c in s.cases:
                 check_writes(c.body, params, shared, is_sub)
@@ -332,6 +337,8 @@ def sub_bodies(s):
         return [b for _, b in s.branches] + [s.orelse]
     if isinstance(s, (Do, DoWhile)):
         return [s.body]
+    if isinstance(s, Where):
+        return [s.body, s.orelse]
     if isinstance(s, Select):
         return [c.body for c in s.cases]
     return []
@@ -988,6 +995,8 @@ class Parser:
                        "'allocate @a[n]', 'deallocate @a'")
         if self.at("if"):
             return self.if_stmt()
+        if self.where_ahead():
+            return self.where_stmt()
         if self.at("do"):
             return self.do_stmt()
         if self.at("select"):
@@ -1216,6 +1225,42 @@ class Parser:
                 var = self.ident()
             return IsType(cond, typ, var, line, col)
         return cond
+
+    def where_ahead(self):
+        """`where` starts a statement only when the line ends in `then`; otherwise it is an ordinary name."""
+        if not (self.tok.kind == "ident" and self.tok.text == "where"):
+            return False
+        j = self.i + 1
+        while self.toks[j].kind not in ("nl", "eof"):
+            j += 1
+        return j > self.i + 1 and self.toks[j - 1].text == "then"
+
+    def where_stmt(self):
+        line = self.next().line
+        cond = self.expr()
+        self.expect("then")
+        self.newline()
+        body, orelse = [], []
+        current = body
+        self.skip_newlines()
+        while True:
+            if self.at("end") and self.toks[self.i + 1].text == "where":
+                self.next(); self.next(); self.newline()
+                return Where(cond, body, orelse, line)
+            if self.tok.kind == "ident" and self.tok.text == "elsewhere" and self.toks[self.i + 1].kind == "nl":
+                if current is orelse:
+                    self.error("'where' has only one 'elsewhere'")
+                self.next(); self.newline()
+                current = orelse
+            elif self.tok.kind == "eof" or self.at("end"):
+                self.error("missing 'end where'")
+            else:
+                st = self.statement()
+                if not isinstance(st, (Assign, Comment)):
+                    raise LangError(f"line {getattr(st, 'line', self.tok.line)}: a 'where' holds only "
+                                    f"assignments; use 'if' or a loop for anything else")
+                current.append(st)
+            self.skip_newlines()
 
     def if_stmt(self):
         self.expect("if")

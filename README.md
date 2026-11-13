@@ -255,6 +255,22 @@ at 5.0. Arrays passed together need the same shape, and single values are reused
 A parameter declared as an array (`real[] :: a`) still receives the whole array. A function that returns
 an array or several results cannot be applied this way.
 
+`where` changes only the elements a test selects:
+
+```
+where a > 0.0 then
+  b = a * 2
+elsewhere
+  b = -1
+end where
+```
+
+The test must be an array of logicals, and every assignment inside must have a target of the same shape.
+Only assignments go inside (use `if` or a loop for anything else), and there is at most one `elsewhere`.
+The test is worked out once, before any assignment. Each right-hand side is computed for every element,
+like any array expression, and only the selected elements are stored. `where` is a statement only when the
+line ends in `then`, so a variable called `where` still works.
+
 An array literal can contain one-dimensional arrays, which are spliced in: with `x = [1, 2, 3]`, `[x, 4]` is
 `[1, 2, 3, 4]` and `[0, x, x]` is `[0, 1, 2, 3, 1, 2, 3]`. A matrix in a literal is an error (build one with
 `reshape`).
