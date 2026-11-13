@@ -229,7 +229,9 @@ INT_KINDS = {1: "int8", 2: "int16", 4: "integer", 8: "int64"}
 REAL_KINDS = {4: "real32", 8: "real"}
 # Fortran lets an intrinsic's arguments be passed by name; Boreas built-ins are positional, so the converter
 # puts them in this order. (Looking into keyword arguments for Boreas parameters is on the list: see D52.)
-INTRINSIC_PARAMS = {"cshift": ["array", "shift", "dim"]}
+INTRINSIC_PARAMS = {"cshift": ["array", "shift", "dim"], "merge": ["tsource", "fsource", "mask"],
+                    "count": ["mask", "dim"], "pack": ["array", "mask", "vector"],
+                    "maxloc": ["array", "dim"], "minloc": ["array", "dim"]}
 UNSET = object()          # "not given", for an argument that may be None
 KIND_ARGUMENT = {"real", "int", "cmplx", "dble", "dcmplx", "float", "sngl", "nint", "floor", "ceiling"}
 
