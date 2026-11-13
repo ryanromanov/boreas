@@ -142,11 +142,6 @@ class OldSyntaxIsAnErrorTests(unittest.TestCase):
         self.fails("record team\n  integer[3] :: tags\nend record\nprogram t\n  team :: tm\n  println(tm.tags(2))\nend program",
                    "write tags[...]")
 
-    def test_a_parameter_that_gets_an_array_must_say_so(self):
-        self.fails("function trace(real :: m) -> real\n  return 1.0\nend function\n"
-                   "program t\n  real[2, 2] :: a = 0.0\n  println(trace(a))\nend program",
-                   "'m' of trace is an array: declare it as real[,] :: m")
-
     def test_check_finds_it_without_running(self):
         found = check_errors("program t\n  real[2] :: a = [1.0, 2.0]\n  if false then\n    println(a(2))\n  end if\nend program")
         self.assertEqual([(line, msg) for line, _, msg, _ in found],

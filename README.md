@@ -249,6 +249,12 @@ array's own bound and the section is empty). A step of zero is an error, and a s
 
 Operators work elementwise and need matching shapes (scalars broadcast).
 
+Your own functions work the same way. A function whose parameters are single values (`real :: x`) can be
+called with an array, and it runs once for each element: `shrink(v, 5.0)` caps every element of `v`
+at 5.0. Arrays passed together need the same shape, and single values are reused for every element.
+A parameter declared as an array (`real[] :: a`) still receives the whole array. A function that returns
+an array or several results cannot be applied this way.
+
 An array literal can contain one-dimensional arrays, which are spliced in: with `x = [1, 2, 3]`, `[x, 4]` is
 `[1, 2, 3, 4]` and `[0, x, x]` is `[0, 1, 2, 3, 1, 2, 3]`. A matrix in a literal is an error (build one with
 `reshape`).
