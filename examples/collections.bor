@@ -1,4 +1,38 @@
-! Maps and sets (local variables for now). Keys and members are integers or strings.
+! Maps and sets. Keys and members are integers or strings.
+
+! A map can be a parameter: read-only unless it is `inout`.
+function total(map[string, integer] :: m) -> integer
+  allocatable string[] :: ks
+  integer :: i
+  integer :: t = 0
+  ks = keys(m)
+  do i = 1, size(ks)
+    t = t + m[ks[i]]
+  end do
+  return t
+end function
+
+! `inout` changes the caller's map; writes that reach the caller carry `@`, and call add/remove need no mark.
+subroutine bump(inout map[string, integer] :: m, string :: word)
+  @m[word] = (get(m, word) ?? 0) + 1
+end subroutine
+
+! A set (or a map) can be a function result.
+function distinct(string[] :: words) -> set[string]
+  set[string] :: s
+  integer :: i
+  do i = 1, size(words)
+    call add(s, words[i])
+  end do
+  return s
+end function
+
+! A record can hold them; a field starts empty.
+record inventory
+  string :: owner = "shop"
+  map[string, integer] :: stock
+  set[string] :: tags
+end record
 
 program demo
   map[string, integer] :: age
@@ -46,4 +80,18 @@ program demo
   map[string, integer] :: copy = count
   copy["extra"] = 1
   println(has(count, "extra"), has(copy, "extra"))    ! false true
+
+  ! Parameters, results and record fields.
+  map[string, integer] :: tally
+  call bump(tally, "x")
+  call bump(tally, "x")
+  call bump(tally, "y")
+  println(tally, total(tally))               ! {x: 2, y: 1} 3
+  println(distinct(words))                   ! {the, cat, saw, dog, and}
+
+  inventory :: shop
+  shop.stock["pen"] = 3
+  call bump(shop.stock, "pen")
+  call add(shop.tags, "office")
+  println(shop)                              ! inventory(owner=shop, stock={pen: 4}, tags={office})
 end program

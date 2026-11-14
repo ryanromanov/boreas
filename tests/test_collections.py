@@ -100,8 +100,8 @@ class CopyTests(unittest.TestCase):
         self.assertEqual(out, ["[a]"])
 
     def test_the_types_must_match(self):
-        fails(self, "  map[string, real] :: b = age", "so it cannot hold a string to integer map")
-        fails(self, "  age = seen", "so it cannot hold a set of string")
+        fails(self, "  map[string, real] :: b = age", "expected a map[string, real], got a map[string, integer]")
+        fails(self, "  age = seen", "expected a map[string, integer], got a set[string]")
 
 
 class ErrorTests(unittest.TestCase):
@@ -178,14 +178,20 @@ class ParseTests(unittest.TestCase):
             parse(src)
         self.assertIn(message, str(cm.exception))
 
-    def test_only_local_variables_so_far(self):
-        for src in ["function f(map[string, integer] :: m) -> integer\n  return 1\nend function\nprogram t\nend program\n",
-                    "function f() -> set[integer]\n  return 1\nend function\nprogram t\nend program\n",
-                    "record r\n  set[string] :: s\nend record\nprogram t\nend program\n",
-                    "module m\n  public map[string, integer] :: age\nend module\nprogram t\nend program\n",
+    def test_a_module_variable_is_not_supported_yet(self):
+        for src in ["module m\n  public map[string, integer] :: age\nend module\nprogram t\nend program\n",
                     "module m\n  map[string, integer] :: age\nend module\nprogram t\nend program\n"]:
-            with self.subTest(src.splitlines()[0]):
-                self.refused(src, "can only be a local variable so far")
+            with self.subTest(src.splitlines()[1]):
+                self.refused(src, "cannot be a module variable yet")
+
+    def test_parameters_results_and_fields_parse(self):
+        parse("function f(map[string, integer] :: m, set[integer] :: s) -> map[string, integer]\n  return m\nend function\n"
+              "record r\n  set[string] :: tags\nend record\nprogram t\nend program\n")
+
+    def test_a_field_has_no_default_and_no_optional(self):
+        self.refused("record r\n  map[string, integer] :: m = x\nend record\nprogram t\nend program\n", "starts empty")
+        self.refused("function f(map[string, integer]? :: m) -> integer\n  return 1\nend function\nprogram t\nend program\n",
+                     "optional map is not supported")
 
     def test_keys_must_be_integer_or_string(self):
         self.refused("program t\n  map[real, integer] :: m\nend program\n", "must be integer or string, not real")
@@ -245,6 +251,200 @@ class ToolTests(unittest.TestCase):
         src = ("subroutine add(inout integer :: n)\n  @n = n + 1\nend subroutine\n"
                "program t\n  integer :: x = 1\n  call add(x)\n  println(x)\nend program\n")
         self.assertEqual(run_bor(src), ["2"])
+
+
+BOOK = """record book
+  integer :: pages = 1
+  map[string, integer] :: stock
+  set[string] :: tags
+end record
+"""
+
+
+def run_with(defs, body):
+    return run_bor(defs + "program t\n  map[string, integer] :: m\n" + body + "\nend program\n")
+
+
+class ParameterTests(unittest.TestCase):
+    DEFS = ("function sizeof(map[string, integer] :: m) -> integer\n  return size(m)\nend function\n"
+            "subroutine put(inout map[string, integer] :: m, string :: k, integer :: v)\n  @m[k] = v\nend subroutine\n"
+            "subroutine fresh(out set[integer] :: s)\n  call add(s, 5)\nend subroutine\n"
+            "subroutine drop(inout map[string, integer] :: m, string :: k)\n  call remove(m, k)\nend subroutine\n")
+
+    def test_an_in_parameter_is_read_only_but_not_copied(self):
+        self.assertEqual(run_with(self.DEFS, '  m["a"] = 1\n  println(sizeof(m))'), ["1"])
+
+    def test_an_inout_parameter_changes_the_callers_map(self):
+        self.assertEqual(run_with(self.DEFS, '  call put(m, "k", 5)\n  call put(m, "j", 6)\n  println(m)'), ["{k: 5, j: 6}"])
+
+    def test_call_add_and_remove_work_on_an_inout_parameter(self):
+        self.assertEqual(run_with(self.DEFS, '  m["a"] = 1\n  m["b"] = 2\n  call drop(m, "a")\n  println(m)'), ["{b: 2}"])
+
+    def test_an_out_parameter_starts_empty(self):
+        out = run_with(self.DEFS, "  set[integer] :: s\n  call add(s, 1)\n  call fresh(s)\n  println(s)")
+        self.assertEqual(out, ["{5}"])
+
+    def test_the_arguments_may_not_overlap(self):
+        defs = self.DEFS + "subroutine both(inout map[string, integer] :: a, inout map[string, integer] :: b)\nend subroutine\n"
+        with self.assertRaisesRegex(LangError, "must not alias"):
+            run_with(defs, "  call both(m, m)")
+
+    def test_an_in_parameter_cannot_be_changed(self):
+        for body, text in [('m["x"] = 1', "'m' is an 'in' parameter and cannot be assigned"),
+                           ('call add(s, 1)', "'s' is an 'in' parameter and cannot be changed"),
+                           ('call remove(m, "x")', "cannot be changed")]:
+            defs = f"function f(map[string, integer] :: m, set[integer] :: s) -> integer\n  {body}\n  return 1\nend function\n"
+            with self.subTest(body):
+                with self.assertRaisesRegex(LangError, text):
+                    run_with(defs, "  set[integer] :: q\n  println(f(m, q))")
+
+    def test_an_inout_write_needs_its_mark(self):
+        defs = "subroutine nomark(inout map[string, integer] :: m)\n  m[\"k\"] = 5\nend subroutine\n"
+        with self.assertRaisesRegex(LangError, "so other code sees this write"):
+            run_with(defs, "  call nomark(m)")
+
+    def test_an_in_parameter_cannot_be_passed_on_as_inout(self):
+        defs = (self.DEFS + "function outer(map[string, integer] :: m) -> integer\n  call put(m, \"k\", 1)\n  return 1\nend function\n")
+        with self.assertRaisesRegex(LangError, "cannot be passed as inout"):
+            run_with(defs, "  println(outer(m))")
+
+    def test_the_wrong_map_type_is_refused(self):
+        with self.assertRaisesRegex(LangError, "expected a map\\[string, integer\\], got a map\\[integer, integer\\]"):
+            run_with(self.DEFS, "  map[integer, integer] :: w\n  println(sizeof(w))")
+
+    def test_a_map_entry_can_be_passed_as_an_in_argument(self):
+        defs = "function twice(integer :: n) -> integer\n  return n * 2\nend function\n"
+        self.assertEqual(run_with(defs, '  m["a"] = 4\n  println(twice(m["a"]))'), ["8"])
+
+
+class ResultTests(unittest.TestCase):
+    DEFS = ("function make() -> map[string, integer]\n  map[string, integer] :: m\n  m[\"a\"] = 1\n  m[\"b\"] = 2\n  return m\nend function\n"
+            "function members(integer[] :: v) -> set[integer]\n  set[integer] :: s\n  integer :: i\n"
+            "  do i = 1, size(v)\n    call add(s, v[i])\n  end do\n  return s\nend function\n"
+            "function pair() -> (map[string, integer], integer)\n  map[string, integer] :: m\n  m[\"a\"] = 1\n  return m, 7\nend function\n"
+            "function passthrough(map[string, integer] :: m) -> map[string, integer]\n  return m\nend function\n")
+
+    def test_a_function_can_return_a_map_or_a_set(self):
+        self.assertEqual(run_with(self.DEFS, "  m = make()\n  println(m)\n  println(members([3, 1, 3]))"),
+                         ["{a: 1, b: 2}", "{3, 1}"])
+
+    def test_the_result_is_a_copy(self):
+        out = run_with(self.DEFS, '  m["z"] = 1\n  map[string, integer] :: n = passthrough(m)\n  n["y"] = 2\n  println(m)\n  println(n)')
+        self.assertEqual(out, ["{z: 1}", "{z: 1, y: 2}"])
+
+    def test_a_result_list_can_hold_a_map(self):
+        self.assertEqual(run_with(self.DEFS, "  integer :: n\n  (m, n) = pair()\n  println(m, n)"), ["{a: 1} 7"])
+
+    def test_a_result_can_be_used_without_a_variable(self):
+        self.assertEqual(run_with(self.DEFS, '  println(has(make(), "a"), size(make()), keys(make()))'), ["true 2 [a, b]"])
+
+    def test_the_result_must_be_the_declared_type(self):
+        defs = "function bad() -> map[string, integer]\n  set[string] :: s\n  return s\nend function\n"
+        with self.assertRaisesRegex(LangError, "expected a map\\[string, integer\\], got a set\\[string\\]"):
+            run_with(defs, "  m = bad()")
+
+    def test_it_cannot_be_applied_to_each_element_of_an_array(self):
+        defs = "function one(integer :: n) -> set[integer]\n  set[integer] :: s\n  call add(s, n)\n  return s\nend function\n"
+        with self.assertRaisesRegex(LangError, "cannot be applied to each element"):
+            run_with(defs, "  println(one([1, 2]))")
+
+
+class CallbackTests(unittest.TestCase):
+    DEFS = ("function sizeof(map[string, integer] :: m) -> integer\n  return size(m)\nend function\n"
+            "function apply(function(map[string, integer]) -> integer :: f, map[string, integer] :: m) -> integer\n  return f(m)\nend function\n"
+            "function build() -> map[string, integer]\n  map[string, integer] :: m\n  m[\"a\"] = 1\n  return m\nend function\n"
+            "function use_builder(function() -> map[string, integer] :: g) -> integer\n  map[string, integer] :: m\n  m = g()\n  return size(m)\nend function\n")
+
+    def test_a_callback_can_take_a_map(self):
+        self.assertEqual(run_with(self.DEFS, '  m["a"] = 1\n  m["b"] = 2\n  println(apply(sizeof, m))'), ["2"])
+
+    def test_a_callback_can_return_a_map(self):
+        self.assertEqual(run_with(self.DEFS, "  println(use_builder(build))"), ["1"])
+
+    def test_the_signature_must_match(self):
+        defs = self.DEFS + "function other(set[string] :: s) -> integer\n  return 1\nend function\n"
+        with self.assertRaisesRegex(LangError, "is function"):
+            run_with(defs, "  println(apply(other, m))")
+
+
+class FieldTests(unittest.TestCase):
+    def test_a_field_starts_empty_and_is_used_with_brackets(self):
+        out = run_with(BOOK, '  book :: b\n  b.stock["pen"] = 3\n  call add(b.tags, "office")\n'
+                             '  println(b.stock["pen"], has(b.tags, "office"), size(b.stock))\n  println(b)')
+        self.assertEqual(out, ["3 true 1", "book(pages=1, stock={pen: 3}, tags={office})"])
+
+    def test_copying_a_record_copies_its_collections(self):
+        out = run_with(BOOK, '  book :: b\n  b.stock["a"] = 1\n  book :: c = b\n  c.stock["z"] = 2\n  call add(c.tags, "t")\n'
+                             '  println(size(b.stock), size(c.stock), size(b.tags), size(c.tags))')
+        self.assertEqual(out, ["1 2 0 1"])
+
+    def test_assigning_a_whole_field_copies(self):
+        out = run_with(BOOK, '  book :: b\n  m["a"] = 1\n  b.stock = m\n  m["z"] = 2\n  println(size(b.stock), size(m))')
+        self.assertEqual(out, ["1 2"])
+
+    def test_the_constructor_copies_and_a_collection_field_may_be_left_out(self):
+        out = run_with(BOOK, '  m["a"] = 1\n  book :: b = book(2, m)\n  m["b"] = 2\n  book :: c = book(3)\n'
+                             '  book :: d = book(pages = 4)\n  println(b)\n  println(size(m), c.pages, d.pages, size(c.stock))')
+        self.assertEqual(out, ["book(pages=2, stock={a: 1}, tags={})", "2 3 4 0"])
+
+    def test_a_record_in_an_array_has_its_own_collections(self):
+        out = run_with(BOOK, '  book[2] :: shelf\n  shelf[1].stock["a"] = 1\n  println(size(shelf[1].stock), size(shelf[2].stock))')
+        self.assertEqual(out, ["1 0"])
+
+    def test_an_inout_record_parameter_can_change_its_collections(self):
+        defs = BOOK + "subroutine stock_up(inout book :: b)\n  @b.stock[\"x\"] = 9\n  call add(b.tags, \"t\")\nend subroutine\n"
+        out = run_with(defs, "  book :: b\n  call stock_up(b)\n  println(b)")
+        self.assertEqual(out, ["book(pages=1, stock={x: 9}, tags={t})"])
+
+    def test_an_out_record_starts_with_empty_collections(self):
+        defs = BOOK + "subroutine fresh(out book :: b)\n  @b.pages = 5\nend subroutine\n"
+        out = run_with(defs, '  book :: b\n  b.stock["old"] = 1\n  call fresh(b)\n  println(b)')
+        self.assertEqual(out, ["book(pages=5, stock={}, tags={})"])
+
+    def test_a_field_can_be_passed_to_a_procedure(self):
+        defs = (BOOK + "function sizeof(map[string, integer] :: m) -> integer\n  return size(m)\nend function\n"
+                "subroutine put(inout map[string, integer] :: m, string :: k, integer :: v)\n  @m[k] = v\nend subroutine\n")
+        out = run_with(defs, '  book :: b\n  call put(b.stock, "q", 1)\n  println(sizeof(b.stock), b.stock)')
+        self.assertEqual(out, ["1 {q: 1}"])
+
+    def test_an_in_record_parameter_cannot_change_a_field(self):
+        defs = BOOK + "function f(book :: b) -> integer\n  b.stock[\"x\"] = 1\n  return 1\nend function\n"
+        with self.assertRaisesRegex(LangError, "in' parameter"):
+            run_with(defs, "  book :: b\n  println(f(b))")
+
+    def test_a_field_of_the_wrong_type_is_refused(self):
+        with self.assertRaisesRegex(LangError, "expected a map\\[string, integer\\], got a set\\[string\\]"):
+            run_with(BOOK, "  set[string] :: s\n  book :: b\n  b.stock = s")
+
+    def test_a_set_field_is_not_indexed(self):
+        with self.assertRaisesRegex(LangError, "is a set, which has no entries to index"):
+            run_with(BOOK, '  book :: b\n  b.tags["x"] = 1')
+
+    def test_a_record_function_can_use_its_collection(self):
+        src = ("record counter\n  map[string, integer] :: n\n\n  function total(self) -> integer\n    integer :: t = 0\n"
+               "    allocatable string[] :: ks\n    integer :: i\n    ks = keys(self.n)\n    do i = 1, size(ks)\n"
+               "      t = t + self.n[ks[i]]\n    end do\n    return t\n  end function\n\n"
+               "  subroutine bump(inout self, string :: k)\n    @self.n[k] = (get(self.n, k) ?? 0) + 1\n  end subroutine\nend record\n")
+        out = run_bor(src + 'program t\n  counter :: c\n  call c.bump("a")\n  call c.bump("a")\n  call c.bump("b")\n  println(c.total(), c.n)\nend program\n')
+        self.assertEqual(out, ["3 {a: 2, b: 1}"])
+
+
+class CheckTests(unittest.TestCase):
+    SRC = (BOOK + "function f(map[string, integer] :: m, book :: b) -> integer\n  return m[\"a\"] + size(b.stock) + b.stock[\"q\"]\nend function\n"
+           "program t\n  book :: b\n  call add(b.tags, \"x\")\n  println(b)\nend program\n")
+
+    def test_check_accepts_them(self):
+        self.assertEqual(check_errors(self.SRC), [])
+
+    def test_check_asks_for_brackets_on_a_parameter(self):
+        src = self.SRC.replace('m["a"]', 'm("a")')
+        self.assertTrue(any("index with brackets" in e[2] for e in check_errors(src)))
+
+    def test_printing_and_parsing_round_trip(self):
+        once = to_source(parse(self.SRC))
+        self.assertEqual(to_source(parse(once)), once)
+        self.assertIn("map[string, integer] :: stock", once)
+        self.assertIn("function f(map[string, integer] :: m, book :: b) -> integer", once)
 
 
 class EditorTests(unittest.TestCase):

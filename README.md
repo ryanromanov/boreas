@@ -657,9 +657,15 @@ and a map's values are single values (numbers, strings, logicals). They start em
   copy (`map[string, integer] :: b = a`). A map and a set cannot be compared or used in arithmetic yet.
 - `add` and `remove` are subroutines built in, so they are called with `call`, like `call swap(x, y)`. `map` and
   `set` are not reserved: they are types only before `[` and a type name, so variables called `map` still work.
-- Not supported yet: a map or set as a parameter, a function result, a record field or a module variable (they
-  are local variables for now), `const` or `allocatable` ones, arrays of them, and values that are arrays,
-  optional or other collections. See `examples/collections.bor`.
+- A map or set can be a parameter, a function result and a record field, as well as a local variable. A
+  parameter is read-only by default (`in`) and is not copied; `inout` changes the caller's map (`@m[k] = v`, or
+  `call add(m, k)`), and an `out` one starts empty. A result is copied into the variable it is assigned to. A
+  record field starts empty and is used like a variable (`b.stock["pen"] = 3`, `call add(b.tags, "x")`);
+  copying a record copies its maps and sets too. They also work in a callback's signature
+  (`function(map[string, integer]) -> integer :: f`).
+- Not supported yet: a module variable, `const` or `allocatable` ones, arrays of them, an optional one, values
+  that are arrays, optional or other collections, and a map entry as an `out` or `inout` argument. See
+  `examples/collections.bor`.
 
 ## Subroutines and parameter modes
 

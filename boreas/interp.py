@@ -82,8 +82,8 @@ NULL = _Null()
 
 
 def base_type(t):
-    """`integer` for `integer?`."""
-    return t[:-1] if t.endswith("?") else t
+    """`integer` for `integer?`; a map or set type (not a string) is left as it is."""
+    return t[:-1] if isinstance(t, str) and t.endswith("?") else t
 
 
 class FileHandle:
@@ -175,6 +175,8 @@ def coerce(typ, value, what):
         if problems:
             raise LangError(f"{what}: {value.rdef.name} cannot be used as {typ}: {problems[0]}")
         return value.copy()
+    if isinstance(typ, (MapType, SetType)):
+        return collection_check(typ, value, what)
     got = type_of(value)
     if got == typ:
         return value.copy() if isinstance(value, Record) else value
@@ -216,7 +218,7 @@ class Record:
         self.rdef, self.fields = rdef, fields
 
     def copy(self):
-        return Record(self.rdef, {n: [t, v.copy() if isinstance(v, (Record, Array)) else v, ia, None]
+        return Record(self.rdef, {n: [t, v.copy() if isinstance(v, (Record, Array, MapValue, SetValue)) else v, ia, None]
                                   for n, (t, v, ia, _) in self.fields.items()})
 
     def first_unassigned(self, prefix="", interfaces=True):
@@ -286,6 +288,17 @@ class MapKey:
 
     def __init__(self, key, line=None):
         self.key, self.line = key, line
+
+
+def collection_check(typ, v, what):
+    """`v` itself, if it is a collection of the type `typ`; else an error."""
+    same = (isinstance(typ, MapType) and isinstance(v, MapValue) and (v.keytype, v.valtype) == (typ.key, typ.value)) \
+        or (isinstance(typ, SetType) and isinstance(v, SetValue) and v.elemtype == typ.elem)
+    if not same:
+        got = f"a map[{v.keytype}, {v.valtype}]" if isinstance(v, MapValue) else \
+            f"a set[{v.elemtype}]" if isinstance(v, SetValue) else f"a {type_of(v)}"
+        raise LangError(f"{what}: expected a {typ}, got {got}")
+    return v
 
 
 def check_key(kind, key, who, noun="keys"):
@@ -1198,6 +1211,8 @@ class Interp:
                 if f.name in seen:
                     raise LangError(f"line {f.line}: record '{r.name}' has two fields called '{f.name}'")
                 seen.add(f.name)
+                if isinstance(f.type, (MapType, SetType)):
+                    continue                                       # a collection field: nothing else to check
                 iface = base_type(f.type) in scope.interfaces
                 if iface and f.type != base_type(f.type):
                     raise LangError(f"line {f.line}: field '{f.name}' of record '{r.name}': an interface type "
@@ -1530,13 +1545,7 @@ class Interp:
     @staticmethod
     def collection_copy(typ, v, what):
         """A copy of `v` for a variable of collection type `typ`; it must be a collection of that same type."""
-        same = (isinstance(typ, MapType) and isinstance(v, MapValue) and (v.keytype, v.valtype) == (typ.key, typ.value)) \
-            or (isinstance(typ, SetType) and isinstance(v, SetValue) and v.elemtype == typ.elem)
-        if not same:
-            got = f"a {v.keytype} to {v.valtype} map" if isinstance(v, MapValue) else \
-                f"a set of {v.elemtype}" if isinstance(v, SetValue) else f"a {type_of(v)}"
-            raise LangError(f"{what} is a {typ}, so it cannot hold {got}")
-        return v.copy()
+        return collection_check(typ, v, what).copy()
 
     def typed(self, typ, scope=None):
         """`typ` as a slot type: the name of an interface becomes an IfaceType that can check values."""
@@ -1553,6 +1562,9 @@ class Interp:
         owner = self.owner[id(rdef)]
         fields = {}
         for f in rdef.fields:
+            if isinstance(f.type, (MapType, SetType)):
+                fields[f.name] = [f.type, self.new_collection(f.type), False, None]
+                continue
             sub = owner.records.get(base_type(f.type))
             if f.type in owner.interfaces:                    # no default value: it starts unassigned
                 kind = self.typed(f.type, owner)
@@ -1613,7 +1625,7 @@ class Interp:
         named = [a for a in e.args if isinstance(a, NamedArg)]
         if len(pos) > len(rdef.fields):
             raise LangError(f"{line}: {rdef.name} has {len(rdef.fields)} field(s), got {len(pos)} value(s)")
-        if not named and any(f.init is None for f in rdef.fields[len(pos):]):
+        if not named and any(f.init is None and not isinstance(f.type, (MapType, SetType)) for f in rdef.fields[len(pos):]):
             raise LangError(f"{line}: {rdef.name}() needs all {len(rdef.fields)} field(s) "
                             f"({', '.join(f.name for f in rdef.fields)}), or name the ones you give "
                             f"(only trailing fields with a default may be left out)")
@@ -1634,6 +1646,9 @@ class Interp:
     def set_field(self, rec, name, value, where):
         slot = rec.fields[name]
         label = f"{where}: field '{name}' of {rec.rdef.name}"
+        if isinstance(slot[TYPE], (MapType, SetType)):
+            slot[VALUE] = self.collection_copy(slot[TYPE], value, label)
+            return
         if not slot[IS_ARRAY]:
             slot[VALUE] = coerce(slot[TYPE], value, label)
             return
@@ -1814,7 +1829,7 @@ class Interp:
         if isinstance(t, Var):
             return Ref(slot, None, t.name)
         if isinstance(slot[TYPE], (MapType, SetType)):
-            return self.collection_ref(slot, t, env, line)
+            return self.collection_ref(slot, t.name, t.bracket, t.args, env, line)
         if not t.bracket and (slot[IS_ARRAY] or slot[TYPE] == "string"):
             raise LangError(f"line {line}: index with brackets: write {t.name}[...], not {t.name}(...)")
         if not slot[IS_ARRAY]:
@@ -1823,15 +1838,17 @@ class Interp:
             raise LangError(f"line {line}: '{t.name}' is not an array")
         return Ref(slot, self.subscripts(slot[VALUE], t.args, env, line, t.name), t.name)
 
-    def collection_ref(self, slot, t, env, line):
-        """`age["ann"]`: a reference to one entry of a map."""
+    def collection_ref(self, slot, name, bracket, args, env, line, parent=None, field=None):
+        """`age["ann"]` or `r.ages["ann"]`: a reference to one entry of a map."""
         if not isinstance(slot[TYPE], MapType):
-            raise LangError(f"line {line}: '{t.name}' is a set, which has no entries to index; "
-                            f"test a member with has({t.name}, x)")
-        if not t.bracket or len(t.args) != 1 or isinstance(t.args[0], Slice):
-            raise LangError(f"line {line}: '{t.name}' is a map: look up one key with {t.name}[key]")
-        key = check_key(slot[TYPE].key, self.eval(t.args[0], env), f"line {line}: the map '{t.name}'")
-        return Ref(slot, MapKey(key, line), t.name)
+            raise LangError(f"line {line}: '{name}' is a set, which has no entries to index; "
+                            f"test a member with has({name}, x)")
+        if not bracket or len(args) != 1 or isinstance(args[0], Slice):
+            raise LangError(f"line {line}: '{name}' is a map: look up one key with {name}[key]")
+        key = check_key(slot[TYPE].key, self.eval(args[0], env), f"line {line}: the map '{name}'")
+        if parent is None:
+            return Ref(slot, MapKey(key, line), name)
+        return Ref(slot, MapKey(key, line), name, parent.root, parent.rsubs, parent.fpath + (field,))
 
     def substring_bounds(self, slot, args, env, line, name):
         """The (lo, hi) of s[lo:hi], 1-based and inclusive, either end optional, as a one-entry subscript list."""
@@ -1890,6 +1907,8 @@ class Interp:
         fpath = ref.fpath + (t.field,)
         if t.args is None:
             return Ref(slot, None, name, ref.root, ref.rsubs, fpath)
+        if isinstance(slot[TYPE], (MapType, SetType)):
+            return self.collection_ref(slot, name, t.bracket, t.args, env, line, ref, t.field)
         if not slot[IS_ARRAY]:
             raise LangError(f"line {line}: field '{name}' is not an array")
         if not t.bracket:
@@ -2524,7 +2543,7 @@ class Interp:
     def elementwise(self, f, args, line):
         """`f(v, 5.0)` where `f` wants single values and `v` is an array: call `f` for each element.
         Arrays must share a shape; single values are reused for every element."""
-        if isinstance(f.ret, ResultList) or f.ret.endswith("]"):
+        if isinstance(f.ret, ResultList) or isinstance(f.ret, (MapType, SetType)) or f.ret.endswith("]"):
             raise LangError(f"line {line}: {f.name} returns an array or several results, so it cannot "
                             f"be applied to each element of an array")
         arrays = [v for (typ, _, _), v in zip(f.params, args) if isinstance(v, Array) and self.takes_scalar(typ)]
@@ -2567,7 +2586,7 @@ class Interp:
 
     def result_value(self, f, typ, value):
         """One result of `f`, converted to its declared type."""
-        if typ.endswith("]"):
+        if isinstance(typ, str) and typ.endswith("]"):
             return self.array_result(f, value, typ)
         return coerce(self.typed(typ, self.scopes[id(f)]), value, f"function {f.name}")
 
@@ -2650,8 +2669,10 @@ class Interp:
         if len(s.args) != 2:
             raise LangError(f"line {s.line}: {s.name} expects 2 arguments: call {s.name}({what.split(' ')[-1]}, "
                             f"{'member' if s.name == 'add' else 'key'})")
-        if not isinstance(s.args[0], Var) or s.args[0].name not in env:
-            raise LangError(f"line {s.line}: {s.name} changes {what}, so its first argument must be a variable")
+        first = s.args[0]
+        if not (isinstance(first, FieldAccess) or (isinstance(first, Var) and first.name in env)):
+            raise LangError(f"line {s.line}: {s.name} changes {what}, so its first argument must be a variable "
+                            f"or a record's field")
         ref = self.resolve(s.args[0], env, s.line)
         slot = ref[0]
         c = slot[VALUE]
@@ -2728,7 +2749,9 @@ class Interp:
                     raise LangError(f"line {s.line}: '{ref[2]}' is a {slot[TYPE]}, which cannot be used as {wanted}: {problems[0]}")
             outs.append((n, ref))
             current = self.read(ref)
-            if intent == "out" and typ not in DEFAULTS:           # an out record starts with no values
+            if isinstance(typ, (MapType, SetType)):
+                values.append(self.new_collection(typ) if intent == "out" else current.copy())   # out starts empty
+            elif intent == "out" and typ not in DEFAULTS:           # an out record starts with no values
                 sub = self.scopes[id(f)].records.get(typ)
                 values.append(self.new_record(sub, blank=True) if sub else
                               current.copy() if current is not None else None)

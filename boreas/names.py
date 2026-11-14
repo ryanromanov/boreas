@@ -30,7 +30,8 @@ def indexable_in(body):
 
 
 def indexable_params(params):
-    return {name for typ, name, _ in params if isinstance(typ, str) and (typ == "string" or typ.endswith("]"))}
+    return {name for typ, name, _ in params
+            if isinstance(typ, (MapType, SetType)) or (isinstance(typ, str) and (typ == "string" or typ.endswith("]")))}
 
 
 def declared_in(body):

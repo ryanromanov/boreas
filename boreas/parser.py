@@ -196,7 +196,7 @@ class ProcType:
 
     def __str__(self):
         names = self.names or (None,) * len(self.params)
-        parts = [("" if intent == "in" else intent + " ") + typ + (f" :: {n}" if n else "")
+        parts = [("" if intent == "in" else intent + " ") + str(typ) + (f" :: {n}" if n else "")
                  for (typ, intent), n in zip(self.params, names)]
         head = ("subroutine" if self.is_sub else "function") + "(" + ", ".join(parts) + ")"
         return head + (f" -> {self.ret}" if self.ret else "")
@@ -643,7 +643,7 @@ class Parser:
                 continue
             if self.at("const", "allocatable", "public", "private"):
                 self.error("record fields are plain declarations: 'type :: name'")
-            f = self.decl()
+            f = self.decl(field=True)
             if f.name in functions:
                 raise LangError(f"line {f.line}: record '{name}' has a field and a function called '{f.name}'")
             if f.init is not None:
@@ -998,8 +998,10 @@ class Parser:
         right after it makes the value optional (`integer?`)."""
         t = self.tok
         if self.collection_ahead():
-            self.error(f"a {t.text} can only be a local variable so far; parameters, results, record fields "
-                       f"and module variables are not supported yet")
+            typ = self.collection_type()
+            if self.at("?"):
+                self.error(f"an optional {t.text} is not supported")
+            return typ
         if t.kind == "ident" and t.text in TYPES:
             name = SPELLINGS.get(t.text, t.text)
             self.next()
@@ -1216,15 +1218,15 @@ class Parser:
         self.newline()
         return Allocate(name, dims, t.line, update)
 
-    def decl(self, const=False, allocatable=False, local=False):
-        """A declaration. `local` is true inside a program or procedure body: the only place a map or a set
-        can be declared so far."""
+    def decl(self, const=False, allocatable=False, local=False, field=False):
+        """A declaration. `local` is true inside a program or procedure body and `field` in a record: the
+        places a map or a set can be declared (module variables are not supported yet)."""
         line = self.tok.line
         if self.collection_ahead():
-            if not local:
-                self.error(f"a {self.tok.text} can only be a local variable so far; parameters, results, record "
-                           f"fields and module variables are not supported yet")
-            return self.collection_decl(line, const, allocatable)
+            if not (local or field):
+                self.error(f"a {self.tok.text} cannot be a module variable yet; it can be a local variable, "
+                           f"a parameter, a function result or a record field")
+            return self.collection_decl(line, const, allocatable, field)
         typ = self.type_name()
         dims = None
         if self.at("["):                               # real[3] :: v, real[2, 3] :: m, allocatable real[,] :: m
@@ -1251,7 +1253,7 @@ class Parser:
         self.newline()
         return Decl(typ, name, dims, init, line, const, allocatable=allocatable)
 
-    def collection_decl(self, line, const, allocatable):
+    def collection_decl(self, line, const, allocatable, field=False):
         word = self.tok.text
         if const or allocatable:
             self.error(f"a {word} cannot be 'const' or 'allocatable': it starts empty and grows by itself")
@@ -1260,6 +1262,8 @@ class Parser:
         name = self.ident()
         if self.at("["):
             self.error(f"an array of {word}s is not supported: a {word} is declared on its own")
+        if field and self.at("="):
+            self.error(f"a {word} field starts empty, so it has no default value")
         init = self.expr() if self.accept("=") else None      # another collection of the same type: a copy
         if self.at(","):
             self.error("declare one variable per line")
