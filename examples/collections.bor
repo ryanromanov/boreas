@@ -1,0 +1,49 @@
+! Maps and sets (local variables for now). Keys and members are integers or strings.
+
+program demo
+  map[string, integer] :: age
+  set[string] :: seen
+  allocatable string[] :: words
+  allocatable string[] :: names
+  integer :: i
+
+  ! A map: insert or replace with an assignment, read with brackets.
+  age["ann"] = 31
+  age["bob"] = 40
+  age["ann"] = 32
+  println(age)                          ! {ann: 32, bob: 40}
+  println(age["ann"], size(age))        ! 32 2
+
+  ! A missing key is an error. Ask first, or use get, which gives null when it is not there.
+  println(has(age, "cy"))               ! false
+  println(get(age, "cy") ?? -1)         ! -1
+
+  ! Counting words: the usual use of a map.
+  words = split("the cat saw the dog and the cat", " ")
+  map[string, integer] :: count
+  do i = 1, size(words)
+    count[words[i]] = (get(count, words[i]) ?? 0) + 1
+  end do
+  println(count)                        ! {the: 3, cat: 2, saw: 1, dog: 1, and: 1}
+
+  ! keys() and values() are arrays in the same order, so an ordinary loop walks a map.
+  names = keys(count)
+  do i = 1, size(names)
+    if count[names[i]] > 1 then
+      println(names[i], "appears", count[names[i]], "times")
+    end if
+  end do
+
+  ! A set remembers members. add and remove are subroutines, so they are called.
+  do i = 1, size(words)
+    call add(seen, words[i])
+  end do
+  println(size(seen), "different words")    ! 5 different words
+  call remove(seen, "the")
+  println(has(seen, "the"), seen)           ! false {cat, saw, dog, and}
+
+  ! Assigning copies: the two stay separate.
+  map[string, integer] :: copy = count
+  copy["extra"] = 1
+  println(has(count, "extra"), has(copy, "extra"))    ! false true
+end program

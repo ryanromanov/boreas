@@ -152,6 +152,26 @@ class Deallocate: name: str; line: int; update: bool = False
 class Comment: text: str          # only produced by `boreas convert`; the interpreter skips it
 
 @dataclass(frozen=True)
+class MapType:
+    """The type of a map: `map[string, integer]`. Not a string, so nothing that reads type names by their
+    shape (a trailing `]` means an array) can mistake it for one."""
+    key: str
+    value: str
+
+    def __str__(self):
+        return f"map[{self.key}, {self.value}]"
+
+
+@dataclass(frozen=True)
+class SetType:
+    """The type of a set: `set[string]`."""
+    elem: str
+
+    def __str__(self):
+        return f"set[{self.elem}]"
+
+
+@dataclass(frozen=True)
 class ResultList:
     """The results of a function that gives back several values: `-> (integer :: q, integer :: r)`.
     Only the types take part in comparing (a record fits an interface when they match in order); the names
@@ -936,10 +956,50 @@ class Parser:
                     break
         return self.toks[j].text == "::"
 
+    def collection_ahead(self):
+        """`map[` or `set[` followed by a type name: a collection type. (Contextual: `map[3] :: x` is still an
+        array of a record called map, and a variable called `map` or `set` is untouched.)"""
+        t = self.tok
+        return (t.kind == "ident" and t.text in ("map", "set") and self.toks[self.i + 1].text == "["
+                and self.toks[self.i + 2].kind == "ident" and self.toks[self.i + 2].text in TYPES)
+
+    def collection_type(self):
+        """`map[string, integer]` or `set[string]`. Keys are integers or strings; a map's values are single
+        values (not arrays, optionals or other collections)."""
+        word = self.next().text
+        self.expect("[")
+        first = self.simple_type(f"a {word}'s " + ("key" if word == "map" else "member"), keys=True)
+        if word == "set":
+            self.expect("]")
+            return SetType(first)
+        self.expect(",")
+        value = self.simple_type("a map's value", keys=False)
+        self.expect("]")
+        return MapType(first, value)
+
+    def simple_type(self, what, keys):
+        t = self.tok
+        if t.kind == "ident" and t.text in ("map", "set"):
+            self.error(f"{what} must be a single value: arrays, optional values and other collections "
+                       f"are not supported here")
+        if t.kind != "ident" or t.text not in TYPES or t.text == "file":
+            self.error(f"{what} must be a type name" + (" (integer or string)" if keys else ""))
+        name = SPELLINGS.get(t.text, t.text)
+        self.next()
+        if keys and name not in ("integer", "string"):
+            self.error(f"{what} must be integer or string, not {name}")
+        if self.at("[", "?"):
+            self.error(f"{what} must be a single value: arrays, optional values and other collections "
+                       f"are not supported here")
+        return name
+
     def type_name(self, anywhere=False):
         """A built-in type, or (when a `::` follows, or `anywhere`) the name of a record; a `?`
         right after it makes the value optional (`integer?`)."""
         t = self.tok
+        if self.collection_ahead():
+            self.error(f"a {t.text} can only be a local variable so far; parameters, results, record fields "
+                       f"and module variables are not supported yet")
         if t.kind == "ident" and t.text in TYPES:
             name = SPELLINGS.get(t.text, t.text)
             self.next()
@@ -972,15 +1032,15 @@ class Parser:
             self.next()
             if self.at("allocatable"):
                 self.error("an allocatable array cannot be 'const'")
-            return self.decl(const=True)
+            return self.decl(const=True, local=True)
         if t.kind == "ident" and t.text == "allocatable" and self.toks[self.i + 1].text == "const":
             self.error("an allocatable array cannot be 'const'")
         if t.kind == "ident" and t.text == "allocatable" and (self.toks[self.i + 1].text in TYPES
                                                               or self.typed_ahead(self.i + 1)):
             self.next()
-            return self.decl(allocatable=True)
+            return self.decl(allocatable=True, local=True)
         if t.kind == "ident" and (t.text in TYPES or (t.text not in KEYWORDS and self.typed_ahead())):
-            return self.decl()
+            return self.decl(local=True)
         if self.at("record"):
             self.error("records are defined at the top level or inside a module, not in a procedure")
         if t.kind == "ident" and t.text in ("allocate", "deallocate") and (
@@ -1156,8 +1216,15 @@ class Parser:
         self.newline()
         return Allocate(name, dims, t.line, update)
 
-    def decl(self, const=False, allocatable=False):
+    def decl(self, const=False, allocatable=False, local=False):
+        """A declaration. `local` is true inside a program or procedure body: the only place a map or a set
+        can be declared so far."""
         line = self.tok.line
+        if self.collection_ahead():
+            if not local:
+                self.error(f"a {self.tok.text} can only be a local variable so far; parameters, results, record "
+                           f"fields and module variables are not supported yet")
+            return self.collection_decl(line, const, allocatable)
         typ = self.type_name()
         dims = None
         if self.at("["):                               # real[3] :: v, real[2, 3] :: m, allocatable real[,] :: m
@@ -1183,6 +1250,21 @@ class Parser:
             self.error("declare one variable per line")
         self.newline()
         return Decl(typ, name, dims, init, line, const, allocatable=allocatable)
+
+    def collection_decl(self, line, const, allocatable):
+        word = self.tok.text
+        if const or allocatable:
+            self.error(f"a {word} cannot be 'const' or 'allocatable': it starts empty and grows by itself")
+        typ = self.collection_type()
+        self.expect("::")
+        name = self.ident()
+        if self.at("["):
+            self.error(f"an array of {word}s is not supported: a {word} is declared on its own")
+        init = self.expr() if self.accept("=") else None      # another collection of the same type: a copy
+        if self.at(","):
+            self.error("declare one variable per line")
+        self.newline()
+        return Decl(typ, name, None, init, line)
 
     def type_dims(self, allocatable):
         """The `[...]` after a type in a declaration: sizes for a fixed array (`real[2, 3]`), or only commas

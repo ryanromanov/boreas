@@ -105,7 +105,7 @@ def declarations(lines):
 
 def base_type(t):
     """The record or type name of a declared type such as `point?` or `real, allocatable`."""
-    return re.match(r"\w*", t).group().lower()
+    return re.match(r"\w*", str(t)).group().lower()
 
 
 def fields(chain, variables, records):

@@ -5,9 +5,9 @@ A name declared anywhere in a procedure counts as declared, even if the use come
 declaration is in a branch: only the program's path decides whether that fails, and an error
 reported here should always be a real one. The interpreter still catches those cases when it
 runs them."""
-from .interp import BUILTINS, ELEMENTAL
+from .interp import BUILTINS, ELEMENTAL, SUBROUTINE_BUILTINS
 from .parser import (Allocate, Apply, ArrayLit, Assign, Binary, Call, Close, Decl, Do, DoWhile,
-                     ExprStmt, FieldAccess, Gen, If, IsType, MultiAssign, NamedArg, Print, ProcType, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, Slice, Stop,
+                     ExprStmt, FieldAccess, Gen, If, IsType, MapType, MultiAssign, NamedArg, Print, ProcType, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, SetType, Slice, Stop,
                      Unary, Var, Where, sub_bodies)
 
 
@@ -21,7 +21,7 @@ def indexable_in(body):
         if isinstance(s, list):
             names |= indexable_in(s)
         elif isinstance(s, Decl):
-            if s.dims is not None or s.allocatable or s.type == "string":
+            if s.dims is not None or s.allocatable or s.type == "string" or isinstance(s.type, (MapType, SetType)):
                 names.add(s.name)
         else:
             for inner in sub_bodies(s):
@@ -220,7 +220,7 @@ class Walker:
         elif isinstance(s, Call):
             if s.receiver is not None:              # a record's function: the record decides which
                 self.expr(s.receiver)
-            elif s.name not in self.scope.funcs and s.name not in self.variables:
+            elif s.name not in self.scope.funcs and s.name not in self.variables and s.name not in SUBROUTINE_BUILTINS:
                 self.report(s.name, s.line, s.col, f"unknown subroutine '{s.name}'")
             self.arguments(s.args)
         elif isinstance(s, Allocate):
