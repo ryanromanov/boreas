@@ -50,6 +50,12 @@
         "regularExpression": true,
         "ignoreCase": true,
         "description": "else followed by a comment"
+      },
+      {
+        "begin": "^\\s*elsewhere\\s*(?:!.*)?$",
+        "regularExpression": true,
+        "ignoreCase": true,
+        "description": "elsewhere followed by a comment"
       }
     ],
     "expandsTab": true,

@@ -25,6 +25,24 @@
       "description": "as in select type x as p"
     },
     {
+      "begin": "(?<=^[ \\t]{0,80})elsewhere(?=[ \\t]*(?:!.*)?$)",
+      "ignoreCase": true,
+      "regularExpression": true,
+      "description": "elsewhere alone on its line"
+    },
+    {
+      "begin": "(?<=^[ \\t]{0,80})where\\b(?=[^\\n!]*\\bthen[ \\t]*(?:!.*)?$)",
+      "ignoreCase": true,
+      "regularExpression": true,
+      "description": "where at the start of a line that ends in then"
+    },
+    {
+      "begin": "(?<=^[ \\t]{0,80}end[ \\t]{1,40})where(?=[ \\t]*(?:!.*)?$)",
+      "ignoreCase": true,
+      "regularExpression": true,
+      "description": "where in end where"
+    },
+    {
       "begin": "@|->|::|\\?\\?|\\+%|-%|\\*%",
       "ignoreCase": true,
       "regularExpression": true
