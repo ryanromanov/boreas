@@ -7,7 +7,7 @@ reported here should always be a real one. The interpreter still catches those c
 runs them."""
 from .interp import BUILTINS, ELEMENTAL
 from .parser import (Allocate, Apply, ArrayLit, Assign, Binary, Call, Close, Decl, Do, DoWhile,
-                     ExprStmt, FieldAccess, Gen, If, IsType, MultiAssign, NamedArg, Print, Return, ReturnMany, Select, SelectExpr, SelectType, Slice, Stop,
+                     ExprStmt, FieldAccess, Gen, If, IsType, MultiAssign, NamedArg, Print, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, Slice, Stop,
                      Unary, Var, Where, sub_bodies)
 
 
@@ -69,6 +69,12 @@ class Walker:
             elif not (e.name in self.variables or e.name in self.scope.funcs or e.name in self.scope.records
                     or e.name in BUILTINS or e.name in ELEMENTAL or e.name in ("present", "allocated")):
                 self.report(e.name, e.line, e.col, f"unknown function or array '{e.name}'")
+            else:
+                many = self.results(e)
+                if many:
+                    names = ", ".join("abcdefgh"[:many])
+                    self.report(e.name, e.line, e.col,
+                                f"'{e.name}' returns {many} results; unpack them: ({names}) = {e.name}(...)")
             self.arguments(e.args)
         elif isinstance(e, NamedArg):       # the name is a record field; only the value is looked up
             self.expr(e.value)
@@ -95,6 +101,31 @@ class Walker:
             for arm in e.arms:
                 self.expr(arm.values)
                 self.expr(arm.value)
+
+    def results(self, e):
+        """How many results the function `e` calls returns, when it is a function with several; else 0."""
+        if e.bracket or e.name in self.variables:          # an array element, or a procedure parameter
+            return 0
+        f = self.scope.funcs.get(e.name)
+        ret = getattr(f, "ret", None)
+        return len(ret.types) if isinstance(ret, ResultList) else 0
+
+    def unpacking(self, s):
+        """`(a, b) = f(...)`: f must be a function with exactly as many results as there are targets."""
+        v = s.value
+        self.expr([t for t, _ in s.targets if t is not None])
+        if not isinstance(v, Apply) or v.bracket or v.name in self.variables or v.name not in self.scope.funcs:
+            self.expr(v)                                   # not a plain call of a known function: nothing to count
+            return
+        have, want = self.results(v), len(s.targets)
+        if have == 0:
+            f = self.scope.funcs[v.name]
+            if getattr(f, "ret", None) is not None:
+                self.report(v.name, v.line, v.col, f"'{v.name}' returns one result; an unpacking needs a "
+                                                   f"function with several results (write 'x = {v.name}(...)')")
+        elif have != want:
+            self.report(v.name, v.line, v.col, f"'{v.name}' returns {have} results, but {want} targets are listed")
+        self.arguments(v.args)
 
     def arguments(self, args):
         """A bare name that is a procedure (and no variable) is how a call passes a callback."""
@@ -169,7 +200,7 @@ class Walker:
         elif isinstance(s, ReturnMany):
             self.expr(s.values)
         elif isinstance(s, MultiAssign):
-            self.expr([t for t, _ in s.targets if t is not None] + [s.value])
+            self.unpacking(s)
         elif isinstance(s, ExprStmt):
             self.expr(s.expr)
         elif isinstance(s, Call):
