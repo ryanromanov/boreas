@@ -7,8 +7,11 @@ reported here should always be a real one. The interpreter still catches those c
 runs them."""
 from .interp import BUILTINS, ELEMENTAL
 from .parser import (Allocate, Apply, ArrayLit, Assign, Binary, Call, Close, Decl, Do, DoWhile,
-                     ExprStmt, FieldAccess, Gen, If, IsType, MultiAssign, NamedArg, Print, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, Slice, Stop,
+                     ExprStmt, FieldAccess, Gen, If, IsType, MultiAssign, NamedArg, Print, ProcType, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, Slice, Stop,
                      Unary, Var, Where, sub_bodies)
+
+
+MISSING = object()                                  # a callee the check cannot identify
 
 
 def indexable_in(body):
@@ -46,8 +49,9 @@ def declared_in(body):
 
 class Walker:
     """Checks one procedure or program body against what it can see."""
-    def __init__(self, scope, variables, indexable=()):
+    def __init__(self, scope, variables, indexable=(), callbacks=None):
         self.scope, self.variables, self.errors = scope, variables, []
+        self.callbacks = callbacks or {}                  # procedure parameter -> its ProcType
         self.indexable = set(indexable)               # arrays and strings: written name[...], never name(...)
 
     def report(self, name, line, col, message):
@@ -102,29 +106,39 @@ class Walker:
                 self.expr(arm.values)
                 self.expr(arm.value)
 
+    def return_of(self, e):
+        """What the call `e` gives back: a type, a ResultList, or None for a subroutine; MISSING when the
+        callee is not a procedure this check can see (an array element, a record's function, a variable)."""
+        if e.bracket:
+            return MISSING
+        if e.name in self.callbacks:                        # a procedure parameter: its signature says
+            return self.callbacks[e.name].ret
+        if e.name in self.variables:
+            return MISSING
+        f = self.scope.funcs.get(e.name)
+        return MISSING if f is None else f.ret
+
     def results(self, e):
         """How many results the function `e` calls returns, when it is a function with several; else 0."""
-        if e.bracket or e.name in self.variables:          # an array element, or a procedure parameter
-            return 0
-        f = self.scope.funcs.get(e.name)
-        ret = getattr(f, "ret", None)
+        ret = self.return_of(e)
         return len(ret.types) if isinstance(ret, ResultList) else 0
 
     def unpacking(self, s):
         """`(a, b) = f(...)`: f must be a function with exactly as many results as there are targets."""
         v = s.value
         self.expr([t for t, _ in s.targets if t is not None])
-        if not isinstance(v, Apply) or v.bracket or v.name in self.variables or v.name not in self.scope.funcs:
-            self.expr(v)                                   # not a plain call of a known function: nothing to count
+        ret = self.return_of(v) if isinstance(v, Apply) else MISSING
+        if ret is MISSING:
+            self.expr(v)                                   # not a plain call of a known procedure: nothing to count
             return
-        have, want = self.results(v), len(s.targets)
-        if have == 0:
-            f = self.scope.funcs[v.name]
-            if getattr(f, "ret", None) is not None:
-                self.report(v.name, v.line, v.col, f"'{v.name}' returns one result; an unpacking needs a "
-                                                   f"function with several results (write 'x = {v.name}(...)')")
-        elif have != want:
-            self.report(v.name, v.line, v.col, f"'{v.name}' returns {have} results, but {want} targets are listed")
+        want = len(s.targets)
+        if isinstance(ret, ResultList):
+            if len(ret.types) != want:
+                self.report(v.name, v.line, v.col, f"'{v.name}' returns {len(ret.types)} results, "
+                                                   f"but {want} targets are listed")
+        elif ret is not None:
+            self.report(v.name, v.line, v.col, f"'{v.name}' returns one result; an unpacking needs a "
+                                               f"function with several results (write 'x = {v.name}(...)')")
         self.arguments(v.args)
 
     def arguments(self, args):
@@ -223,7 +237,8 @@ def undeclared_names(unit, interp):
     errors = []
     for f, scope in bodies:
         walker = Walker(scope, set(scope.consts) | {name for _, name, _ in f.params} | declared_in(f.body),
-                        indexable_in(f.body) | indexable_params(f.params))
+                        indexable_in(f.body) | indexable_params(f.params),
+                        {name: typ for typ, name, _ in f.params if isinstance(typ, ProcType)})
         walker.statements(f.body)
         errors += walker.errors
     if unit.program:

@@ -871,11 +871,7 @@ class Parser:
         if not is_sub:
             if not self.accept("->"):
                 self.error("a function signature needs its result type: function(real) -> real")
-            if self.at("("):
-                self.error("a procedure signature cannot return several results yet")
-            ret = self.type_name(anywhere=True)
-            if self.at("["):
-                self.error("a procedure signature cannot return an array")
+            ret = self.result_type()
         return ProcType(is_sub, tuple(params), ret, tuple(names))
 
     def param_type(self, anywhere=False):

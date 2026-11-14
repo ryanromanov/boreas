@@ -25,6 +25,23 @@ subroutine report(integer :: n, out integer :: quotient)
   println("left over", rest)
 end subroutine
 
+! A callback can return several results (or an array): Newton's method wants the value and the slope.
+function newton(function(real :: x) -> (real :: value, real :: slope) :: f, real :: guess) -> real
+  real :: x = guess
+  real :: v
+  real :: d
+  integer :: i
+  do i = 1, 30
+    (v, d) = f(x)
+    x = x - v / d
+  end do
+  return x
+end function
+
+function parabola(real :: x) -> (real :: value, real :: slope)
+  return x * x - 2.0, 2.0 * x
+end function
+
 program demo
   integer :: q
   integer :: r
@@ -46,4 +63,6 @@ program demo
   integer :: x
   call report(23, x)                 ! left over 3
   println(x)                         ! 4
+
+  println(newton(parabola, 1.0))     ! 1.414213562373095, the square root of 2
 end program

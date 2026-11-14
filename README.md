@@ -683,8 +683,9 @@ unpack them at the call:
 - Results can be any type: numbers, strings, records, arrays (`-> (real[] :: values, integer :: n)`) or optional
   (`integer?`). They work for functions in records and in interfaces (a record fits when the result types
   match in order, names aside): `(lo, hi) = s.bounds()`.
-- Not supported yet: a result list in a callback's signature, `return g()` to pass on another function's
-  results, and subroutines (which keep `out` / `inout`). See `examples/multiple_results.bor`.
+- A callback's signature can list several results too (see Procedure parameters below). Not supported:
+  `return g()` to pass on another function's results, and subroutines (which keep `out` / `inout`). See
+  `examples/multiple_results.bor`.
 
 ## Procedure parameters (callbacks)
 
@@ -713,6 +714,12 @@ parameter names are optional documentation:
 - A bare name that is also a variable means the variable, so it must itself be a procedure parameter (which
   lets you pass a callback on to another procedure).
 - A built-in such as `sin` cannot be passed directly: write a small function that calls it and pass that.
+- A callback can return an array or several results. Write the result as in a function header:
+  `function(real :: t) -> real[] :: f` (an array: the element type and the rank, `real[,]`, must match, never the
+  size) or `function(real :: x) -> (real :: lo, real :: hi) :: g`. A procedure passed to it must have the same
+  result type, or the same number and types of results (names are documentation). A callback with several
+  results is called like any such function, by unpacking: `(a, b) = g(3.0)`; `boreas check` finds a call that
+  uses it as a single value.
 - A procedure cannot be stored in a variable yet, only passed as an argument.
 
 ## Modules
