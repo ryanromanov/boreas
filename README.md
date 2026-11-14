@@ -671,7 +671,9 @@ unpack them at the call:
   compared. At least two results; for one, write `-> integer` as before.
 - The unpacking is the only place that can receive several results: `x = divmod(1, 1)`, `println(divmod(1, 1))`,
   an argument, or a call on its own line are errors that tell you to unpack. It needs exactly as many targets
-  as the function has results (checked when it runs), and the same variable cannot appear twice.
+  as the function has results, and the same variable cannot appear twice. `boreas check` and the editor report
+  these mistakes without running the program (for a plain call of a function it can see; a call on a
+  record or through a callback is only checked when it runs).
 - Each result is converted to its declared type, as for a single result, and then assigned like any
   assignment (an array result into an `allocatable` target allocates it).
 - A target the caller sees (an `out` / `inout` parameter or a module variable) carries its own `@`, exactly
@@ -762,7 +764,8 @@ A module variable can be `allocatable`; see Allocatable arrays above.
     boreas check FILE.bor [--json]
 
 Parses and checks a file without running it. Besides syntax errors it reports every name
-that is used but never declared, and every unknown function or subroutine. A syntax error
+that is used but never declared, every unknown function or subroutine, and every misuse of a function with
+several results (outside an unpacking, or with the wrong number of targets). A syntax error
 stops the check, so it is reported alone. Errors print as `file:line:col: message`
 (column 1 when the error has no column) and the exit status is 1; a clean file prints
 nothing and exits 0. `--json` prints `{"file": ..., "errors": [{"line", "col", "message"}]}`.
