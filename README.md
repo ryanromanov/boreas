@@ -635,8 +635,15 @@ and the variable may instead be absent (`null`):
 
 ## Subroutines and parameter modes
 
-Results come back through `out` / `inout` parameters (a function with several results is often clearer: see
-"Functions with several results" above):
+Which to use:
+
+- To hand back new values, write a function with results (see "Functions with several results" below):
+  `(q, r) = divmod(17, 5)`.
+- To change something that already has a value (swap, sort, update a record), use `inout`.
+- Use `out` when the caller owns the storage, such as an output array it already has, and for converted
+  Fortran, where `intent(out)` is everywhere.
+
+A subroutine changes the caller's variables through `out` / `inout` parameters:
 
     subroutine swap(inout integer :: a, inout integer :: b)
       integer :: t

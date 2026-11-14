@@ -21,16 +21,16 @@ end module
 module counting
   use geometry: pi
 
-  public subroutine tally(integer :: n, out integer :: evens, out real :: tau)
+  public function tally(integer :: n) -> (integer :: evens, real :: tau)
     integer :: i
-    @evens = 0
+    integer :: count = 0
     do i = 1, n
       if mod(i, 2) == 0 then
-        @evens = evens + 1
+        count = count + 1
       end if
     end do
-    @tau = 2.0 * pi
-  end subroutine
+    return count, 2.0 * pi
+  end function
 end module
 
 program demo
@@ -41,6 +41,6 @@ program demo
 
   println("area of r=2:", area(2.0))
   println("pi:", pi)
-  call tally(10, e, t)
+  (e, t) = tally(10)
   println("evens:", e, " tau:", t)
 end program
