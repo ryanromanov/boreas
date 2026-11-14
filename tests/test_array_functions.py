@@ -58,8 +58,7 @@ class LocateTests(unittest.TestCase):
         self.assertEqual(show('  println(maxloc(["b", "c", "a"]), minloc(["b", "c", "a"], 1))'), ["2 3"])
 
     def test_errors(self):
-        for body, text in [("maxloc([1, 2], 2)", "dimension must be 1"), ("minloc(reshape([1, 2, 3, 4], [2, 2]))", "rank-1"),
-                           ("maxloc(5)", "needs an array"), ("maxloc([true, false])", "can be ordered")]:
+        for body, text in [("maxloc([1, 2], 2)", "dimension must be 1"), ("maxloc(5)", "needs an array"), ("maxloc([true, false])", "can be ordered")]:
             with self.subTest(body):
                 with self.assertRaisesRegex(LangError, text):
                     show("  println(" + body + ")")
@@ -67,6 +66,52 @@ class LocateTests(unittest.TestCase):
     def test_an_empty_array_is_an_error(self):
         with self.assertRaisesRegex(LangError, "the array is empty"):
             show(V + "  println(maxloc(pack(v, v > 100)))")
+
+
+M = "  integer[2, 3] :: m = reshape([5, 1, 9, 2, 4, 8], [2, 3])\n"      # rows 5 9 4 / 1 2 8
+
+
+class MatrixLocateTests(unittest.TestCase):
+    def test_a_matrix_gives_its_subscripts(self):
+        self.assertEqual(show(M + "  println(maxloc(m))\n  println(minloc(m))"), ["[1, 2]", "[2, 1]"])
+
+    def test_one_answer_for_each_line_along_dim(self):
+        self.assertEqual(show(M + "  println(maxloc(m, 1))\n  println(maxloc(m, 2))\n  println(minloc(m, 2))"),
+                         ["[1, 1, 2]", "[2, 3]", "[3, 1]"])
+
+    def test_the_first_of_a_tie_in_column_order(self):
+        self.assertEqual(show("  integer[2, 2] :: t = reshape([7, 7, 7, 7], [2, 2])\n  println(maxloc(t))"), ["[1, 1]"])
+
+    def test_a_plain_array_still_gives_an_integer(self):
+        self.assertEqual(show(V + "  println(maxloc(v, 1))"), ["6"])
+
+    def test_three_dimensions(self):
+        out = show("  integer[2, 2, 2] :: c = reshape([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2])\n"
+                   "  println(maxloc(c))\n  println(shape(maxloc(c, 3)))\n  println(maxloc(c, 3))")
+        self.assertEqual(out, ["[2, 2, 2]", "[2, 2]", "[[2, 2], [2, 2]]"])
+
+    def test_dim_must_fit_the_rank(self):
+        for body in ("maxloc(m, 3)", "findloc(m, 1, 0)"):
+            with self.subTest(body):
+                with self.assertRaisesRegex(LangError, "dimension must be 1..2"):
+                    show(M + "  println(" + body + ")")
+
+    def test_findloc_in_a_matrix(self):
+        self.assertEqual(show(M + "  println(findloc(m, 8))\n  println(findloc(m, 7))\n  println(findloc(m, 8, 1))"
+                              "\n  println(findloc(m, 2, 2))"), ["[2, 3]", "[0, 0]", "[0, 0, 2]", "[0, 2]"])
+
+    def test_converted_matrix_searches_match_gfortran(self):
+        src = ("program t\n  integer :: m(2, 3), loc(2), cols(3), rows(2)\n  m = reshape([5, 1, 9, 2, 4, 8], [2, 3])\n"
+               "  loc = maxloc(m)\n  print *, loc\n  cols = maxloc(m, dim=1)\n  print *, cols\n"
+               "  rows = minloc(m, dim=2)\n  print *, rows\n  loc = findloc(m, 8)\n  print *, loc\n"
+               "  cols = findloc(m, 8, dim=1)\n  print *, cols\nend program\n")
+        text, findings = converted(src)
+        self.assertEqual(todos(findings), [])
+        got = run_bor(text)
+        self.assertEqual(got, ["[1, 2]", "[1, 1, 2]", "[3, 1]", "[2, 3]", "[0, 0, 2]"])
+        if GFORTRAN:
+            want = fortran_output(src)
+            self.assertTrue(same_output("\n".join(got), want), f"\nBoreas:\n{chr(10).join(got)}\n\ngfortran:\n{want}")
 
 
 class PackTests(unittest.TestCase):

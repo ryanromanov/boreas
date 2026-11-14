@@ -304,11 +304,13 @@ where the mask is true and `b` where it is not, element by element (`merge(v, 0,
 array or a single value, `a` and `b` must have the same type). `pack(a, mask)` is the elements of `a` where the mask is
 true, down the columns, as a one-dimensional array (`pack(v, v > 0)`; a single `true` keeps everything). `maxloc(v)` and
 `minloc(v)` are the position (counting from 1) of the first largest or smallest element of a one-dimensional array of
-numbers or strings; unlike Fortran they give a plain integer, not a one-element array, and a matrix is not supported yet.
+numbers or strings; unlike Fortran they give a plain integer, not a one-element array. For a matrix, `maxloc(m)` gives
+the subscripts as an array (`[row, col]`), and `maxloc(m, 1)` / `maxloc(m, 2)` give one position per column / per row.
 
 `norm2(x)` is the length of a real array (the square root of the sum of its squares). `spread(source, dim, n)` repeats
 `source` (a single value or an array) `n` times along a new dimension `dim`: `spread([1, 2, 3], 1, 2)` is two rows of
-`[1, 2, 3]`. `findloc(v, x)` is the position of the first element of a one-dimensional array equal to `x`, or 0.
+`[1, 2, 3]`. `findloc(v, x)` is the position of the first element equal to `x`, or 0 (down the columns of a matrix, giving
+`[row, col]`, or `[0, 0]` when there is none; `findloc(m, x, 1)` is one row per column). Fortran's `back` option is not supported.
 `lbound(a)` and `ubound(a)` are the lowest and highest subscript of every dimension (`lbound` is always 1, since
 Boreas arrays start at 1), and `lbound(a, k)` / `ubound(a, k)` give one dimension.
 

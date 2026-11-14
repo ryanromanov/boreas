@@ -397,20 +397,49 @@ def _merge(a, b, mask):
     return a if mask else b
 
 
+def _along(name, a, dim, in_line):
+    """Where `in_line(values)` (a position from 1, or 0 for none) puts its answer in `a`. A plain array gives
+    one integer. A matrix gives its subscripts as an array (no `dim`), or one position per line along `dim`."""
+    if dim is None:
+        k = in_line(a.data)
+        if a.rank == 1:
+            return k
+        out = [0] * a.rank
+        k -= 1
+        for d, n in enumerate(a.shape):
+            if k >= 0:
+                out[d] = k % n + 1
+                k //= n
+        return Array((a.rank,), out)
+    if isinstance(dim, bool) or not isinstance(dim, int) or not 1 <= dim <= a.rank:
+        raise LangError(f"{name}(): dimension must be 1..{a.rank}")
+    strides = a.strides()
+    step, n = strides[dim - 1], a.shape[dim - 1]
+    others = [d for d in range(a.rank) if d != dim - 1]
+    found = []
+    for combo in product(*[range(a.shape[d]) for d in reversed(others)]):     # the first other dimension varies fastest
+        base = sum(i * strides[d] for i, d in zip(reversed(combo), others))
+        found.append(in_line([a.data[base + j * step] for j in range(n)]))
+    return found[0] if a.rank == 1 else Array(a.shape[:dim - 1] + a.shape[dim:], found)
+
+
 def _locate(name, pick):
-    def locate(a, dim=1):
-        _need_array(name, a, rank=(1,))
-        if dim != 1 or isinstance(dim, bool):
-            raise LangError(f"{name}(): dimension must be 1")
+    def locate(a, dim=None):
+        _need_array(name, a)
         if not a.data:
             raise LangError(f"{name}(): the array is empty")
         if any(isinstance(x, (bool, complex)) for x in a.data):
             raise LangError(f"{name}() needs numbers or strings that can be ordered, got {type_of(a.data[0])}s")
-        best = 0
-        for i, x in enumerate(a.data):
-            if pick(x, a.data[best]):
-                best = i
-        return best + 1
+
+        def in_line(values):
+            if not values:
+                raise LangError(f"{name}(): the array is empty")
+            best = 0
+            for i, x in enumerate(values):
+                if pick(x, values[best]):
+                    best = i
+            return best + 1
+        return _along(name, a, dim, in_line)
     return locate
 
 
@@ -440,17 +469,13 @@ def _spread(source, dim, ncopies):
     return Array(new, out)
 
 
-def _findloc(a, value, dim=1):
-    """The position (from 1) of the first element equal to `value`, 0 when there is none."""
-    _need_array("findloc", a, rank=(1,))
-    if isinstance(dim, bool) or dim != 1:
-        raise LangError("findloc(): dimension must be 1")
+def _findloc(a, value, dim=None):
+    """The position (from 1) of the first element equal to `value`, 0 when there is none. A matrix gives its
+    subscripts as an array, or (with `dim`) one position per line along that dimension."""
+    _need_array("findloc", a)
     if isinstance(value, Array):
         raise LangError("findloc(): the value to look for must be a single value")
-    for i, x in enumerate(a.data):
-        if x == value:
-            return i + 1
-    return 0
+    return _along("findloc", a, dim, lambda values: next((i + 1 for i, x in enumerate(values) if x == value), 0))
 
 
 def _bound(name, low):
