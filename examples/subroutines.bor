@@ -1,4 +1,5 @@
-! Subroutines return results through `out` / `inout` parameters.
+! Subroutines change what the caller already has (`inout`) or fill storage the caller owns (`out`).
+! To hand back new values, write a function with results instead (see `circle` below).
 ! A parameter with no mode is `in` and cannot be assigned inside the callee.
 ! Writes that reach the caller are marked `@`, so they stand out.
 
@@ -16,9 +17,18 @@ subroutine swap_real(inout real :: a, inout real :: b)
   @b = t
 end subroutine
 
-subroutine circle(in real :: r, out real :: area, out real :: circumference)
-  @area = 3.14159 * r ** 2
-  @circumference = 2.0 * 3.14159 * r
+! New values come back as results: no @, no out, and the call shows where they go.
+function circle(real :: r) -> (real :: area, real :: circumference)
+  return 3.14159 * r ** 2, 2.0 * 3.14159 * r
+end function
+
+! `out` is still the right tool when the caller already has the storage: the subroutine
+! fills the caller's array in place, and no new array is made.
+subroutine squares(out integer[] :: v)
+  integer :: i
+  do i = 1, size(v)
+    @v[i] = i * i
+  end do
 end subroutine
 
 subroutine scale(in real :: k, inout real[] :: xs)
@@ -35,8 +45,12 @@ program demo
   call swap(x, y)
   println("after swap:", x, y)
 
-  call circle(3.0, a, c)
+  (a, c) = circle(3.0)
   println("circle r=3:", a, c)
+
+  integer[5] :: table
+  call squares(table)
+  println("squares:", table)
 
   call scale(10.0, v)
   println("scaled:", v)
