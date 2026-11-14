@@ -126,6 +126,8 @@ def _format_lines(src, indent, tabs):
             depth = stack.pop().depth if stack else 0
         elif word0 == "else" and top and top.kind == "if":
             depth = top.depth
+        elif word0 == "elsewhere" and top and top.kind == "where":
+            depth = top.depth
         elif word0 == "case" and top and top.kind in ("select", "select-expr"):
             depth = top.depth + 1
             top.in_case = True
@@ -143,6 +145,8 @@ def _format_lines(src, indent, tabs):
             stack.append(_Frame("block", depth))        # a definition, not a procedure type like `function(real)`
         elif word0 == "if":                             # always a block: Boreas has no one-line if, and `then`
             stack.append(_Frame("if", depth))           # can come lines later, after a select expression
+        elif word0 == "where" and texts[-1] == "then":      # `where` is only a statement when the line ends in `then`
+            stack.append(_Frame("where", depth))
         elif word0 == "do" or labeled_do:
             stack.append(_Frame("do", depth))
         elif word0 == "select" and word1 in ("case", "type"):

@@ -201,6 +201,11 @@ def stmt(s, depth):
             lines.extend(stmts(s.orelse, depth + 1))
         lines.append(pad + "end if")
         return lines
+    if k is Where:
+        lines = [f"{pad}where {expr(s.cond)} then"] + stmts(s.body, depth + 1)
+        if s.orelse:
+            lines += [pad + "elsewhere"] + stmts(s.orelse, depth + 1)
+        return lines + [pad + "end where"]
     if k is SelectType:
         lines = [f"{pad}select type {expr(s.subject)} as {s.var}"]
         for c in s.cases:
@@ -313,6 +318,9 @@ def without_comments(unit):
                 strip(s.orelse)
             elif isinstance(s, (Do, DoWhile)):
                 strip(s.body)
+            elif isinstance(s, Where):
+                strip(s.body)
+                strip(s.orelse)
             elif isinstance(s, Select):
                 for c in s.cases:
                     strip(c.body)

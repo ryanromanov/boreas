@@ -8,7 +8,7 @@ runs them."""
 from .interp import BUILTINS, ELEMENTAL
 from .parser import (Allocate, Apply, ArrayLit, Assign, Binary, Call, Close, Decl, Do, DoWhile,
                      ExprStmt, FieldAccess, Gen, If, IsType, MultiAssign, NamedArg, Print, Return, ReturnMany, Select, SelectExpr, SelectType, Slice, Stop,
-                     Unary, Var, sub_bodies)
+                     Unary, Var, Where, sub_bodies)
 
 
 def indexable_in(body):
@@ -137,6 +137,10 @@ class Walker:
         elif isinstance(s, DoWhile):
             self.expr(s.cond)
             self.statements(s.body)
+        elif isinstance(s, Where):
+            self.expr(s.cond)
+            self.statements(s.body)
+            self.statements(s.orelse)
         elif isinstance(s, SelectType):               # `p` exists only inside the cases
             self.expr(s.subject)
             added = s.var not in self.variables
