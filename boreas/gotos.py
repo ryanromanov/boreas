@@ -15,7 +15,7 @@ into a block), so each label is handled where its mark is:
 Whatever cannot be rewritten stays as a TODO comment."""
 from dataclasses import dataclass
 
-from .parser import (Assign, Bool, Case, Comment, Cycle, Do, DoWhile, Exit, If, IsType, Num, Return, Select, Stop, Unary, Var, Where)
+from .parser import (Assign, Bool, Case, Comment, Cycle, Do, DoEach, DoWhile, Exit, If, IsType, Num, Return, Select, Stop, Unary, Var, Where)
 
 
 @dataclass
@@ -34,7 +34,7 @@ def child_lists(s):
         return [b for _, b in s.branches] + [s.orelse]
     if isinstance(s, Select):
         return [c.body for c in s.cases]
-    if isinstance(s, (Do, DoWhile)):
+    if isinstance(s, (Do, DoEach, DoWhile)):
         return [s.body]
     if isinstance(s, Where):
         return [s.body, s.orelse]
@@ -74,7 +74,7 @@ def rebinds(stmts):
     for s in stmts:
         if isinstance(s, (Exit, Cycle)) and s.label is None:
             return True
-        if not isinstance(s, (Do, DoWhile)) and any(rebinds(sub) for sub in child_lists(s)):
+        if not isinstance(s, (Do, DoEach, DoWhile)) and any(rebinds(sub) for sub in child_lists(s)):
             return True
     return False
 
@@ -91,7 +91,7 @@ def replace(stmts, label, make, depth=0, deep=None):
                 deep.extend(n for n in new if isinstance(n, (Exit, Cycle)))
             out.extend(new)
             continue
-        inner = depth + isinstance(s, (Do, DoWhile))
+        inner = depth + isinstance(s, (Do, DoEach, DoWhile))
         for sub in child_lists(s):
             sub[:] = replace(sub, label, make, inner, deep)[0]
         out.append(s)
