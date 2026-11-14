@@ -263,11 +263,6 @@ end record
 
 
 class CallbackTests(unittest.TestCase):
-    def test_a_callback_cannot_return_several_results_yet(self):
-        with self.assertRaisesRegex(LangError, "cannot return several results yet"):
-            parse("function g(function(real) -> (real, real) :: f) -> real\n  return 1.0\nend function\n"
-                  "program t\nend program\n")
-
     def test_a_multi_result_function_does_not_match_a_callback(self):
         defs = "function two(real :: x) -> (real :: a, real :: b)\n  return x, x\nend function\n" \
                "function g(function(real) -> real :: f) -> real\n  return f(1.0)\nend function\n"

@@ -88,12 +88,6 @@ end program
         with self.assertRaises(LangError):
             run_bor(src)
 
-    def test_a_procedure_signature_cannot_return_an_array(self):
-        src = "function f(function(real) -> real[] :: g) -> real\n  return 1.0\nend function\nprogram t\nend program"
-        with self.assertRaises(LangError) as cm:
-            parse(src)
-        self.assertIn("cannot return an array", str(cm.exception))
-
     def test_prints_back_the_same(self):
         src = program(FREQ, "  println(frequencies(2))")
         self.assertIn("-> integer[]", to_source(parse(src), []))

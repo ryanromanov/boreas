@@ -2192,7 +2192,7 @@ class Interp:
             fn = env[e.name][VALUE]
             if fn.is_sub:
                 raise LangError(f"line {e.line}: '{e.name}' is a subroutine; use 'call {e.name}(...)'")
-            return self.call_function(fn, self.eval_args(fn, e.args, env, e.line), e.line)
+            return self.call_function(fn, self.eval_args(fn, e.args, env, e.line), e.line, e)
         if e.name in env:  # indexing or slicing
             if not env[e.name][IS_ARRAY] and env[e.name][TYPE] == "string":
                 return self.read(self.resolve(e, env, e.line))
