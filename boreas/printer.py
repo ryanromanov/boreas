@@ -107,7 +107,7 @@ def _decl_head(d):
     """`public const allocatable real[,]`: modifiers, then the type with its brackets: sizes for a fixed array,
     only commas (the rank) for an allocatable one."""
     head = ("public " if d.public else "") + ("const " if d.const else "") \
-        + ("allocatable " if d.allocatable else "") + d.type
+        + ("allocatable " if d.allocatable else "") + str(d.type)
     if d.dims is not None:
         head += "[" + (",".join("" for _ in d.dims) if d.allocatable else ", ".join(expr(x) for x in d.dims)) + "]"
     return head

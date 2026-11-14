@@ -633,6 +633,34 @@ and the variable may instead be absent (`null`):
   contain itself, even optionally.
 - Not supported: optional `out`/`inout` parameters, arrays of optional values, `?.` chaining.
 
+## Maps and sets
+
+A map looks values up by key; a set remembers which members it has. Keys and members are integers or strings,
+and a map's values are single values (numbers, strings, logicals). They start empty and grow by themselves:
+
+    map[string, integer] :: age
+    set[string] :: seen
+
+    age["ann"] = 31                    ! insert, or replace the value of an existing key
+    println(age["ann"])                ! 31; a key that is not there is an error
+    println(get(age, "bob") ?? 0)      ! get gives integer? (null when missing), so ?? supplies a default
+    println(has(age, "ann"), size(age))
+    call remove(age, "ann")            ! removing a key that is not there is an error: test with has first
+
+    call add(seen, "x")                ! adding a member that is already there does nothing
+    println(has(seen, "x"), size(seen))
+
+- `keys(age)` and `values(age)` give arrays in the same order (`keys(seen)` gives the members), so a plain `do`
+  loop walks a map. Order is the order the keys were first added, so a program prints the same every run.
+- `println(age)` shows `{ann: 31}` and a set `{x, y}`. Counting words: `count[w] = (get(count, w) ?? 0) + 1`.
+- Assigning copies, like an array: after `b = a`, changing `b` leaves `a` alone. A declaration can start from a
+  copy (`map[string, integer] :: b = a`). A map and a set cannot be compared or used in arithmetic yet.
+- `add` and `remove` are subroutines built in, so they are called with `call`, like `call swap(x, y)`. `map` and
+  `set` are not reserved: they are types only before `[` and a type name, so variables called `map` still work.
+- Not supported yet: a map or set as a parameter, a function result, a record field or a module variable (they
+  are local variables for now), `const` or `allocatable` ones, arrays of them, and values that are arrays,
+  optional or other collections. See `examples/collections.bor`.
+
 ## Subroutines and parameter modes
 
 Which to use:

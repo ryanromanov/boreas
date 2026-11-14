@@ -157,6 +157,8 @@ def type_of(v):
     if name is not None: return name
     if isinstance(v, FileHandle): return "file"
     if isinstance(v, Array): return "array"
+    if isinstance(v, MapValue): return "map"
+    if isinstance(v, SetValue): return "set"
     if isinstance(v, Record): return v.rdef.name
     if v is NULL: return "null"
     return "?"
@@ -255,6 +257,45 @@ def aliased(a, b):
 
 
 # --- Arrays ------------------------------------------------------------
+class MapValue:
+    """A map's contents. A dict keeps the order the keys were added in, so a program prints the same thing
+    every run. It is copied when assigned (value semantics, like an array)."""
+    __slots__ = ("keytype", "valtype", "data")
+
+    def __init__(self, keytype, valtype, data=None):
+        self.keytype, self.valtype, self.data = keytype, valtype, {} if data is None else data
+
+    def copy(self):
+        return MapValue(self.keytype, self.valtype, dict(self.data))
+
+
+class SetValue:
+    """A set's members, in the order they were added (a dict with no values)."""
+    __slots__ = ("elemtype", "data")
+
+    def __init__(self, elemtype, data=None):
+        self.elemtype, self.data = elemtype, {} if data is None else data
+
+    def copy(self):
+        return SetValue(self.elemtype, dict(self.data))
+
+
+class MapKey:
+    """The subscript of one map entry: `age["ann"]`. It remembers its line for a missing-key error."""
+    __slots__ = ("key", "line")
+
+    def __init__(self, key, line=None):
+        self.key, self.line = key, line
+
+
+def check_key(kind, key, who, noun="keys"):
+    """A key or member of the right type (integer or string); a bool is not an integer."""
+    ok = isinstance(key, str) if kind == "string" else isinstance(key, int) and not isinstance(key, bool)
+    if not ok:
+        raise LangError(f"{who} has {kind} {noun}, got {type_of(key)}")
+    return key
+
+
 class Array:
     """An N-dimensional array stored flat in column-major order, like Fortran:
     the first subscript varies fastest. Subscripts are 1-based."""
@@ -299,7 +340,48 @@ def _need_array(name, a, rank=None):
     return a
 
 
+def _need_collection(name, c, only=None):
+    wanted = {"map": MapValue, "set": SetValue}.get(only, (MapValue, SetValue))
+    if not isinstance(c, wanted):
+        raise LangError(f"{name}() needs {'a ' + only if only else 'a map or a set'}, got {type_of(c)}")
+    return c
+
+
+def _key_kind(c):
+    return c.keytype if isinstance(c, MapValue) else c.elemtype
+
+
+def _has(c, k):
+    """Is `k` a key of the map, or a member of the set?"""
+    _need_collection("has", c)
+    return check_key(_key_kind(c), k, "a map" if isinstance(c, MapValue) else "a set",
+                     "keys" if isinstance(c, MapValue) else "members") in c.data
+
+
+def _get(m, k):
+    """The value for key `k`, or null when there is none: `get(age, "bob") ?? 0`."""
+    _need_collection("get", m, "map")
+    check_key(m.keytype, k, "the map")
+    return m.data[k] if k in m.data else NULL
+
+
+def _keys(c):
+    """The keys of a map, or the members of a set, as an array in the order they were added."""
+    _need_collection("keys", c)
+    return Array((len(c.data),), list(c.data))
+
+
+def _values(m):
+    """The values of a map as an array, in the same order as keys(m)."""
+    _need_collection("values", m, "map")
+    return Array((len(m.data),), list(m.data.values()))
+
+
 def _size(a, dim=None):
+    if isinstance(a, (MapValue, SetValue)):
+        if dim is not None:
+            raise LangError("size(): a map or a set has no dimensions to pick")
+        return len(a.data)
     _need_array("size", a)
     if dim is None:
         return len(a.data)
@@ -865,6 +947,7 @@ def _to_number(typ):
 
 
 BUILTINS = {
+    "has": _has, "get": _get, "keys": _keys, "values": _values,
     "split": _split, "fields": _fields, "field": _field, "to_integer": _to_number("integer"), "to_real": _to_number("real"), "to_logical": _to_number("logical"),
     "trim": _trim, "len_trim": lambda s: len(_trim(s)), "index": _index,
     "fixed": _fixed, "tf": _tf, "scientific": _scientific, "general": _general, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
@@ -977,6 +1060,9 @@ def ieee_math(name, args, err):
     if name == "atanh" and abs(x) == 1:
         return math.copysign(kinds.INF, x)
     return float("nan")
+
+
+SUBROUTINE_BUILTINS = {"add", "remove"}              # `call add(set, x)`, `call remove(map_or_set, key)`
 
 
 PURE_BUILTINS = (set(BUILTINS) | set(ELEMENTAL)) - {"allocated", "present", "random", "read_line", "argument", "open", "try_open", "exists",
@@ -1388,6 +1474,12 @@ class Interp:
         where = f"line {s.line}"
         if s.name in env:
             raise LangError(f"{where}: '{s.name}' already declared")
+        if isinstance(s.type, (MapType, SetType)):
+            val = self.new_collection(s.type)
+            if s.init is not None:
+                val = self.collection_copy(s.type, self.eval(s.init, env), f"{where}: '{s.name}'")
+            env[s.name] = [s.type, val, False, None]
+            return
         sub = None
         base = base_type(s.type)
         iface = base in self.scope.interfaces and base not in DEFAULTS
@@ -1430,6 +1522,21 @@ class Interp:
             else:
                 data = [coerce(s.type, init, where) for _ in range(n)]      # one copy per element
         env[s.name] = [s.type, Array(shape, data), True, "const" if s.const else None]
+
+    @staticmethod
+    def new_collection(typ):
+        return MapValue(typ.key, typ.value) if isinstance(typ, MapType) else SetValue(typ.elem)
+
+    @staticmethod
+    def collection_copy(typ, v, what):
+        """A copy of `v` for a variable of collection type `typ`; it must be a collection of that same type."""
+        same = (isinstance(typ, MapType) and isinstance(v, MapValue) and (v.keytype, v.valtype) == (typ.key, typ.value)) \
+            or (isinstance(typ, SetType) and isinstance(v, SetValue) and v.elemtype == typ.elem)
+        if not same:
+            got = f"a {v.keytype} to {v.valtype} map" if isinstance(v, MapValue) else \
+                f"a set of {v.elemtype}" if isinstance(v, SetValue) else f"a {type_of(v)}"
+            raise LangError(f"{what} is a {typ}, so it cannot hold {got}")
+        return v.copy()
 
     def typed(self, typ, scope=None):
         """`typ` as a slot type: the name of an interface becomes an IfaceType that can check values."""
@@ -1605,6 +1712,10 @@ class Interp:
             if missing:
                 raise LangError(f"cannot print a {v.rdef.name}: its field '{missing}' has no value yet")
             return v.rdef.name + "(" + ", ".join(f"{n}={self.show(s[VALUE])}" for n, s in v.fields.items()) + ")"
+        if isinstance(v, MapValue):
+            return "{" + ", ".join(f"{self.show(k)}: {self.show(x)}" for k, x in v.data.items()) + "}"
+        if isinstance(v, SetValue):
+            return "{" + ", ".join(self.show(k) for k in v.data) + "}"
         if isinstance(v, Array):
             def rec(prefix):                       # first dimension is outermost
                 d = len(prefix)
@@ -1702,6 +1813,8 @@ class Interp:
             raise self.not_allocated(t.name, line)
         if isinstance(t, Var):
             return Ref(slot, None, t.name)
+        if isinstance(slot[TYPE], (MapType, SetType)):
+            return self.collection_ref(slot, t, env, line)
         if not t.bracket and (slot[IS_ARRAY] or slot[TYPE] == "string"):
             raise LangError(f"line {line}: index with brackets: write {t.name}[...], not {t.name}(...)")
         if not slot[IS_ARRAY]:
@@ -1709,6 +1822,16 @@ class Interp:
                 return Ref(slot, self.substring_bounds(slot, t.args, env, line, t.name), t.name)
             raise LangError(f"line {line}: '{t.name}' is not an array")
         return Ref(slot, self.subscripts(slot[VALUE], t.args, env, line, t.name), t.name)
+
+    def collection_ref(self, slot, t, env, line):
+        """`age["ann"]`: a reference to one entry of a map."""
+        if not isinstance(slot[TYPE], MapType):
+            raise LangError(f"line {line}: '{t.name}' is a set, which has no entries to index; "
+                            f"test a member with has({t.name}, x)")
+        if not t.bracket or len(t.args) != 1 or isinstance(t.args[0], Slice):
+            raise LangError(f"line {line}: '{t.name}' is a map: look up one key with {t.name}[key]")
+        key = check_key(slot[TYPE].key, self.eval(t.args[0], env), f"line {line}: the map '{t.name}'")
+        return Ref(slot, MapKey(key, line), t.name)
 
     def substring_bounds(self, slot, args, env, line, name):
         """The (lo, hi) of s[lo:hi], 1-based and inclusive, either end optional, as a one-entry subscript list."""
@@ -1774,9 +1897,14 @@ class Interp:
         return Ref(slot, self.subscripts(slot[VALUE], t.args, env, line, name), name, ref.root, ref.rsubs, fpath)
 
     def read(self, ref):
-        slot, subs, _ = ref
+        slot, subs, name = ref
         if subs is None:
             return slot[VALUE]
+        if isinstance(subs, MapKey):
+            if subs.key not in slot[VALUE].data:
+                raise LangError(f"line {subs.line}: the map '{name}' has no key {show_value(subs.key)} "
+                                f"(test with has({name}, key), or use get({name}, key) ?? default)")
+            return slot[VALUE].data[subs.key]
         if not slot[IS_ARRAY]:                  # a substring
             return slot[VALUE][subs[0][0] - 1:subs[0][1]]
         positions, shape = slot[VALUE].section(subs)
@@ -1793,6 +1921,12 @@ class Interp:
         if ref.root[INTENT] == "const":
             raise LangError(f"line {line}: '{name}' is {part}a constant and cannot be assigned")
         where = f"line {line}"
+        if isinstance(slot[TYPE], (MapType, SetType)):
+            if subs is None:                    # a whole map or set: a copy, so the two stay separate
+                slot[VALUE] = self.collection_copy(slot[TYPE], v, f"{where}: '{name}'")
+            else:
+                slot[VALUE].data[subs.key] = coerce(slot[TYPE].value, v, f"{where}: a value of '{name}'")
+            return
         if not slot[IS_ARRAY]:
             if subs is not None:                # a substring keeps the string's length
                 lo, hi = subs[0]
@@ -1846,6 +1980,8 @@ class Interp:
                 raise LangError(f"'{e.op}' cannot be used with null; check with present() or use ??")
             if isinstance(v, Record):
                 raise LangError(f"records cannot be used with '{e.op}'; use their fields")
+            if isinstance(v, (MapValue, SetValue)):
+                raise LangError(f"a {type_of(v)} cannot be used with '{e.op}'")
             f = (lambda x: not self.truth(x)) if e.op == "not" else self.negate if e.op == "-" else (lambda x: x)
             return Array(v.shape, [f(x) for x in v.data]) if isinstance(v, Array) else f(v)
         if k is Binary:
@@ -2132,6 +2268,11 @@ class Interp:
             return Array(shape, [self.binary(op, x, y) for x, y in zip(ad, bd)])
         if isinstance(a, Record) or isinstance(b, Record):
             raise LangError(f"records cannot be used with '{op}'; use their fields")
+        for x in (a, b):
+            if isinstance(x, (MapValue, SetValue)):
+                hint = ("; maps and sets cannot be compared yet: compare keys(...) and values(...), or their sizes"
+                        if op in ("==", "/=", "<", "<=", ">", ">=") else "")
+                raise LangError(f"a {type_of(x)} cannot be used with '{op}'{hint}")
         if op in ("and", "or"):
             self.truth(a); self.truth(b)
             return (a and b) if op == "and" else (a or b)
@@ -2179,7 +2320,8 @@ class Interp:
                 raise LangError(f"line {e.line}: allocated() needs the name of an allocatable array")
             return self.allocatable(e.args[0].name, env, e.line)[VALUE] is not None
         if e.bracket:
-            if e.name in env and (env[e.name][IS_ARRAY] or env[e.name][TYPE] == "string"):
+            if e.name in env and (env[e.name][IS_ARRAY] or env[e.name][TYPE] == "string"
+                                  or isinstance(env[e.name][TYPE], (MapType, SetType))):
                 v = self.read(self.resolve(e, env, e.line))
                 if v is None and isinstance(env[e.name][TYPE], IfaceType):
                     raise LangError(f"line {e.line}: an element of '{e.name}' is used before it is assigned")
@@ -2194,6 +2336,8 @@ class Interp:
                 raise LangError(f"line {e.line}: '{e.name}' is a subroutine; use 'call {e.name}(...)'")
             return self.call_function(fn, self.eval_args(fn, e.args, env, e.line), e.line, e)
         if e.name in env:  # indexing or slicing
+            if isinstance(env[e.name][TYPE], (MapType, SetType)):
+                return self.read(self.resolve(e, env, e.line))
             if not env[e.name][IS_ARRAY] and env[e.name][TYPE] == "string":
                 return self.read(self.resolve(e, env, e.line))
             if not env[e.name][IS_ARRAY]:
@@ -2500,6 +2644,35 @@ class Interp:
             raise LangError(f"{where} is {want}, but '{a.name}' is {got}")
         return fn
 
+    def collection_call(self, s, env):
+        """`call add(seen, "x")` and `call remove(age, "ann")`: change a set or a map the caller names."""
+        what = "a set" if s.name == "add" else "a map or a set"
+        if len(s.args) != 2:
+            raise LangError(f"line {s.line}: {s.name} expects 2 arguments: call {s.name}({what.split(' ')[-1]}, "
+                            f"{'member' if s.name == 'add' else 'key'})")
+        if not isinstance(s.args[0], Var) or s.args[0].name not in env:
+            raise LangError(f"line {s.line}: {s.name} changes {what}, so its first argument must be a variable")
+        ref = self.resolve(s.args[0], env, s.line)
+        slot = ref[0]
+        c = slot[VALUE]
+        if not isinstance(c, SetValue if s.name == "add" else (MapValue, SetValue)):
+            raise LangError(f"line {s.line}: {s.name} needs {what}, but '{ref[2]}' is "
+                            f"{'a ' + type_of(c) if c is not None else 'not one'}"
+                            + ("; a map gets entries with m[key] = value" if s.name == "add" and isinstance(c, MapValue) else ""))
+        if ref.root[INTENT] in ("in", "const"):
+            raise LangError(f"line {s.line}: '{ref[2]}' is {'an ' + repr('in') + ' parameter' if ref.root[INTENT] == 'in' else 'a constant'} "
+                            f"and cannot be changed")
+        key = check_key(_key_kind(c), self.eval(s.args[1], env),
+                        f"line {s.line}: the {'map' if isinstance(c, MapValue) else 'set'} '{ref[2]}'",
+                        "keys" if isinstance(c, MapValue) else "members")
+        if s.name == "add":
+            c.data[key] = None
+        elif key in c.data:
+            del c.data[key]
+        else:
+            raise LangError(f"line {s.line}: cannot remove {show_value(key)}: '{ref[2]}' has no such "
+                            f"{'key' if isinstance(c, MapValue) else 'member'} (test with has first)")
+
     def call_subroutine(self, s, env):
         args, receiver = s.args, None
         if s.receiver is not None:                   # call x.grow(2.0): x is passed first, as `self`
@@ -2514,6 +2687,8 @@ class Interp:
             f = self.scope.funcs.get(s.name)
             if s.name in env and isinstance(env[s.name][TYPE], ProcType):    # a call through a procedure parameter
                 f = env[s.name][VALUE]
+            if f is None and s.name in SUBROUTINE_BUILTINS and s.name not in env:
+                return self.collection_call(s, env)
             if f is None:
                 raise LangError(f"line {s.line}: unknown subroutine '{s.name}'")
         if not f.is_sub:
@@ -2531,6 +2706,9 @@ class Interp:
                 continue
             ref = self.resolve(a, env, s.line)
             slot = ref[0]
+            if isinstance(ref[1], MapKey):
+                raise LangError(f"line {s.line}: an entry of a map cannot be passed as an {intent} argument yet; "
+                                f"copy it to a variable, call, and store it back")
             typ = typ[:typ.index("[")] if isinstance(typ, str) and typ.endswith("]") else typ
             if ref.root[INTENT] in ("in", "const"):
                 what = "an 'in' parameter" if ref.root[INTENT] == "in" else "a constant"
