@@ -55,6 +55,12 @@
   ],
   "types": [
     {
+      "begin": "\\b(?:map|set)(?=\\[[ \\t]*(?:integer|real|complex|logical|string|int8|int16|int32|int64|real32|real64|file)\\b)",
+      "ignoreCase": true,
+      "regularExpression": true,
+      "description": "map or set before [ and a type name, as in map[string, integer]"
+    },
+    {
       "begin": "\\b(integer|real|complex|logical|string|int8|int16|int32|int64|real32|real64|file)\\b",
       "ignoreCase": true,
       "regularExpression": true
