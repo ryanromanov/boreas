@@ -49,8 +49,11 @@
 !  > call add(m, "x")                      (m is a map)
 !  error: add needs a set, but 'm' is a map; a map gets entries with m[key] = value
 !
-!  > x = m["a"][2]                         (a map of arrays: there are no chained subscripts)
-!  error: there are no chained subscripts: write m[i, j] for a matrix, and for a map of arrays copy the value out first (v = m[key], then v[i])
+!  > x = a[1][2]                           (a is an ordinary array: a second subscript only follows a map entry)
+!  error: 'a' is not a map, so it takes one subscript list: write a[i, j] for a matrix
+!
+!  > x = m["a"][2]                         (m holds integers, not arrays)
+!  error: an entry of 'm' is one integer, not an array, so it takes no second subscript
 !
 !  > println(values(g))                    (g is a map of sets)
 !  error: values() gives an array of single values, but this map's values are sets; loop with do k in keys(m), or read one entry at a time
@@ -86,7 +89,6 @@ program workarounds
   map[string, set[string]] :: groups
   map[string, integer[]] :: lists
   set[string] :: none
-  integer[2] :: pair
   string :: key
   integer :: value
   logical :: same
@@ -95,6 +97,7 @@ program workarounds
   b["x"] = 1
 
   ! No a == b: compare the sizes, then every key and value.
+  ! TODO we should add comparisons. Maybe == compares objects and === compares all key and values?
   same = size(a) == size(b)
   do key, value in a
     same = same and (get(b, key) ?? -1) == value
@@ -102,16 +105,15 @@ program workarounds
   println(same)                              ! true
 
   ! A missing outer key is an error: store an empty set first, then change it in place.
+  ! TODO: you should be able to add a key and value to a map in one go.
   groups["fruit"] = none
   call add(groups["fruit"], "apple")
   println(groups)                            ! {fruit: {apple}}
 
-  ! No lists["a"][2]: copy the array out, change it, and store it back.
+  ! An entry that is an array can be indexed in place: read it, change it, or pass an element on.
   lists["a"] = [10, 20]
-  pair = lists["a"]
-  pair[2] = 99
-  lists["a"] = pair
-  println(lists)                             ! {a: [10, 99]}
+  lists["a"][2] = 99
+  println(lists, lists["a"][1])              ! {a: [10, 99]} 10
 
   ! An optional value is already there: get gives null for a missing key, and ?? supplies a default.
   println(get(a, "nope") ?? 0)               ! 0

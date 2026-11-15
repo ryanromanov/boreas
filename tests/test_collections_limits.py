@@ -22,8 +22,10 @@ CASES = [
     (A_B + "  b = a + a\n", "a map cannot be used with '+'"),
     ("  set[string] :: s\n  println(s[\"x\"])\n", "'s' is a set, which has no entries to index; test a member with has(s, x)"),
     (M + "  call add(m, \"x\")\n", "add needs a set, but 'm' is a map; a map gets entries with m[key] = value"),
-    ("  map[string, integer[]] :: m\n  integer :: x\n  x = m[\"a\"][2]\n",
-     "there are no chained subscripts: write m[i, j] for a matrix, and for a map of arrays copy the value out first (v = m[key], then v[i])"),
+    ("  integer[3] :: a = [1, 2, 3]\n  integer :: x\n  x = a[1][2]\n",
+     "'a' is not a map, so it takes one subscript list: write a[i, j] for a matrix"),
+    (M + "  integer :: x\n  m[\"a\"] = 1\n  x = m[\"a\"][2]\n",
+     "an entry of 'm' is one integer, not an array, so it takes no second subscript"),
     ("  map[string, set[string]] :: g\n  println(values(g))\n",
      "values() gives an array of single values, but this map's values are sets; loop with do k in keys(m), or read one entry at a time"),
     (M + "  println(m[\"x\"])\n", "the map 'm' has no key \"x\" (test with has(m, key), or use get(m, key) ?? default)"),
@@ -58,7 +60,7 @@ class LimitsExampleTests(unittest.TestCase):
 
     def test_the_program_at_the_bottom_runs(self):
         out = run_bor(open(EXAMPLE).read())
-        self.assertEqual(out, ["true", "{fruit: {apple}}", "{a: [10, 99]}", "0"])
+        self.assertEqual(out, ["true", "{fruit: {apple}}", "{a: [10, 99]} 10", "0"])
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ class Apply:   # index, slice, or call
     name: str; args: list; line: int
     col: int = field(default=0, compare=False, repr=False)
     bracket: bool = field(default=False, compare=False, repr=False)   # written name[...]: indexing, never a call
+    chain: list = None         # m[key][i, j]: the second subscript, only after an entry of a map of arrays
 @dataclass
 class Unary: op: str; operand: object
 @dataclass
@@ -53,6 +54,7 @@ class FieldAccess:    # base.field or base.field[subscripts] for an array field
     base: object; field: str; args: object; line: int
     bracket: bool = field(default=False, compare=False, repr=False)
     call: bool = field(default=False, compare=False, repr=False)      # x.area(): a record's function, not an array field
+    chain: list = None         # r.rows[key][i]: the second subscript, only after an entry of a map of arrays
 @dataclass
 class NamedArg: name: str; value: object     # `x = 1.0` inside a record constructor
 @dataclass
@@ -1708,6 +1710,17 @@ class Parser:
         step = self.expr() if self.accept(",") else None
         return Gen(body, var, lo, hi, step, line, var_col)
 
+    def chain_subscript(self, name):
+        """After `m[key]`: an optional second subscript, `m[key][i]`, that reaches into an entry that is an
+        array. Only one extra subscript exists (there are no arrays of arrays), and whether the entry is an
+        array is checked when the program runs."""
+        if not self.accept("["):
+            return None
+        subs = self.call_args("]")
+        if self.at("["):
+            self.error(f"'{name}' takes a key and then one more subscript: write {name}[key][i, j] for a matrix entry")
+        return subs
+
     def primary(self):
         t = self.tok
         if t.kind == "int":
@@ -1751,14 +1764,13 @@ class Parser:
                 e = Apply(name, self.call_args(), t.line, t.col)
             elif self.accept("["):
                 e = Apply(name, self.call_args("]"), t.line, t.col, True)
-                if self.at("["):
-                    self.error(f"there are no chained subscripts: write {name}[i, j] for a matrix, and for a map "
-                               f"of arrays copy the value out first (v = {name}[key], then v[i])")
+                e.chain = self.chain_subscript(name)
             while self.at("."):                    # record fields: p.x, pts[2].pos.y, p.v[3]
                 self.next()
                 field = self.ident()
                 if self.accept("["):
                     e = FieldAccess(e, field, self.call_args("]"), t.line, True)
+                    e.chain = self.chain_subscript(field)
                 else:
                     e = FieldAccess(e, field, self.call_args() if self.accept("(") else None, t.line)
             return e

@@ -1860,7 +1860,9 @@ class Interp:
         if isinstance(t, Var):
             return Ref(slot, None, t.name)
         if isinstance(slot[TYPE], (MapType, SetType)):
-            return self.collection_ref(slot, t.name, t.bracket, t.args, env, line)
+            return self.collection_ref(slot, t.name, t.bracket, t.args, env, line, chain=t.chain)
+        if t.chain is not None:
+            raise self.no_chain(t.name, line)
         if not t.bracket and (slot[IS_ARRAY] or slot[TYPE] == "string"):
             raise LangError(f"line {line}: index with brackets: write {t.name}[...], not {t.name}(...)")
         if not slot[IS_ARRAY]:
@@ -1869,17 +1871,45 @@ class Interp:
             raise LangError(f"line {line}: '{t.name}' is not an array")
         return Ref(slot, self.subscripts(slot[VALUE], t.args, env, line, t.name), t.name)
 
-    def collection_ref(self, slot, name, bracket, args, env, line, parent=None, field=None):
-        """`age["ann"]` or `r.ages["ann"]`: a reference to one entry of a map."""
+    def collection_ref(self, slot, name, bracket, args, env, line, parent=None, field=None, chain=None):
+        """`age["ann"]` or `r.ages["ann"]`: a reference to one entry of a map. With `chain` (`m[key][i]`) it is a
+        reference to part of an entry that is an array: an ordinary array reference onto the stored array, so
+        reading, writing, passing as inout and the aliasing check all work as they do for any array."""
         if not isinstance(slot[TYPE], MapType):
             raise LangError(f"line {line}: '{name}' is a set, which has no entries to index; "
                             f"test a member with has({name}, x)")
         if not bracket or len(args) != 1 or isinstance(args[0], Slice):
             raise LangError(f"line {line}: '{name}' is a map: look up one key with {name}[key]")
         key = check_key(slot[TYPE].key, self.eval(args[0], env), f"line {line}: the map '{name}'")
+        entry = MapKey(key, line)
+        if chain is not None:
+            return self.entry_part(slot, name, entry, chain, env, line, parent, field)
         if parent is None:
-            return Ref(slot, MapKey(key, line), name)
-        return Ref(slot, MapKey(key, line), name, parent.root, parent.rsubs, parent.fpath + (field,))
+            return Ref(slot, entry, name)
+        return Ref(slot, entry, name, parent.root, parent.rsubs, parent.fpath + (field,))
+
+    @staticmethod
+    def no_chain(name, line):
+        return LangError(f"line {line}: '{name}' is not a map, so it takes one subscript list: "
+                         f"write {name}[i, j] for a matrix")
+
+    def entry_part(self, slot, name, entry, chain, env, line, parent, field):
+        """`m[key][i]`: a reference into the array stored under `key`."""
+        valtype = slot[TYPE].value
+        if not isinstance(valtype, ArrayOf):
+            what = ("a set, so test a member with has(m[key], x)" if isinstance(valtype, SetType)
+                    else f"one {valtype}, not an array, so it takes no second subscript")
+            raise LangError(f"line {line}: an entry of '{name}' is {what}")
+        arr = self.read(Ref(slot, entry, name))                  # a missing key is the usual missing-key error
+        if len(chain) != arr.rank:
+            raise LangError(f"line {line}: this entry of '{name}' is {describe_array_type(str(valtype))}, "
+                            f"so it takes {arr.rank} subscript{'s' if arr.rank != 1 else ''}, got {len(chain)}")
+        part = [valtype.elem, arr, True, None]                   # a view of the stored array (changed in place)
+        subs = self.subscripts(arr, chain, env, line, name)
+        shown = f"{name}[{show_value(entry.key)}]"
+        if parent is None:
+            return Ref(part, subs, shown, slot, entry)
+        return Ref(part, subs, shown, parent.root, parent.rsubs, parent.fpath + (field, ("key", entry.key)))
 
     def substring_bounds(self, slot, args, env, line, name):
         """The (lo, hi) of s[lo:hi], 1-based and inclusive, either end optional, as a one-entry subscript list."""
@@ -1939,7 +1969,9 @@ class Interp:
         if t.args is None:
             return Ref(slot, None, name, ref.root, ref.rsubs, fpath)
         if isinstance(slot[TYPE], (MapType, SetType)):
-            return self.collection_ref(slot, name, t.bracket, t.args, env, line, ref, t.field)
+            return self.collection_ref(slot, name, t.bracket, t.args, env, line, ref, t.field, t.chain)
+        if t.chain is not None:
+            raise self.no_chain(name, line)
         if not slot[IS_ARRAY]:
             raise LangError(f"line {line}: field '{name}' is not an array")
         if not t.bracket:

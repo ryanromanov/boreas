@@ -81,6 +81,8 @@ class Walker:
                     self.report(e.name, e.line, e.col,
                                 f"'{e.name}' returns {many} results; unpack them: ({names}) = {e.name}(...)")
             self.arguments(e.args)
+            if e.chain is not None:
+                self.expr(e.chain)
         elif isinstance(e, NamedArg):       # the name is a record field; only the value is looked up
             self.expr(e.value)
         elif isinstance(e, Slice):
@@ -88,6 +90,8 @@ class Walker:
         elif isinstance(e, FieldAccess):    # the field depends on the value's type, so it is not checked
             self.expr(e.base)
             self.expr(e.args)
+            if e.chain is not None:
+                self.expr(e.chain)
         elif isinstance(e, Unary):
             self.expr(e.operand)
         elif isinstance(e, Binary):

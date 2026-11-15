@@ -696,9 +696,11 @@ and a map's values are single values (numbers, strings, logicals). They start em
       end do
 
   `groups["fruit"]` can be read, measured, searched and looped over, and passed to an `inout` or `out`
-  parameter (`call double(lists["a"])`). There is no `groups["fruit"]["apple"]`: the language has no chained
-  subscripts, so to change one element of an array value, copy it out, change it and store it back. Storing
-  and reading always copy, so the map never shares a set or array with a variable. `values(m)` is refused
+  parameter (`call double(lists["a"])`). An entry that is an array can be indexed in place with a second
+  subscript: `lists["a"][2] = 99`, `x = lists["a"][1]`, `lists["a"][1:2]`, `lists["m"][i, j]` for a matrix,
+  and `call bump(lists["a"][2])`. This is the only place a second subscript is allowed (there are no arrays
+  of arrays, so `a[1][2]` on an ordinary array is an error: write `a[1, 2]`). Storing and reading a whole entry
+  always copy, so the map never shares a set or array with a variable. `values(m)` is refused
   for these maps (it would be an array of sets); loop with `do k in keys(m)`. A map cannot hold maps or
   optional values, and a set's members stay single values.
 - Not supported yet: `const` or `allocatable` ones, arrays of them, an optional one, and collection literals

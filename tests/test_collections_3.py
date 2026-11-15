@@ -431,5 +431,135 @@ class NestedEditorAndOutTests(unittest.TestCase):
             self.assertIn(want, hover["contents"]["value"])
 
 
+class ChainedEntryTests(unittest.TestCase):
+    DECLS = "  map[string, integer[]] :: m\n  integer :: x\n"
+
+    def go(self, body, decls=None, defs=NESTED):
+        return run_bor(defs + "program t\n" + (decls or self.DECLS) + body + "\nend program\n")
+
+    def fails(self, body, message, decls=None, defs=NESTED):
+        with self.assertRaises(LangError) as cm:
+            self.go(body, decls, defs)
+        self.assertIn(message, str(cm.exception))
+
+    def test_read_an_element(self):
+        self.assertEqual(self.go('  m["a"] = [10, 20, 30]\n  x = m["a"][2]\n  println(x, m["a"][3])'), ["20 30"])
+
+    def test_write_an_element(self):
+        self.assertEqual(self.go('  m["a"] = [10, 20, 30]\n  m["a"][2] = 99\n  println(m)'), ["{a: [10, 99, 30]}"])
+
+    def test_write_a_section(self):
+        self.assertEqual(self.go('  m["a"] = [1, 2, 3]\n  m["a"][1:2] = [7, 8]\n  println(m)'), ["{a: [7, 8, 3]}"])
+
+    def test_read_a_section(self):
+        self.assertEqual(self.go('  m["a"] = [1, 2, 3]\n  println(m["a"][2:3], sum(m["a"][1:2]))'), ["[2, 3] 3"])
+
+    def test_a_computed_key_and_subscript(self):
+        self.assertEqual(self.go('  m["ab"] = [5, 6]\n  x = 1\n  m["a" + "b"][x + 1] = 0\n  println(m)'), ["{ab: [5, 0]}"])
+
+    def test_a_matrix_entry(self):
+        out = self.go('  m["k"] = reshape([1.0, 2.0, 3.0, 4.0], [2, 2])\n  m["k"][1, 2] = 0.5\n  println(m, m["k"][2, 2])',
+                      "  map[string, real[,]] :: m\n")
+        self.assertEqual(out, ["{k: [[1.0, 0.5], [2.0, 4.0]]} 4.0"])
+
+    def test_the_value_is_coerced(self):
+        self.assertEqual(self.go('  m["a"] = [1.0, 2.0]\n  m["a"][1] = 5\n  println(m)', "  map[string, real[]] :: m\n"), ["{a: [5.0, 2.0]}"])
+
+    def test_the_wrong_type_is_refused(self):
+        self.fails('  m["a"] = [1]\n  m["a"][1] = "x"', "cannot assign string to integer")
+
+    def test_an_element_as_an_inout_argument(self):
+        self.assertEqual(self.go('  m["a"] = [1, 2]\n  call bump(m["a"][2])\n  println(m)', defs=HELPERS), ["{a: [1, 3]}"])
+
+    def test_an_element_of_one_entry_next_to_another(self):
+        out = self.go('  m["a"] = [1, 2]\n  m["b"] = [5, 6]\n  call two(m["a"][1], m["b"][1])\n  println(m)', defs=HELPERS)
+        self.assertEqual(out, ["{a: [6, 2], b: [5, 6]}"])
+
+    def test_different_elements_of_one_entry_are_fine(self):
+        out = self.go('  m["a"] = [1, 2]\n  call two(m["a"][1], m["a"][2])\n  println(m)', defs=HELPERS)
+        self.assertEqual(out, ["{a: [3, 2]}"])
+
+    def test_the_same_element_twice_is_aliasing(self):
+        self.fails('  m["a"] = [1, 2]\n  call two(m["a"][1], m["a"][1])', "must not alias", defs=HELPERS)
+
+    def test_an_element_and_its_whole_entry_alias(self):
+        defs = HELPERS + "subroutine mix(inout integer[] :: v, inout integer :: n)\n  @n = 0\nend subroutine\n"
+        self.fails('  m["a"] = [1, 2]\n  call mix(m["a"], m["a"][1])', "must not alias", defs=defs)
+
+    def test_a_loop_over_the_entry_sees_a_snapshot(self):
+        out = self.go('  m["a"] = [1, 2, 3]\n  do x in m["a"]\n    m["a"][3] = 0\n    println(x)\n  end do')
+        self.assertEqual(out, ["1", "2", "3"])
+
+    def test_reading_a_copy_leaves_the_map_alone(self):
+        out = self.go('  integer[2] :: a\n  m["k"] = [1, 2]\n  a = m["k"]\n  a[1] = 9\n  m["k"][2] = 7\n  println(m, a)')
+        self.assertEqual(out, ["{k: [1, 7]} [9, 2]"])
+
+    def test_missing_key(self):
+        self.fails('  m["q"][1] = 1', "has no key")
+        self.fails('  println(m["q"][1])', "has no key")
+
+    def test_out_of_bounds(self):
+        self.fails('  m["a"] = [1]\n  println(m["a"][2])', "out of bounds")
+
+    def test_wrong_number_of_subscripts(self):
+        self.fails('  m["a"] = [1]\n  println(m["a"][1, 1])', "takes 1 subscript, got 2")
+
+    def test_not_an_array_entry(self):
+        self.fails('  m["a"] = 1\n  println(m["a"][1])', "is one integer, not an array", "  map[string, integer] :: m\n")
+        self.fails('  set[string] :: none\n  m["a"] = none\n  println(m["a"][1])', "is a set", "  map[string, set[string]] :: m\n")
+
+    def test_a_plain_array_cannot_be_chained(self):
+        self.fails('  integer[3] :: a = [1, 2, 3]\n  println(a[1][1])', "'a' is not a map")
+
+    def test_a_third_subscript_is_a_parse_error(self):
+        with self.assertRaises(LangError) as cm:
+            parse("program t\n  println(m[1][2][3])\nend program\n")
+        self.assertIn("takes a key and then one more subscript", str(cm.exception))
+
+    def test_an_in_parameter_entry_is_read_only(self):
+        defs = NESTED + "subroutine poke(in map[string, integer[]] :: q)\n  q[\"a\"][1] = 0\nend subroutine\n"
+        self.fails('  m["a"] = [1]\n  call poke(m)', "'in' parameter", defs=defs)
+
+    def test_an_inout_parameter_entry_changes_the_callers_map(self):
+        defs = NESTED + "subroutine poke(inout map[string, integer[]] :: q)\n  @q[\"a\"][1] = 0\nend subroutine\n"
+        self.assertEqual(self.go('  m["a"] = [1, 2]\n  call poke(m)\n  println(m)', defs=defs), ["{a: [0, 2]}"])
+
+    def test_a_record_field(self):
+        out = self.go('  graph :: net\n  net.rows["a"] = [1, 2]\n  net.rows["a"][2] = 5\n  call bump(net.rows["a"][1])\n  println(net.rows, net.rows["a"][2])',
+                      "", defs=NESTED + HELPERS.replace("record shelf\n  map[string, integer] :: stock\nend record\n", ""))
+        self.assertEqual(out, ["{a: [2, 5]} 5"])
+
+    def test_two_fields_keys_do_not_alias(self):
+        out = self.go('  graph :: net\n  net.rows["a"] = [1]\n  net.rows["b"] = [5]\n  call two(net.rows["a"][1], net.rows["b"][1])\n  println(net.rows)',
+                      "", defs=NESTED + HELPERS.replace("record shelf\n  map[string, integer] :: stock\nend record\n", ""))
+        self.assertEqual(out, ["{a: [6], b: [5]}"])
+
+    def test_a_module_map_needs_the_mark(self):
+        mod = ("module reg\n  public map[string, integer[]] :: rows\n  public subroutine put()\n    @rows[\"a\"] = [1, 2]\n"
+               "    @rows[\"a\"][2] = 9\n  end subroutine\nend module\n")
+        out = run_bor(mod + "program t\n  use reg: rows, put\n  call put()\n  println(rows)\nend program\n")
+        self.assertEqual(out, ["{a: [1, 9]}"])
+
+    def test_a_function_cannot_change_a_module_element(self):
+        mod = ("module reg\n  public map[string, integer[]] :: rows\n  public function f() -> integer\n"
+               "    @rows[\"a\"][1] = 0\n    return 1\n  end function\nend module\n"
+               "program t\n  use reg: f\n  integer :: n\n  n = f()\nend program\n")
+        with self.assertRaises(LangError) as cm:
+            run_bor(mod)
+        self.assertIn("a function cannot change the module variable", str(cm.exception))
+
+    def test_prints_back_and_checks_clean(self):
+        src = ("program t\n  map[string, integer[]] :: m\n  m[\"a\"] = [1, 2]\n  m[\"a\"][2] = m[\"a\"][1] + 1\n"
+               "  println(m[\"a\"][1:2])\nend program\n")
+        again = to_source(parse(src))
+        self.assertIn('m["a"][2] = m["a"][1] + 1', again)
+        self.assertEqual(to_source(parse(again)), again)
+        self.assertEqual(check_errors(src), [])
+
+    def test_check_reports_an_undeclared_subscript(self):
+        src = "program t\n  map[string, integer[]] :: m\n  m[\"a\"] = [1]\n  println(m[\"a\"][nope])\nend program\n"
+        self.assertTrue(any("'nope' is not declared" in e[2] for e in check_errors(src)))
+
+
 if __name__ == "__main__":
     unittest.main()
