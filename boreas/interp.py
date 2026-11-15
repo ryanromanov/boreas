@@ -2564,8 +2564,8 @@ class Interp:
         return Array(shape, out)
 
     def exec_each(self, s, env):
-        """`do key, value in m` / `do x in s`. The loop walks a snapshot, so the body may add to or remove
-        from the collection without disturbing the loop."""
+        """`do key, value in m` / `do x in s` / `do x in a`. The loop walks a snapshot, so the body may add to or
+        remove from the collection (or change the array) without disturbing the loop."""
         c = self.eval(s.source, env)
         if isinstance(c, MapValue):
             want, shape = 2, "do key, value in m"
@@ -2573,13 +2573,17 @@ class Interp:
         elif isinstance(c, SetValue):
             want, shape = 1, "do x in s"
             rows = [(k,) for k in c.data]
+        elif isinstance(c, Array):
+            want, shape = 1, "do x in a"
+            rows = [(x,) for x in c.data]            # the elements in column-major order, as a snapshot
         else:
-            raise LangError(f"line {s.line}: 'do ... in' loops over a map or a set, got {type_of(c)}"
-                            " (for an array, use do i = 1, size(a))")
-        what = "map" if want == 2 else "set"
+            raise LangError(f"line {s.line}: 'do ... in' loops over a map, a set or an array, got {type_of(c)}")
+        what = {MapValue: "map", SetValue: "set", Array: "array"}[type(c)]
         if len(s.vars) != want:
-            hint = " (to loop over the keys alone, use a set or keys(m) with an index)" if want == 2 else ""
-            raise LangError(f"line {s.line}: a {what} loop takes {'two variables' if want == 2 else 'one variable'}"
+            hint = " (to loop over the keys alone, use a set or keys(m))" if want == 2 else ""
+            if what == "array":
+                hint = " (for the position as well, use do i = 1, size(a))"
+            raise LangError(f"line {s.line}: {article(what + ' loop')} takes {'two variables' if want == 2 else 'one variable'}"
                             f", like '{shape}'{hint}")
         refs = [self.resolve(Var(v), env, s.line) for v in s.vars]
         for row in rows:

@@ -72,6 +72,12 @@ program demo
   names = keys(count)
   println(names[1], size(names))
 
+  ! do x in array walks any array, so keys() and values() loop on their own.
+  do word in keys(count)
+    n = count[word]
+  end do
+  println(word, n)                      ! and 1
+
   ! A set remembers members. add and remove are subroutines, so they are called.
   do i = 1, size(words)
     call add(seen, words[i])

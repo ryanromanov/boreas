@@ -661,8 +661,10 @@ and a map's values are single values (numbers, strings, logicals). They start em
         println(name, years)
       end do
 
-- `keys(age)` and `values(age)` give arrays in the same order (`keys(seen)` gives the members), for when you
-  want the whole list at once, to sort it or to index it.
+- `do x in a` also walks an array's elements (column-major, like everything else), so `do name in keys(age)` and
+  `do v in values(age)` loop over just the keys or just the values. For the position as well, use
+  `do i = 1, size(a)`. `keys(age)` and `values(age)` give the arrays in the same order (`keys(seen)` gives the
+  members), for when you want the whole list at once, to sort it or to index it.
 - `println(age)` shows `{ann: 31}` and a set `{x, y}`. Counting words: `count[w] = (get(count, w) ?? 0) + 1`.
 - Assigning copies, like an array: after `b = a`, changing `b` leaves `a` alone. A declaration can start from a
   copy (`map[string, integer] :: b = a`). A map and a set cannot be compared or used in arithmetic yet.
