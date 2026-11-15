@@ -390,13 +390,13 @@ class UpdateTests(unittest.TestCase):
 end subroutine"""
 
     def test_update_in_select_bodies(self):
-        body = "integer :: r\ninteger :: t = 0\ncall bump(1, r, t)\nprintln(r, t)\ncall bump(2, r, t)\nprintln(r, t)"
+        body = "integer :: r\ninteger :: t = 0\ncall bump(1, @r, @t)\nprintln(r, t)\ncall bump(2, @r, @t)\nprintln(r, t)"
         self.assertEqual(run(body, self.SUB), ["10 0", "0 1"])
 
     def test_update_in_a_flowing_select_with_break(self):
         sub = ("subroutine f(integer :: k, inout integer :: t)\n select case fallthrough k\n case 1\n @t = t + 1\n"
                " case 2\n @t = t + 10\n break\n case 3\n @t = t + 100\n end select\nend subroutine")
-        body = "integer :: t = 0\ncall f(1, t)\nprintln(t)\ncall f(2, t)\nprintln(t)\ncall f(3, t)\nprintln(t)"
+        body = "integer :: t = 0\ncall f(1, @t)\nprintln(t)\ncall f(2, @t)\nprintln(t)\ncall f(3, @t)\nprintln(t)"
         self.assertEqual(run(body, sub), ["11", "21", "121"])
         bad = sub.replace("@t = t + 100", "t = t + 100")
         with self.assertRaisesRegex(LangError, "write '@t = ...'"):

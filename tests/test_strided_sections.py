@@ -66,13 +66,13 @@ class WriteTests(unittest.TestCase):
 
     def test_two_interleaved_sections_are_not_aliased(self):
         defs = "subroutine swap(inout integer[] :: x, inout integer[] :: y)\n  integer[5] :: t\n  t = x\n  @x = y\n  @y = t\nend subroutine\n"
-        out = run_bor(defs + "program t\n" + A + "  call swap(a[1:9:2], a[2:10:2])\n  println(a)\nend program\n")
+        out = run_bor(defs + "program t\n" + A + "  call swap(@a[1:9:2], @a[2:10:2])\n  println(a)\nend program\n")
         self.assertEqual(out, ["[2, 1, 4, 3, 6, 5, 8, 7, 10, 9]"])
 
     def test_overlapping_sections_are_still_aliased(self):
         defs = "subroutine swap(inout integer[] :: x, inout integer[] :: y)\n  integer[5] :: t\n  t = x\n  @x = y\n  @y = t\nend subroutine\n"
         with self.assertRaisesRegex(LangError, "must not alias"):
-            run_bor(defs + "program t\n" + A + "  call swap(a[1:9:2], a[1:5:1])\nend program\n")
+            run_bor(defs + "program t\n" + A + "  call swap(@a[1:9:2], @a[1:5:1])\nend program\n")
 
 
 class ErrorTests(unittest.TestCase):

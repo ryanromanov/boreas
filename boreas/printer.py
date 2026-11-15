@@ -60,6 +60,8 @@ def _expr(e):
         if len(e.items) == 1 and isinstance(e.items[0], Gen) and len(e.items[0].body) == 1:
             return "[" + generator(e.items[0]) + "]"            # shorthand: [value do i = 1, n]
         return "[" + ", ".join(f"({generator(x)})" if isinstance(x, Gen) else expr(x) for x in e.items) + "]"
+    if k is Marked:
+        return "@" + expr(e.expr)
     if k is CollLit:
         if e.kind == "map":
             return "{" + ", ".join(f"{expr(a)}: {expr(b)}" for a, b in zip(e.keys, e.values)) + "}"
@@ -178,8 +180,9 @@ def stmt(s, depth):
     if k is Stop:
         return [pad + "stop" + (" " + expr(s.code) if s.code is not None else "")]
     if k is Call:
-        who = expr(s.receiver) + "." if s.receiver is not None else ""
-        return [f"{pad}call {who}{s.name}(" + ", ".join(expr(a) for a in s.args) + ")"]
+        who = ("@" if s.receiver_mark else "") + expr(s.receiver) + "." if s.receiver is not None else ""
+        marks = s.marks or [False] * len(s.args)
+        return [f"{pad}call {who}{s.name}(" + ", ".join(("@" if m else "") + expr(a) for a, m in zip(s.args, marks)) + ")"]
     if k is Return:
         return [pad + "return" + (" " + expr(s.value) if s.value is not None else "")]
     if k is ReturnMany:

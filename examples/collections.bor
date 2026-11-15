@@ -21,7 +21,7 @@ function distinct(string[] :: words) -> set[string]
   set[string] :: s
   integer :: i
   do i = 1, size(words)
-    call add(s, words[i])
+    call add(@s, words[i])
   end do
   return s
 end function
@@ -80,10 +80,10 @@ program demo
 
   ! A set remembers members. add and remove are subroutines, so they are called.
   do i = 1, size(words)
-    call add(seen, words[i])
+    call add(@seen, words[i])
   end do
   println(size(seen), "different words")    ! 5 different words
-  call remove(seen, "the")
+  call remove(@seen, "the")
   println(has(seen, "the"), seen)           ! false {cat, saw, dog, and}
 
   ! Assigning copies: the two stay separate.
@@ -93,9 +93,9 @@ program demo
 
   ! Parameters, results and record fields.
   map[string, integer] :: tally
-  call bump(tally, "x")
-  call bump(tally, "x")
-  call bump(tally, "y")
+  call bump(@tally, "x")
+  call bump(@tally, "x")
+  call bump(@tally, "y")
   println(tally, total(tally))               ! {x: 2, y: 1} 3
   println(distinct(words))                   ! {the, cat, saw, dog, and}
 
@@ -108,14 +108,14 @@ program demo
 
   inventory :: shop
   shop.stock["pen"] = 3
-  call bump(shop.stock, "pen")
-  call add(shop.tags, "office")
+  call bump(@shop.stock, "pen")
+  call add(@shop.tags, "office")
   println(shop)                              ! inventory(owner=shop, stock={pen: 4}, tags={office})
 
   ! A map's value can be a set or an array. A missing outer key is an error, so store a set first.
   map[string, set[string]] :: groups
   groups["fruit"] = {"apple"}                 ! a literal builds the whole set in one go
-  call add(groups["fruit"], "pear")
+  call add(@groups["fruit"], "pear")
   println(groups, size(groups["fruit"]))      ! {fruit: {apple, pear}} 2
   do word in groups["fruit"]
     println(word)

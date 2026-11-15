@@ -113,7 +113,7 @@ program workarounds
 
   ! A missing outer key is an error: store a set first (a literal will do), then change it in place.
   groups["fruit"] = {"apple"}
-  call add(groups["fruit"], "pear")
+  call add(@groups["fruit"], "pear")
   println(groups)                            ! {fruit: {apple, pear}}
 
   ! An entry that is an array can be indexed in place: read it, change it, or pass an element on.

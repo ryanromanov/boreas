@@ -27,7 +27,7 @@ program demo
   segment :: s
 
 
-  call shift(b, 1.0, 1.0)
+  call shift(@b, 1.0, 1.0)
   println("a =", a, " b =", b)
 
   s.from = origin

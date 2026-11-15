@@ -74,7 +74,7 @@ program shapes
   ! A circle can still grow: ask for the circle, then change it and put it back.
   select type all[1] as c
     case circle
-      call c.grow(2.0)
+      call @c.grow(2.0)
       all[1] = c
     case default
   end select

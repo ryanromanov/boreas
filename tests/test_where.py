@@ -74,7 +74,7 @@ class ErrorTests(unittest.TestCase):
 
     def test_a_write_to_an_inout_parameter_needs_its_mark(self):
         sub = "subroutine clip(inout real[] :: a)\n  where a < 0.0 then\n    %sa = 0.0\n  end where\nend subroutine\n"
-        prog = "program t\n  real[3] :: v = [1.0, -1.0, 2.0]\n  call clip(v)\n  println(v)\nend program\n"
+        prog = "program t\n  real[3] :: v = [1.0, -1.0, 2.0]\n  call clip(@v)\n  println(v)\nend program\n"
         self.assertEqual(run_bor(sub % "@" + prog), ["[1.0, 0.0, 2.0]"])
         with self.assertRaises(LangError):
             run_bor(sub % "" + prog)

@@ -24,15 +24,15 @@ class EqualityTests(unittest.TestCase):
         self.assertEqual(out("  map[string, integer] :: a\n  map[string, integer] :: b\n  println(a == b)\n"), ["true"])
 
     def test_sets_ignore_order(self):
-        body = ('  set[string] :: s\n  set[string] :: u\n  call add(s, "p")\n  call add(s, "q")\n'
-                '  call add(u, "q")\n  call add(u, "p")\n  println(s == u)\n  call remove(u, "p")\n  println(s /= u)\n')
+        body = ('  set[string] :: s\n  set[string] :: u\n  call add(@s, "p")\n  call add(@s, "q")\n'
+                '  call add(@u, "q")\n  call add(@u, "p")\n  println(s == u)\n  call remove(@u, "p")\n  println(s /= u)\n')
         self.assertEqual(out(body), ["true", "true"])
 
     def test_array_and_set_values_compare_by_contents(self):
         body = ('  map[string, integer[]] :: l\n  map[string, integer[]] :: n\n  l["k"] = [1, 2]\n  n["k"] = [1, 2]\n'
                 '  println(l == n)\n  n["k"][2] = 5\n  println(l == n)\n'
                 '  map[string, set[string]] :: g\n  map[string, set[string]] :: h\n'
-                '  set[string] :: s\n  call add(s, "a")\n  g["k"] = s\n  h["k"] = s\n  println(g == h)\n')
+                '  set[string] :: s\n  call add(@s, "a")\n  g["k"] = s\n  h["k"] = s\n  println(g == h)\n')
         self.assertEqual(out(body), ["true", "false", "true"])
 
     def test_it_works_in_a_condition_and_on_parameters(self):

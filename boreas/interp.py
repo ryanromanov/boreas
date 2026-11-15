@@ -8,6 +8,8 @@ import re
 import sys
 from itertools import product
 from .lexer import LangError
+from .effects import mark_problem
+from .printer import expr as expr_text
 from .parser import *
 from .kinds import *
 from . import kinds
@@ -2129,6 +2131,8 @@ class Interp:
         if k is ArrayLit:
             items = self.literal_values(e.items, env)
             return Array((len(items),), items)
+        if k is Marked:
+            raise LangError(f"line {e.line}: '@' marks an argument of a call statement, as in call swap(@x, @y)")
         if k is CollLit:
             return self.collection_literal(e, env)
         if k is FieldAccess:
@@ -2857,6 +2861,13 @@ class Interp:
         if len(s.args) != 2:
             raise LangError(f"line {s.line}: {s.name} expects 2 arguments: call {s.name}({what.split(' ')[-1]}, "
                             f"{'member' if s.name == 'add' else 'key'})")
+        marks = s.marks or [False] * len(s.args)
+        if not marks[0]:
+            raise LangError(f"line {s.line}: {s.name} changes its first argument, so mark it: "
+                            f"call {s.name}(@{expr_text(s.args[0])}, ...)")
+        if marks[1]:
+            raise LangError(f"line {s.line}: '@' marks what the call changes; the {'member' if s.name == 'add' else 'key'} "
+                            f"is not changed: remove the '@'")
         first = s.args[0]
         entry = isinstance(first, Apply) and first.bracket and first.name in env and isinstance(env[first.name][TYPE], MapType)
         if not (entry or isinstance(first, FieldAccess) or (isinstance(first, Var) and first.name in env)):
@@ -2903,6 +2914,9 @@ class Interp:
                 raise LangError(f"line {s.line}: unknown subroutine '{s.name}'")
         if not f.is_sub:
             raise LangError(f"line {s.line}: '{s.name}' is a function; use it in an expression")
+        problem = mark_problem(f, s)
+        if problem:
+            raise LangError(f"line {s.line}: {problem}")
         self.pad_optional(f, args, s.line)
 
         outs, values = [], []   # outs: (param index, reference)

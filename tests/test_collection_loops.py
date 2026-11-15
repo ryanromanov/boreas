@@ -27,7 +27,7 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(out, ["bob 40", "ann 31"])
 
     def test_set_in_insertion_order(self):
-        out = show('  call add(seen, "y")\n  call add(seen, "x")\n  do name in seen\n    println(name)\n  end do')
+        out = show('  call add(@seen, "y")\n  call add(@seen, "x")\n  do name in seen\n    println(name)\n  end do')
         self.assertEqual(out, ["y", "x"])
 
     def test_empty_collection_runs_zero_times(self):
@@ -40,8 +40,8 @@ class LoopTests(unittest.TestCase):
 
     def test_body_can_change_the_collection(self):
         # the loop walks a snapshot, so these additions and removals do not disturb it
-        out = show('  call add(seen, "x")\n  call add(seen, "y")\n  do name in seen\n    call add(seen, name + "!")\n'
-                   '    call remove(seen, name)\n  end do\n  println(size(seen))')
+        out = show('  call add(@seen, "x")\n  call add(@seen, "y")\n  do name in seen\n    call add(@seen, name + "!")\n'
+                   '    call remove(@seen, name)\n  end do\n  println(size(seen))')
         self.assertEqual(out, ["2"])
 
     def test_body_can_update_the_map(self):
@@ -54,7 +54,7 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(out, ["b"])
 
     def test_labels(self):
-        out = show('  age["a"] = 1\n  age["b"] = 2\n  call add(seen, "x")\n  call add(seen, "y")\n'
+        out = show('  age["a"] = 1\n  age["b"] = 2\n  call add(@seen, "x")\n  call add(@seen, "y")\n'
                    '  outer: do name, n in age\n    do name in seen\n      println(n, name)\n      exit outer\n    end do\n  end do outer')
         self.assertEqual(out, ["1 x"])
 

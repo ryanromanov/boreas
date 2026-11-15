@@ -32,6 +32,6 @@ program demo
   a[2, :] = 0.0                           ! assign a whole row
   println("after zeroing row 2:", a)
 
-  call normalize_rows(sq)
+  call normalize_rows(@sq)
   println("normalized:", sq)
 end program

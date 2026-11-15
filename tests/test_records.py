@@ -230,13 +230,13 @@ class FieldDefaultTests(unittest.TestCase):
     def test_out_record_starts_with_defaults_and_needs_only_the_rest(self):
         defs = "record r\n  integer :: a = 1\n  integer :: b\nend record\n"
         sub = "subroutine fill(out r :: x)\n  @x.b = x.a + 1\nend subroutine"
-        self.assertEqual(run("r :: v\ncall fill(v)\nprintln(v)", sub, defs), ["r(a=1, b=2)"])
+        self.assertEqual(run("r :: v\ncall fill(@v)\nprintln(v)", sub, defs), ["r(a=1, b=2)"])
 
     def test_out_record_whose_fields_all_have_defaults_may_be_left_alone(self):
         # the caller's own values are replaced by the defaults, not kept
         defs = "record r\n  integer :: a = 1\n  integer :: b = 2\nend record\n"
         sub = "subroutine noop(out r :: x)\nend subroutine"
-        self.assertEqual(run("r :: v\nv.a = 9\ncall noop(v)\nprintln(v)", sub, defs), ["r(a=1, b=2)"])
+        self.assertEqual(run("r :: v\nv.a = 9\ncall noop(@v)\nprintln(v)", sub, defs), ["r(a=1, b=2)"])
 
     def test_default_must_be_a_constant_expression(self):
         fails("println(1)", "must be a constant expression",
@@ -305,17 +305,17 @@ class ProcedureTests(unittest.TestCase):
     MAKE = "subroutine make(out point :: p)\n  @p.x = 1.0\n  @p.y = 2.0\nend subroutine"
 
     def test_inout_record(self):
-        self.assertEqual(run("point :: p = point(1.0, 2.0)\ncall move(p, 2.0)\nprintln(p)", self.MOVE),
+        self.assertEqual(run("point :: p = point(1.0, 2.0)\ncall move(@p, 2.0)\nprintln(p)", self.MOVE),
                          ["point(x=3.0, y=2.0)"])
 
     def test_out_record_must_be_fully_assigned(self):
-        self.assertEqual(run("point :: p\ncall make(p)\nprintln(p)", self.MAKE), ["point(x=1.0, y=2.0)"])
+        self.assertEqual(run("point :: p\ncall make(@p)\nprintln(p)", self.MAKE), ["point(x=1.0, y=2.0)"])
         half = "subroutine make(out point :: p)\n  @p.x = 1.0\nend subroutine"
-        fails("point :: p\ncall make(p)", "not fully assigned in make: 'p.y' has no value", half)
+        fails("point :: p\ncall make(@p)", "not fully assigned in make: 'p.y' has no value", half)
 
     def test_out_record_starts_with_no_values(self):
         peek = "subroutine peek(out point :: p)\n  @p.y = p.x\nend subroutine"
-        fails("point :: p = point(1.0, 2.0)\ncall peek(p)", "field 'p.x' is used before it is assigned", peek)
+        fails("point :: p = point(1.0, 2.0)\ncall peek(@p)", "field 'p.x' is used before it is assigned", peek)
 
     def test_in_record_is_copied_and_read_only(self):
         bad = "subroutine bad(point :: p)\n  p.x = 1.0\nend subroutine"
@@ -332,7 +332,7 @@ class ProcedureTests(unittest.TestCase):
         defs = POINT + "record line\n  point[2] :: ends\nend record\n"
         sub = "subroutine f(inout line :: l)\n  @l.ends[2].y = 9.0\nend subroutine"
         self.assertEqual(run("line :: l\nl.ends[1] = point(0.0, 0.0)\nl.ends[2] = point(0.0, 0.0)\n"
-                             "call f(l)\nprintln(l.ends[2].y)", sub, defs), ["9.0"])
+                             "call f(@l)\nprintln(l.ends[2].y)", sub, defs), ["9.0"])
 
     def test_function_returns_a_copy(self):
         f = "function mk(real :: a) -> point\n  point :: r = point(a, a)\n  return r\nend function"
@@ -355,18 +355,18 @@ class ProcedureTests(unittest.TestCase):
     def test_distinct_fields_may_be_passed_together(self):
         swap = ("subroutine swap(inout real :: a, inout real :: b)\n  real :: t\n  t = a\n"
                 "  @a = b\n  @b = t\nend subroutine")
-        self.assertEqual(run("point :: p = point(1.0, 2.0)\ncall swap(p.x, p.y)\nprintln(p)", swap),
+        self.assertEqual(run("point :: p = point(1.0, 2.0)\ncall swap(@p.x, @p.y)\nprintln(p)", swap),
                          ["point(x=2.0, y=1.0)"])
 
     def test_aliasing_is_rejected(self):
         swap = "subroutine swap(inout real :: a, inout real :: b)\nend subroutine"
         both = "subroutine both(inout point :: a, inout real :: b)\nend subroutine"
-        fails("point :: p = point(1.0, 2.0)\ncall swap(p.x, p.x)", "alias", swap)
-        fails("point :: p = point(1.0, 2.0)\ncall both(p, p.x)", "alias", both)
+        fails("point :: p = point(1.0, 2.0)\ncall swap(@p.x, @p.x)", "alias", swap)
+        fails("point :: p = point(1.0, 2.0)\ncall both(@p, @p.x)", "alias", both)
 
     def test_distinct_array_elements_do_not_alias(self):
         swap = "subroutine swap(inout real :: a, inout real :: b)\nend subroutine"
-        body = "point[2] :: a\na[1] = point(1.0, 1.0)\na[2] = point(2.0, 2.0)\ncall swap(a[1].x, a[2].x)"
+        body = "point[2] :: a\na[1] = point(1.0, 1.0)\na[2] = point(2.0, 2.0)\ncall swap(@a[1].x, @a[2].x)"
         run(body, swap)
 
     def test_const_record(self):
@@ -375,7 +375,7 @@ class ProcedureTests(unittest.TestCase):
         fails("const point :: o = point(0.0, 0.0)\no.x = 1.0", "'o.x' is part of a constant")
         fails("const point :: o = point(0.0, 0.0)\no = point(1.0, 1.0)", "'o' is a constant")
         move = "subroutine move(inout point :: p)\n  @p.x = 1.0\nend subroutine"
-        fails("const point :: o = point(0.0, 0.0)\ncall move(o)", "part of a constant|is a constant", move)
+        fails("const point :: o = point(0.0, 0.0)\ncall move(@o)", "part of a constant|is a constant", move)
 
 
 class ModuleTests(unittest.TestCase):

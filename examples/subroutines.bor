@@ -42,19 +42,19 @@ program demo
   real :: c
   real[3] :: v = [1.0, 2.0, 3.0]
 
-  call swap(x, y)
+  call swap(@x, @y)
   println("after swap:", x, y)
 
   (a, c) = circle(3.0)
   println("circle r=3:", a, c)
 
   integer[5] :: table
-  call squares(table)
+  call squares(@table)
   println("squares:", table)
 
-  call scale(10.0, v)
+  call scale(10.0, @v)
   println("scaled:", v)
 
-  call swap_real(v[1], v[3])          ! array elements work too
+  call swap_real(@v[1], @v[3])          ! array elements work too
   println("swapped ends:", v)
 end program

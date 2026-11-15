@@ -22,6 +22,10 @@ class Null: pass          # the absent value of an optional (`T?`) variable
 @dataclass
 class ArrayLit: items: list
 @dataclass
+class Marked:
+    """An argument written `@x`. Only a call statement may have these; the parser takes the mark off."""
+    expr: object; line: int = 0; col: int = 0
+@dataclass
 class CollLit:
     """A map or set literal: `{"a": 1}`, `{"a", "b"}` or `{}`. `kind` is "map", "set" or "empty"; `values`
     runs alongside `keys` for a map."""
@@ -157,6 +161,8 @@ class Call:
     name: str; args: list; line: int
     col: int = field(default=0, compare=False, repr=False)
     receiver: object = None    # `call x.grow(2.0)`: the record `x`, which is passed first, as `self`
+    marks: object = None       # which arguments carry `@` (parallel to args); None: none do
+    receiver_mark: bool = False  # `call @x.grow(2.0)`: the receiver is changed
 @dataclass
 class Allocate: name: str; dims: list; line: int; update: bool = False   # allocate a[n, m]: one extent per dimension
 @dataclass
@@ -1157,13 +1163,16 @@ class Parser:
             code = None if self.tok.kind == "nl" else self.expr()
             self.newline()
             return Stop(code, t.line)
-        if self.at("call") and self.toks[self.i + 2].text in (".", "["):      # call x.grow(2.0): a record's function
-            self.next()
+        if self.at("call") and (self.toks[self.i + 2].text in (".", "[")
+                                or (self.toks[self.i + 1].text == "@" and self.toks[self.i + 3].text in (".", "["))):
+            self.next()                                    # call x.grow(2.0): a record's function
+            mark = bool(self.accept("@"))                  # call @x.grow(2.0): x is changed
             target = self.primary()
             if not (isinstance(target, FieldAccess) and not target.bracket and target.args is not None):
                 self.error("expected a call: call record.function(...)")
+            args, marks = self.split_marks(target.args)
             self.newline()
-            return Call(target.field, target.args, t.line, t.col, target.base)
+            return Call(target.field, args, t.line, t.col, target.base, marks, mark)
         if self.at("call"):
             self.next()
             col = self.tok.col
@@ -1175,10 +1184,9 @@ class Parser:
                     while self.accept(","):
                         args.append(self.arg())
                 self.expect(")")
-            if any(isinstance(a, NamedArg) for a in args):
-                self.error("named arguments are only for building records")
+            args, marks = self.split_marks(args)
             self.newline()
-            return Call(name, args, t.line, col)
+            return Call(name, args, t.line, col, None, marks)
         if self.at("return"):
             self.next()
             val = None if self.tok.kind == "nl" else self.expr()
@@ -1823,7 +1831,16 @@ class Parser:
             self.error("positional arguments must come before named arguments")
         return args
 
+    def split_marks(self, args):
+        """A call statement's arguments with the `@` marks taken off: (arguments, which ones had one)."""
+        if any(isinstance(a, NamedArg) for a in args):
+            self.error("named arguments are only for building records")
+        return [a.expr if isinstance(a, Marked) else a for a in args], [isinstance(a, Marked) for a in args]
+
     def arg(self, close=")"):
+        if self.at("@"):                            # call swap(@x, @y): the argument is changed by the call
+            at = self.next()
+            return Marked(self.arg(close), at.line, at.col)
         if self.tok.kind == "ident" and self.toks[self.i + 1].text == "=" and self.toks[self.i + 1].kind == "op":
             name = self.next().text
             self.next()

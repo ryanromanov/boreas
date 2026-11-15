@@ -37,20 +37,20 @@ class ConstTests(unittest.TestCase):
         self.assertEqual(out, ["{a: 1, b: 2} 1 2 true 3 true", "a 1", "b 2"])
 
     def test_a_copy_of_one_can_be_changed(self):
-        self.assertEqual(run('  const set[string] :: s = {"a"}\n  set[string] :: t = s\n  call add(t, "b")\n  println(s, t)\n'),
+        self.assertEqual(run('  const set[string] :: s = {"a"}\n  set[string] :: t = s\n  call add(@t, "b")\n  println(s, t)\n'),
                          ["{a} {a, b}"])
 
     def test_it_can_start_from_another_collection(self):
-        self.assertEqual(run('  set[string] :: s = {"a"}\n  const set[string] :: t = s\n  call add(s, "b")\n  println(s, t)\n'),
+        self.assertEqual(run('  set[string] :: s = {"a"}\n  const set[string] :: t = s\n  call add(@s, "b")\n  println(s, t)\n'),
                          ["{a, b} {a}"])
 
     def test_it_cannot_be_changed(self):
         base = '  const map[string, integer] :: m = {"a": 1}\n  const set[string] :: s = {"a"}\n'
         fails(self, base + '  m["a"] = 2\n', "'m' is a constant and cannot be assigned")
         fails(self, base + '  m = {}\n', "'m' is a constant and cannot be assigned")
-        fails(self, base + '  call add(s, "b")\n', "'s' is a constant and cannot be changed")
-        fails(self, base + '  call remove(s, "a")\n', "'s' is a constant and cannot be changed")
-        fails(self, base + '  call grow(m)\n', "'m' is a constant and cannot be passed as inout")
+        fails(self, base + '  call add(@s, "b")\n', "'s' is a constant and cannot be changed")
+        fails(self, base + '  call remove(@s, "a")\n', "'s' is a constant and cannot be changed")
+        fails(self, base + '  call grow(@m)\n', "'m' is a constant and cannot be passed as inout")
 
     def test_it_needs_a_value_and_cannot_be_allocatable(self):
         fails(self, '  const map[string, integer] :: m\n', "constant 'm' needs a value")
@@ -61,7 +61,7 @@ class ConstTests(unittest.TestCase):
                '  public const set[string] :: names = {"x", "y"}\nend module\n')
         body = '  use cfg: limits, names\n  println(limits, names, limits["b"])\n'
         self.assertEqual(run(body, mod), ["{a: 1, b: 2} {x, y} 2"])
-        fails(self, '  use cfg: limits\n  call grow(limits)\n', "'limits' is a constant", mod)
+        fails(self, '  use cfg: limits\n  call grow(@limits)\n', "'limits' is a constant", mod)
 
 
 if __name__ == "__main__":

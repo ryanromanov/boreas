@@ -514,10 +514,10 @@ A record can hold the functions that work on it. The first parameter is `self`, 
 
     circle :: c = circle(r = 2.0)
     println(c.area())
-    call c.grow(2.0)               ! c.r is now 4.0
+    call @c.grow(2.0)              ! c.r is now 4.0
 
 A function in a record is an ordinary function otherwise: the same parameter modes, `@` rules and `const`
-checks apply (`call c.grow(2.0)` on a `const` record is an error). Two records can both have an `area`. A function
+checks apply (`call @c.grow(2.0)` on a `const` record is an error). Two records can both have an `area`. A function
 and a field of one record cannot share a name, and a function can only be declared inside its record.
 
 An **interface** lists the functions a caller needs, with `self` standing for the value passed. A variable, array
@@ -645,9 +645,9 @@ and a map's values are single values (numbers, strings, logicals). They start em
     println(age["ann"])                ! 31; a key that is not there is an error
     println(get(age, "bob") ?? 0)      ! get gives integer? (null when missing), so ?? supplies a default
     println(has(age, "ann"), size(age))
-    call remove(age, "ann")            ! removing a key that is not there is an error: test with has first
+    call remove(@age, "ann")           ! removing a key that is not there is an error: test with has first
 
-    call add(seen, "x")                ! adding a member that is already there does nothing
+    call add(@seen, "x")               ! adding a member that is already there does nothing
     println(has(seen, "x"), size(seen))
 
 - Loop with `do key, value in age` (a set takes one variable: `do word in seen`). The variables are declared
@@ -676,19 +676,19 @@ and a map's values are single values (numbers, strings, logicals). They start em
   (`groups["fruit"] = {"apple", "pear"}`, or nested, `{"fruit": {"apple"}, "none": {}}`) and a comparison
   (`age == {}`). A key or member listed twice is an error. A literal on its own, like `println({"a": 1})`, shows
   as written. A record field cannot have one as a default (it starts empty).
-- `add` and `remove` are subroutines built in, so they are called with `call`, like `call swap(x, y)`. `map` and
+- `add` and `remove` are subroutines built in, so they are called with `call`, and mark the collection they change, like `call swap(@x, @y)`. `map` and
   `set` are not reserved: they are types only before `[` and a type name, so variables called `map` still work.
 - A map or set can be a parameter, a function result and a record field, as well as a local variable. A
   parameter is read-only by default (`in`) and is not copied; `inout` changes the caller's map (`@m[k] = v`, or
-  `call add(m, k)`), and an `out` one starts empty. A result is copied into the variable it is assigned to. A
-  record field starts empty and is used like a variable (`b.stock["pen"] = 3`, `call add(b.tags, "x")`);
+  `call add(@m, k)`), and an `out` one starts empty. A result is copied into the variable it is assigned to. A
+  record field starts empty and is used like a variable (`b.stock["pen"] = 3`, `call add(@b.tags, "x")`);
   copying a record copies its maps and sets too. They also work in a callback's signature
   (`function(map[string, integer]) -> integer :: f`).
-- One entry of a map can be passed to an `inout` or `out` parameter: `call bump(count[w])` changes that entry
+- One entry of a map can be passed to an `inout` or `out` parameter: `call bump(@count[w])` changes that entry
   (`inout` needs the key to exist; `out` creates it). Two entries with different keys are fine in one call; the
   same entry twice is refused as aliasing.
 - A module can hold a map or a set as a module variable (`public map[string, integer] :: hits`). It starts empty,
-  and the usual module-variable rules apply: a subroutine changes it with `@hits[k] = v` or `call add(seen, x)`,
+  and the usual module-variable rules apply: a subroutine changes it with `@hits[k] = v` or `call add(@seen, x)`,
   a function may only read it, and other code imports it with `use`.
 - A map's value can also be a set or an array: `map[string, set[string]]` (a graph, or words grouped by letter)
   or `map[string, integer[]]` (`integer[,]` for a matrix). A missing outer key is an error, as always, so
@@ -696,16 +696,16 @@ and a map's values are single values (numbers, strings, logicals). They start em
 
       map[string, set[string]] :: groups
       groups["fruit"] = {"apple"}            ! the map keeps its own copy (here, built from a literal)
-      call add(groups["fruit"], "pear")      ! changes the stored set
+      call add(@groups["fruit"], "pear")      ! changes the stored set
       println(size(groups["fruit"]), has(groups["fruit"], "apple"))
       do w in groups["fruit"]
         println(w)
       end do
 
   `groups["fruit"]` can be read, measured, searched and looped over, and passed to an `inout` or `out`
-  parameter (`call double(lists["a"])`). An entry that is an array can be indexed in place with a second
+  parameter (`call double(@lists["a"])`). An entry that is an array can be indexed in place with a second
   subscript: `lists["a"][2] = 99`, `x = lists["a"][1]`, `lists["a"][1:2]`, `lists["m"][i, j]` for a matrix,
-  and `call bump(lists["a"][2])`. This is the only place a second subscript is allowed (there are no arrays
+  and `call bump(@lists["a"][2])`. This is the only place a second subscript is allowed (there are no arrays
   of arrays, so `a[1][2]` on an ordinary array is an error: write `a[1, 2]`). Storing and reading a whole entry
   always copy, so the map never shares a set or array with a variable. `values(m)` is refused
   for these maps (it would be an array of sets); loop with `do k in keys(m)`. A map cannot hold maps or
@@ -736,12 +736,17 @@ A subroutine changes the caller's variables through `out` / `inout` parameters:
       @b = t
     end subroutine
 
-    call swap(x, y)
+    call swap(@x, @y)
 
-Every write to an `out` / `inout` parameter is marked with `@` in front of the variable: `@a = b` changes
-the caller's `a`, while `t = a` only changes a local. A reader can see which assignments reach outside the
-subroutine, and a module variable's writes carry the same mark. Using `@` on anything else, or leaving it off
-for such a parameter, is an error. (The old keyword `update` is an error that points to `@`.)
+`@` marks what changes, in both places. Every write to an `out` / `inout` parameter is marked with `@` in
+front of the variable: `@a = b` changes the caller's `a`, while `t = a` only changes a local. And the call
+marks the arguments that get changed: `call swap(@x, @y)` says that `x` and `y` are updated, so a reader of
+the call does not have to open `swap` to find out. An argument for an `out` / `inout` parameter must carry
+`@`, and no other argument may; a module variable's writes carry the same mark. Using `@` on anything else,
+or leaving it off, is an error (`boreas check` finds these without running). `call` stays on every call
+statement: a subroutine can also print, change a module variable or stop the program, none of which shows in
+its arguments. (The old keyword `update` is an error that points to `@`.) For a record's function the record
+is the first argument, so it is marked when the function changes it: `call @c.grow(2.0)`.
 Parameters default to `in` and cannot be assigned. Functions only take
 `in` parameters. An output variable may not be passed twice in one call, and an
 `out` parameter must be assigned before the subroutine returns.
@@ -789,7 +794,7 @@ parameter names are optional documentation:
     end function
 
     subroutine run_all(subroutine(string, inout integer) :: report, inout integer :: n)
-      call report("done", n)
+      call report("done", @n)
     end subroutine
 
     function square(real :: x) -> real
@@ -963,8 +968,8 @@ report on stderr. Translations that change meaning are flagged, never silent:
   become the generic function. Intrinsics Boreas lacks (Bessel functions, complex numbers, ...) stay TODOs.
 - A function that changes its arguments (`integer function f(n)` with `intent(inout) :: n`) becomes a
   subroutine whose last parameter is the result (`out`), because Boreas functions only take `in` arguments.
-  Its calls move in front of their statement: `r = 10 * f(k) + 1` becomes `call f(k, f_value)` then
-  `r = 10 * f_value + 1`, and a plain `r = f(k)` becomes `call f(k, r)`. Calls that Fortran evaluates only
+  Its calls move in front of their statement: `r = 10 * f(k) + 1` becomes `call f(k, @f_value)` then
+  `r = 10 * f_value + 1`, and a plain `r = f(k)` becomes `call f(k, @r)`. Calls that Fortran evaluates only
   conditionally (after `.and.`/`.or.`, in an `else if` or `do while` condition) are TODOs.
 - `data a, b /1, 2/, c /3*0/` becomes initialisers on the declarations (arrays fill in column order, `n*value` repeats
   a value; a 2-D array uses `reshape`). Elements, sections and implied-do loops in a `data` list are TODOs.

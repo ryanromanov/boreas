@@ -41,7 +41,7 @@ class SelectTypeTests(unittest.TestCase):
 
     def test_p_is_a_copy(self):
         body = ("  figure :: f = circle(r = 2.0)\n  select type f as p\n    case circle\n      p.r = 9.0\n"
-                "      call p.grow(2.0)\n      println(p.r)\n    case default\n  end select\n  println(f.area())")
+                "      call @p.grow(2.0)\n      println(p.r)\n    case default\n  end select\n  println(f.area())")
         self.assertEqual(run(body), ["18.0", "12.0"])
 
     def test_write_the_copy_back_to_change_the_original(self):

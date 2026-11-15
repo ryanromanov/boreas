@@ -61,7 +61,7 @@ program demo
   println(lo, hi)                    ! 2.0 5.0
 
   integer :: x
-  call report(23, x)                 ! left over 3
+  call report(23, @x)                 ! left over 3
   println(x)                         ! 4
 
   println(newton(parabola, 1.0))     ! 1.414213562373095, the square root of 2

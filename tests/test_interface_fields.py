@@ -46,7 +46,7 @@ class InterfaceFieldTests(unittest.TestCase):
             run("  scene :: sc\n  sc.items[1] = circle()\n  println(sc.items[1].r)")
         self.assertIn("not available through figure", str(cm.exception))
         with self.assertRaises(LangError) as cm:
-            run("  scene :: sc\n  sc.highlight = circle()\n  call sc.highlight.grow(2.0)")
+            run("  scene :: sc\n  sc.highlight = circle()\n  call @sc.highlight.grow(2.0)")
         self.assertIn("not part of figure", str(cm.exception))
 
     def test_copying_a_record_copies_the_values_in_it(self):
@@ -97,7 +97,7 @@ class InterfaceFieldTests(unittest.TestCase):
 
     def test_an_out_record_may_leave_an_interface_field_unassigned(self):
         out = run("""  scene :: sc
-  call fill(sc)
+  call fill(@sc)
   println(sc.count)""", SCENE + "\nsubroutine fill(out scene :: s)\n  @s.count = 4\nend subroutine\n")
         self.assertEqual(out, ["4"])
 

@@ -60,7 +60,7 @@ end subroutine
         out = run_bor(funcs + """program t
   real[2, 2] :: a = reshape([1.0, 2.0, 3.0, 4.0], [2, 2])
   integer[2] :: z = [5, 6]
-  call zero(z)
+  call zero(@z)
   println(trace(a), total(a[:, 1]), z)
 end program""")
         self.assertEqual(out, ["5.0 3.0 [0, 0]"])

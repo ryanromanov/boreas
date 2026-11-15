@@ -51,7 +51,7 @@ class MarkTests(unittest.TestCase):
   println("rest", rest)
 end subroutine
 """
-        self.assertEqual(run("integer :: x\ncall report(23, x)\nprintln(x)", defs), ["rest 3", "4"])
+        self.assertEqual(run("integer :: x\ncall report(23, @x)\nprintln(x)", defs), ["rest 3", "4"])
 
     def test_a_missing_mark_is_an_error(self):
         defs = DIVMOD + "subroutine report(integer :: n, out integer :: quotient)\n  integer :: rest\n" \
