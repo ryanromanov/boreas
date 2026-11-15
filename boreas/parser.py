@@ -162,10 +162,20 @@ class MapType:
     """The type of a map: `map[string, integer]`. Not a string, so nothing that reads type names by their
     shape (a trailing `]` means an array) can mistake it for one."""
     key: str
-    value: str
+    value: object        # a type name, a SetType, or an ArrayOf
 
     def __str__(self):
         return f"map[{self.key}, {self.value}]"
+
+
+@dataclass(frozen=True)
+class ArrayOf:
+    """An array type used as a map's value: `integer[]` (rank 1) or `real[,]` (rank 2). Any length."""
+    elem: str
+    rank: int = 1
+
+    def __str__(self):
+        return f"{self.elem}[{',' * (self.rank - 1)}]"
 
 
 @dataclass(frozen=True)
@@ -336,7 +346,7 @@ def check_writes(body, params, shared=None, is_sub=True):
                     write(s, update, name, target_text(target) if isinstance(target, FieldAccess) else name,
                           reaches(name, update), name in shared and not shared[name] and name not in params)
         elif isinstance(s, Call) and s.name in ("add", "remove") and s.receiver is None and s.args \
-                and isinstance(s.args[0], (Var, FieldAccess)):
+                and isinstance(s.args[0], (Var, FieldAccess, Apply)):
             name = root_name(s.args[0])           # `call add(seen, x)` changes `seen` like an assignment would
             if name in shared and name not in params and not is_sub:
                 raise LangError(f"line {s.line}: a function cannot change the module variable '{name}'; "
@@ -977,12 +987,17 @@ class Parser:
         """`map[` or `set[` followed by a type name: a collection type. (Contextual: `map[3] :: x` is still an
         array of a record called map, and a variable called `map` or `set` is untouched.)"""
         t = self.tok
-        return (t.kind == "ident" and t.text in ("map", "set") and self.toks[self.i + 1].text == "["
-                and self.toks[self.i + 2].kind == "ident" and self.toks[self.i + 2].text in TYPES)
+        if not (t.kind == "ident" and t.text in ("map", "set") and self.toks[self.i + 1].text == "["
+                and self.toks[self.i + 2].kind == "ident"):
+            return False
+        inner = self.toks[self.i + 2].text
+        return inner in TYPES or (inner in ("map", "set") and self.toks[self.i + 3].text == "["
+                                  and self.toks[self.i + 4].kind == "ident" and self.toks[self.i + 4].text in TYPES)
 
     def collection_type(self):
-        """`map[string, integer]` or `set[string]`. Keys are integers or strings; a map's values are single
-        values (not arrays, optionals or other collections)."""
+        """`map[string, integer]` or `set[string]`. Keys are integers or strings. A map's value is a single
+        value, a set (`map[string, set[string]]`) or an array (`map[string, integer[]]`); not an optional or a
+        map."""
         word = self.next().text
         self.expect("[")
         first = self.simple_type(f"a {word}'s " + ("key" if word == "map" else "member"), keys=True)
@@ -990,13 +1005,29 @@ class Parser:
             self.expect("]")
             return SetType(first)
         self.expect(",")
-        value = self.simple_type("a map's value", keys=False)
+        if self.tok.text == "set" and self.collection_ahead():
+            value = self.collection_type()
+        else:
+            value = self.simple_type("a map's value", keys=False)
+            if self.at("["):                                   # integer[] or real[,]
+                self.next()
+                rank = 1
+                while self.accept(","):
+                    rank += 1
+                if not self.at("]"):
+                    self.error("a map's array value is written without sizes, as in 'integer[]' or 'real[,]'")
+                self.next()
+                value = ArrayOf(value, rank)
+        if self.at("?"):
+            self.error("a map's value cannot be optional: get(m, key) already gives null for a missing key")
         self.expect("]")
         return MapType(first, value)
 
     def simple_type(self, what, keys):
         t = self.tok
         if t.kind == "ident" and t.text in ("map", "set"):
+            if not keys and t.text == "map":
+                self.error("a map's value cannot be another map; use a set or an array as the value")
             self.error(f"{what} must be a single value: arrays, optional values and other collections "
                        f"are not supported here")
         if t.kind != "ident" or t.text not in TYPES or t.text == "file":
@@ -1005,7 +1036,7 @@ class Parser:
         self.next()
         if keys and name not in ("integer", "string"):
             self.error(f"{what} must be integer or string, not {name}")
-        if self.at("[", "?"):
+        if keys and self.at("[", "?"):
             self.error(f"{what} must be a single value: arrays, optional values and other collections "
                        f"are not supported here")
         return name

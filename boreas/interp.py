@@ -268,6 +268,8 @@ class MapValue:
         self.keytype, self.valtype, self.data = keytype, valtype, {} if data is None else data
 
     def copy(self):
+        if isinstance(self.valtype, (SetType, ArrayOf)):          # the values are collections or arrays: copy them too
+            return MapValue(self.keytype, self.valtype, {k: x.copy() for k, x in self.data.items()})
         return MapValue(self.keytype, self.valtype, dict(self.data))
 
 
@@ -299,6 +301,27 @@ def collection_check(typ, v, what):
             f"a set[{v.elemtype}]" if isinstance(v, SetValue) else f"a {type_of(v)}"
         raise LangError(f"{what}: expected a {typ}, got {got}")
     return v
+
+
+def store_value(typ, v, what):
+    """What a map keeps when `v` is stored as a value of type `typ`: a single value as `coerce` makes it, or a
+    private copy of a set or an array (the map owns its values, so changing the original later leaves it alone)."""
+    if isinstance(typ, SetType):
+        return collection_check(typ, v, what).copy()
+    if isinstance(typ, ArrayOf):
+        if not isinstance(v, Array):
+            raise LangError(f"{what}: expected {article_for(typ)}, got {article_for(type_of(v))}")
+        if v.rank != typ.rank:
+            raise LangError(f"{what}: expected {article_for(typ)}, got {describe_array_type(f'{type_of(v.data[0]) if v.data else typ.elem}[{chr(44) * (v.rank - 1)}]')}")
+        return Array(v.shape, [coerce(typ.elem, x, what) for x in v.data])
+    return coerce(typ, v, what)
+
+
+def article_for(typ):
+    text = str(typ)
+    if isinstance(typ, ArrayOf):
+        return describe_array_type(text)
+    return ("an " if text[0] in "aeiou" else "a ") + text
 
 
 def check_key(kind, key, who, noun="keys"):
@@ -387,6 +410,9 @@ def _keys(c):
 def _values(m):
     """The values of a map as an array, in the same order as keys(m)."""
     _need_collection("values", m, "map")
+    if isinstance(m.valtype, (SetType, ArrayOf)):
+        raise LangError(f"values() gives an array of single values, but this map's values are {article_for(m.valtype)}s"
+                        f"; loop with do k in keys(m), or read one entry at a time")
     return Array((len(m.data),), list(m.data.values()))
 
 
@@ -1948,7 +1974,7 @@ class Interp:
             if subs is None:                    # a whole map or set: a copy, so the two stay separate
                 slot[VALUE] = self.collection_copy(slot[TYPE], v, f"{where}: '{name}'")
             else:
-                slot[VALUE].data[subs.key] = coerce(slot[TYPE].value, v, f"{where}: a value of '{name}'")
+                slot[VALUE].data[subs.key] = store_value(slot[TYPE].value, v, f"{where}: a value of '{name}'")
             return
         if not slot[IS_ARRAY]:
             if subs is not None:                # a substring keeps the string's length
@@ -2718,12 +2744,13 @@ class Interp:
             raise LangError(f"line {s.line}: {s.name} expects 2 arguments: call {s.name}({what.split(' ')[-1]}, "
                             f"{'member' if s.name == 'add' else 'key'})")
         first = s.args[0]
-        if not (isinstance(first, FieldAccess) or (isinstance(first, Var) and first.name in env)):
-            raise LangError(f"line {s.line}: {s.name} changes {what}, so its first argument must be a variable "
-                            f"or a record's field")
+        entry = isinstance(first, Apply) and first.bracket and first.name in env and isinstance(env[first.name][TYPE], MapType)
+        if not (entry or isinstance(first, FieldAccess) or (isinstance(first, Var) and first.name in env)):
+            raise LangError(f"line {s.line}: {s.name} changes {what}, so its first argument must be a variable, "
+                            f"a record's field or an entry of a map")
         ref = self.resolve(s.args[0], env, s.line)
         slot = ref[0]
-        c = slot[VALUE]
+        c = self.read(ref) if isinstance(ref[1], MapKey) else slot[VALUE]   # an entry: its set (a missing key is an error)
         if not isinstance(c, SetValue if s.name == "add" else (MapValue, SetValue)):
             raise LangError(f"line {s.line}: {s.name} needs {what}, but '{ref[2]}' is "
                             f"{'a ' + type_of(c) if c is not None else 'not one'}"
@@ -2776,6 +2803,7 @@ class Interp:
             ref = self.resolve(a, env, s.line)
             slot = ref[0]
             entry = isinstance(ref[1], MapKey)
+            full = typ                                            # (an array parameter is `integer[]`; below, `integer`)
             typ = typ[:typ.index("[")] if isinstance(typ, str) and typ.endswith("]") else typ
             if ref.root[INTENT] in ("in", "const"):
                 what = "an 'in' parameter" if ref.root[INTENT] == "in" else "a constant"
@@ -2788,6 +2816,8 @@ class Interp:
             as_record = (isinstance(wanted, IfaceType) and not slot[IS_ARRAY] and slot[TYPE] != typ
                          and isinstance(slot[VALUE], Record) and slot[TYPE] == slot[VALUE].rdef.name)
             have = slot[TYPE].value if entry else slot[TYPE]       # an entry of a map has the map's value type
+            if isinstance(have, ArrayOf):
+                have, typ = str(have), full                       # an entry that is an array: compare `integer[]` with `integer[]`
             if have != typ and not through_interface and not as_record:   # (an interface value is checked when it is written back)
                 raise LangError(f"line {s.line}: argument '{name}' is {typ} but "
                                 f"{'an entry of ' if entry else ''}'{ref[2]}' is {have}")
@@ -2796,8 +2826,8 @@ class Interp:
                 if problems:
                     raise LangError(f"line {s.line}: '{ref[2]}' is a {slot[TYPE]}, which cannot be used as {wanted}: {problems[0]}")
             outs.append((n, ref))
-            if entry and intent == "out":
-                values.append(None)                               # an entry passed as out need not exist yet
+            if entry and intent == "out":                             # an entry passed as out need not exist yet
+                values.append(self.new_collection(typ) if isinstance(typ, SetType) else None)
                 continue
             current = self.read(ref)                              # (a missing key is the usual missing-key error)
             if isinstance(typ, (MapType, SetType)):

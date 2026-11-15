@@ -104,4 +104,15 @@ program demo
   call bump(shop.stock, "pen")
   call add(shop.tags, "office")
   println(shop)                              ! inventory(owner=shop, stock={pen: 4}, tags={office})
+
+  ! A map's value can be a set or an array. A missing outer key is an error, so store an empty one first.
+  map[string, set[string]] :: groups
+  set[string] :: none
+  groups["fruit"] = none
+  call add(groups["fruit"], "apple")
+  call add(groups["fruit"], "pear")
+  println(groups, size(groups["fruit"]))      ! {fruit: {apple, pear}} 2
+  do word in groups["fruit"]
+    println(word)
+  end do
 end program

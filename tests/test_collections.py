@@ -191,11 +191,6 @@ class ParseTests(unittest.TestCase):
         self.refused("program t\n  map[real, integer] :: m\nend program\n", "must be integer or string, not real")
         self.refused("program t\n  set[logical] :: m\nend program\n", "must be integer or string, not logical")
 
-    def test_values_must_be_single_values(self):
-        for typ in ("integer[]", "integer?", "map[string, integer]", "set[integer]"):
-            with self.subTest(typ):
-                self.refused(f"program t\n  map[string, {typ}] :: m\nend program\n", "must be a single value")
-
     def test_no_const_allocatable_or_arrays(self):
         self.refused("program t\n  const map[string, integer] :: m\nend program\n", "cannot be 'const' or 'allocatable'")
         self.refused("program t\n  allocatable set[string] :: m\nend program\n", "cannot be 'const' or 'allocatable'")

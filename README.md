@@ -682,8 +682,27 @@ and a map's values are single values (numbers, strings, logicals). They start em
 - A module can hold a map or a set as a module variable (`public map[string, integer] :: hits`). It starts empty,
   and the usual module-variable rules apply: a subroutine changes it with `@hits[k] = v` or `call add(seen, x)`,
   a function may only read it, and other code imports it with `use`.
-- Not supported yet: `const` or `allocatable` ones, arrays of them, an optional one, and values
-  that are arrays, optional or other collections. See `examples/collections.bor`.
+- A map's value can also be a set or an array: `map[string, set[string]]` (a graph, or words grouped by letter)
+  or `map[string, integer[]]` (`integer[,]` for a matrix). A missing outer key is an error, as always, so
+  store an empty one first and then change it in place:
+
+      map[string, set[string]] :: groups
+      set[string] :: none                    ! an empty set to copy in
+      groups["fruit"] = none                 ! the map keeps its own copy
+      call add(groups["fruit"], "apple")     ! changes the stored set
+      println(size(groups["fruit"]), has(groups["fruit"], "apple"))
+      do w in groups["fruit"]
+        println(w)
+      end do
+
+  `groups["fruit"]` can be read, measured, searched and looped over, and passed to an `inout` or `out`
+  parameter (`call double(lists["a"])`). There is no `groups["fruit"]["apple"]`: the language has no chained
+  subscripts, so to change one element of an array value, copy it out, change it and store it back. Storing
+  and reading always copy, so the map never shares a set or array with a variable. `values(m)` is refused
+  for these maps (it would be an array of sets); loop with `do k in keys(m)`. A map cannot hold maps or
+  optional values, and a set's members stay single values.
+- Not supported yet: `const` or `allocatable` ones, arrays of them, an optional one, and collection literals
+  (there is no `{...}` for an empty or filled map). See `examples/collections.bor`.
 
 ## Subroutines and parameter modes
 
