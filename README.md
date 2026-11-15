@@ -856,7 +856,9 @@ to one is marked with `@`, the same mark that marks a write to an `out` paramete
     end program
 
 Any code that imports a variable can read it, and can write it with `@`. A function
-cannot change a module variable (only a subroutine can), so functions stay free of side effects.
+cannot change a module variable (only a subroutine can), so functions stay free of side effects. That includes
+passing a module variable to an `out` or `inout` parameter, and calling a subroutine that changes one, even through other
+subroutines: both are refused when the program loads.
 A module variable can be `allocatable`; see Allocatable arrays above.
 
 ## Checking a file

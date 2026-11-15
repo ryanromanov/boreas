@@ -1288,6 +1288,8 @@ class Interp:
                               if prog else None)
         for name in unit.modules:
             self.load_module(name, 0)
+        from .effects import check_effects
+        check_effects(self)
 
     def check_records(self, records, scope):
         """Record definitions need known field types, literal array sizes, unique field
