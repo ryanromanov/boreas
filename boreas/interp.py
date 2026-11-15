@@ -284,6 +284,30 @@ class SetValue:
         return SetValue(self.elemtype, dict(self.data))
 
 
+def collection_equal(a, b):
+    """`a == b` for maps and sets: the same kind, the same declared types, and the same contents. The order
+    the entries were added in does not matter. A set or array value inside a map is compared the same way."""
+    if isinstance(a, MapValue) and isinstance(b, MapValue):
+        if (a.keytype, a.valtype) != (b.keytype, b.valtype):
+            raise LangError(f"cannot compare a {type_of(a)} with a {type_of(b)}: their types differ")
+        if a.data.keys() != b.data.keys():
+            return False
+        return all(value_equal(x, b.data[k]) for k, x in a.data.items())
+    if isinstance(a, SetValue) and isinstance(b, SetValue):
+        if a.elemtype != b.elemtype:
+            raise LangError(f"cannot compare a {type_of(a)} with a {type_of(b)}: their types differ")
+        return a.data.keys() == b.data.keys()
+    raise LangError(f"cannot compare a {type_of(a)} with a {type_of(b)}")
+
+
+def value_equal(x, y):
+    if isinstance(x, (MapValue, SetValue)):
+        return collection_equal(x, y)
+    if isinstance(x, Array):
+        return x.shape == y.shape and x.data == y.data
+    return x == y
+
+
 class MapKey:
     """The subscript of one map entry: `age["ann"]`. It remembers its line for a missing-key error."""
     __slots__ = ("key", "line")
@@ -2341,6 +2365,13 @@ class Interp:
             if op in ("==", "/="):
                 return (a is b) == (op == "==")
             raise LangError(f"operator {op!r} cannot be used with null; check with present() or use ??")
+        for x in (a, b):
+            if isinstance(x, (MapValue, SetValue)):
+                if op in ("==", "/="):
+                    return collection_equal(a, b) == (op == "==")
+                hint = "; maps and sets can be compared with == and /=, not ordered" \
+                    if op in ("<", "<=", ">", ">=") else ""
+                raise LangError(f"a {type_of(x)} cannot be used with '{op}'{hint}")
         # whole-array operations: scalars broadcast, arrays must have the same shape
         if isinstance(a, Array) or isinstance(b, Array):
             shape = self.common_shape([a, b])
@@ -2350,11 +2381,6 @@ class Interp:
             return Array(shape, [self.binary(op, x, y) for x, y in zip(ad, bd)])
         if isinstance(a, Record) or isinstance(b, Record):
             raise LangError(f"records cannot be used with '{op}'; use their fields")
-        for x in (a, b):
-            if isinstance(x, (MapValue, SetValue)):
-                hint = ("; maps and sets cannot be compared yet: compare keys(...) and values(...), or their sizes"
-                        if op in ("==", "/=", "<", "<=", ">", ">=") else "")
-                raise LangError(f"a {type_of(x)} cannot be used with '{op}'{hint}")
         if op in ("and", "or"):
             self.truth(a); self.truth(b)
             return (a and b) if op == "and" else (a or b)
