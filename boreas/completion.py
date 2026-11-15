@@ -14,7 +14,7 @@ PROCEDURE_RE = re.compile(r"(?:(?:public|private)\s+)?(function|subroutine)\s+([
 END_RE = re.compile(r"end\s+(function|subroutine|program)\b", re.I)
 BLOCK_RE = re.compile(r"(?:(?:public|private)\s+)?(record|module)\s+([A-Za-z_]\w*)\s*$", re.I)
 PROGRAM_RE = re.compile(r"program\b", re.I)
-DECL_RE = re.compile(r"(?:\b(?:in|out|inout)\s+)?([A-Za-z_]\w*\??(?:\[[^\]]*\])?(?:\s*,\s*allocatable)?)\s*::\s*([A-Za-z_]\w*)", re.I)
+DECL_RE = re.compile(r"(?:\b(?:in|out|inout)\s+)?([A-Za-z_]\w*\??(?:\[(?:[^\[\]]|\[[^\]]*\])*\])?(?:\s*,\s*allocatable)?)\s*::\s*([A-Za-z_]\w*)", re.I)
 
 
 # the value before a dot: `p.`, `s.to.`, `pts[i].` (and the old `pts(i).`)

@@ -406,5 +406,30 @@ class NestedParseTests(unittest.TestCase):
         self.assertEqual(check_errors(src), [])
 
 
+class NestedEditorAndOutTests(unittest.TestCase):
+    def test_an_out_array_entry_is_caller_owned_storage(self):
+        defs = "subroutine squares(out integer[] :: v)\n  integer :: i\n  do i = 1, size(v)\n    @v[i] = i * i\n  end do\nend subroutine\n"
+        out = run('  m["a"] = [0, 0, 0]\n  call squares(m["a"])\n  println(m)', "  map[string, integer[]] :: m\n", defs)
+        self.assertEqual(out, ["{a: [1, 4, 9]}"])
+
+    def test_an_out_array_entry_must_exist(self):
+        defs = "subroutine squares(out integer[] :: v)\n  @v[1] = 1\nend subroutine\n"
+        with self.assertRaises(LangError) as cm:
+            run('  call squares(m["zz"])', "  map[string, integer[]] :: m\n", defs)
+        self.assertIn("has no key", str(cm.exception))
+
+    def test_hover_on_nested_declarations(self):
+        from boreas import navigation
+        src = ("module reg\n  public map[string, set[string]] :: g\n  public map[string, real[,]] :: grid\nend module\n"
+               "program t\n  use reg: g, grid\n  map[string, set[string]] :: local\n  println(size(g), size(grid), size(local))\nend program\n")
+        lines = src.split("\n")
+        for row, anchor, want in [(1, ":: g", "map[string, set[string]] :: g"), (2, ":: grid", "map[string, real[,]] :: grid"),
+                                  (6, ":: local", "map[string, set[string]] :: local"), (7, "size(g", "map[string, set[string]] :: g")]:
+            col = lines[row].index(anchor) + len(anchor) - 1
+            hover = navigation.hover(src, row, col)
+            self.assertIsNotNone(hover, anchor)
+            self.assertIn(want, hover["contents"]["value"])
+
+
 if __name__ == "__main__":
     unittest.main()

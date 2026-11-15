@@ -2826,7 +2826,8 @@ class Interp:
                 if problems:
                     raise LangError(f"line {s.line}: '{ref[2]}' is a {slot[TYPE]}, which cannot be used as {wanted}: {problems[0]}")
             outs.append((n, ref))
-            if entry and intent == "out":                             # an entry passed as out need not exist yet
+            if entry and intent == "out" and not isinstance(slot[TYPE].value, ArrayOf):
+                # an entry passed as out need not exist yet (an array entry is caller-owned storage, like any array)
                 values.append(self.new_collection(typ) if isinstance(typ, SetType) else None)
                 continue
             current = self.read(ref)                              # (a missing key is the usual missing-key error)
