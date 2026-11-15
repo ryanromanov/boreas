@@ -411,8 +411,9 @@ def _values(m):
     """The values of a map as an array, in the same order as keys(m)."""
     _need_collection("values", m, "map")
     if isinstance(m.valtype, (SetType, ArrayOf)):
-        raise LangError(f"values() gives an array of single values, but this map's values are {article_for(m.valtype)}s"
-                        f"; loop with do k in keys(m), or read one entry at a time")
+        raise LangError(f"values() gives an array of single values, but this map's values are "
+                        f"{'sets' if isinstance(m.valtype, SetType) else 'arrays'}; "
+                        f"loop with do k in keys(m), or read one entry at a time")
     return Array((len(m.data),), list(m.data.values()))
 
 

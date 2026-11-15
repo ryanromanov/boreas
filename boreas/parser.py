@@ -1089,7 +1089,8 @@ class Parser:
                                                               or self.typed_ahead(self.i + 1)):
             self.next()
             return self.decl(allocatable=True, local=True)
-        if t.kind == "ident" and (t.text in TYPES or (t.text not in KEYWORDS and self.typed_ahead())):
+        if t.kind == "ident" and (t.text in TYPES or self.collection_ahead()
+                                  or (t.text not in KEYWORDS and self.typed_ahead())):
             return self.decl(local=True)
         if self.at("record"):
             self.error("records are defined at the top level or inside a module, not in a procedure")
@@ -1303,6 +1304,8 @@ class Parser:
         if const or allocatable:
             self.error(f"a {word} cannot be 'const' or 'allocatable': it starts empty and grows by itself")
         typ = self.collection_type()
+        if self.at("?"):
+            self.error(f"a {word} cannot be optional: it is always there, and may be empty")
         self.expect("::")
         name = self.ident()
         if self.at("["):
@@ -1748,6 +1751,9 @@ class Parser:
                 e = Apply(name, self.call_args(), t.line, t.col)
             elif self.accept("["):
                 e = Apply(name, self.call_args("]"), t.line, t.col, True)
+                if self.at("["):
+                    self.error(f"there are no chained subscripts: write {name}[i, j] for a matrix, and for a map "
+                               f"of arrays copy the value out first (v = {name}[key], then v[i])")
             while self.at("."):                    # record fields: p.x, pts[2].pos.y, p.v[3]
                 self.next()
                 field = self.ident()

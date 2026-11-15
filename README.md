@@ -702,7 +702,8 @@ and a map's values are single values (numbers, strings, logicals). They start em
   for these maps (it would be an array of sets); loop with `do k in keys(m)`. A map cannot hold maps or
   optional values, and a set's members stay single values.
 - Not supported yet: `const` or `allocatable` ones, arrays of them, an optional one, and collection literals
-  (there is no `{...}` for an empty or filled map). See `examples/collections.bor`.
+  (there is no `{...}` for an empty or filled map). See `examples/collections.bor`, and
+  `examples/collections_limits.bor` for each refusal with its exact error message and what to write instead.
 
 ## Subroutines and parameter modes
 
