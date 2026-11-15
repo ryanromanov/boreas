@@ -34,6 +34,7 @@ class Apply:   # index, slice, or call
     name: str; args: list; line: int
     col: int = field(default=0, compare=False, repr=False)
     bracket: bool = field(default=False, compare=False, repr=False)   # written name[...]: indexing, never a call
+    chain: list = None         # m[key][i, j]: the second subscript, only after an entry of a map of arrays
 @dataclass
 class Unary: op: str; operand: object
 @dataclass
@@ -53,6 +54,7 @@ class FieldAccess:    # base.field or base.field[subscripts] for an array field
     base: object; field: str; args: object; line: int
     bracket: bool = field(default=False, compare=False, repr=False)
     call: bool = field(default=False, compare=False, repr=False)      # x.area(): a record's function, not an array field
+    chain: list = None         # r.rows[key][i]: the second subscript, only after an entry of a map of arrays
 @dataclass
 class NamedArg: name: str; value: object     # `x = 1.0` inside a record constructor
 @dataclass
@@ -162,10 +164,20 @@ class MapType:
     """The type of a map: `map[string, integer]`. Not a string, so nothing that reads type names by their
     shape (a trailing `]` means an array) can mistake it for one."""
     key: str
-    value: str
+    value: object        # a type name, a SetType, or an ArrayOf
 
     def __str__(self):
         return f"map[{self.key}, {self.value}]"
+
+
+@dataclass(frozen=True)
+class ArrayOf:
+    """An array type used as a map's value: `integer[]` (rank 1) or `real[,]` (rank 2). Any length."""
+    elem: str
+    rank: int = 1
+
+    def __str__(self):
+        return f"{self.elem}[{',' * (self.rank - 1)}]"
 
 
 @dataclass(frozen=True)
@@ -335,6 +347,12 @@ def check_writes(body, params, shared=None, is_sub=True):
                     name = root_name(target)
                     write(s, update, name, target_text(target) if isinstance(target, FieldAccess) else name,
                           reaches(name, update), name in shared and not shared[name] and name not in params)
+        elif isinstance(s, Call) and s.name in ("add", "remove") and s.receiver is None and s.args \
+                and isinstance(s.args[0], (Var, FieldAccess, Apply)):
+            name = root_name(s.args[0])           # `call add(seen, x)` changes `seen` like an assignment would
+            if name in shared and name not in params and not is_sub:
+                raise LangError(f"line {s.line}: a function cannot change the module variable '{name}'; "
+                                f"make it a subroutine")
         elif isinstance(s, If):
             for _, b in s.branches:
                 check_writes(b, params, shared, is_sub)
@@ -971,12 +989,17 @@ class Parser:
         """`map[` or `set[` followed by a type name: a collection type. (Contextual: `map[3] :: x` is still an
         array of a record called map, and a variable called `map` or `set` is untouched.)"""
         t = self.tok
-        return (t.kind == "ident" and t.text in ("map", "set") and self.toks[self.i + 1].text == "["
-                and self.toks[self.i + 2].kind == "ident" and self.toks[self.i + 2].text in TYPES)
+        if not (t.kind == "ident" and t.text in ("map", "set") and self.toks[self.i + 1].text == "["
+                and self.toks[self.i + 2].kind == "ident"):
+            return False
+        inner = self.toks[self.i + 2].text
+        return inner in TYPES or (inner in ("map", "set") and self.toks[self.i + 3].text == "["
+                                  and self.toks[self.i + 4].kind == "ident" and self.toks[self.i + 4].text in TYPES)
 
     def collection_type(self):
-        """`map[string, integer]` or `set[string]`. Keys are integers or strings; a map's values are single
-        values (not arrays, optionals or other collections)."""
+        """`map[string, integer]` or `set[string]`. Keys are integers or strings. A map's value is a single
+        value, a set (`map[string, set[string]]`) or an array (`map[string, integer[]]`); not an optional or a
+        map."""
         word = self.next().text
         self.expect("[")
         first = self.simple_type(f"a {word}'s " + ("key" if word == "map" else "member"), keys=True)
@@ -984,13 +1007,29 @@ class Parser:
             self.expect("]")
             return SetType(first)
         self.expect(",")
-        value = self.simple_type("a map's value", keys=False)
+        if self.tok.text == "set" and self.collection_ahead():
+            value = self.collection_type()
+        else:
+            value = self.simple_type("a map's value", keys=False)
+            if self.at("["):                                   # integer[] or real[,]
+                self.next()
+                rank = 1
+                while self.accept(","):
+                    rank += 1
+                if not self.at("]"):
+                    self.error("a map's array value is written without sizes, as in 'integer[]' or 'real[,]'")
+                self.next()
+                value = ArrayOf(value, rank)
+        if self.at("?"):
+            self.error("a map's value cannot be optional: get(m, key) already gives null for a missing key")
         self.expect("]")
         return MapType(first, value)
 
     def simple_type(self, what, keys):
         t = self.tok
         if t.kind == "ident" and t.text in ("map", "set"):
+            if not keys and t.text == "map":
+                self.error("a map's value cannot be another map; use a set or an array as the value")
             self.error(f"{what} must be a single value: arrays, optional values and other collections "
                        f"are not supported here")
         if t.kind != "ident" or t.text not in TYPES or t.text == "file":
@@ -999,7 +1038,7 @@ class Parser:
         self.next()
         if keys and name not in ("integer", "string"):
             self.error(f"{what} must be integer or string, not {name}")
-        if self.at("[", "?"):
+        if keys and self.at("[", "?"):
             self.error(f"{what} must be a single value: arrays, optional values and other collections "
                        f"are not supported here")
         return name
@@ -1052,7 +1091,8 @@ class Parser:
                                                               or self.typed_ahead(self.i + 1)):
             self.next()
             return self.decl(allocatable=True, local=True)
-        if t.kind == "ident" and (t.text in TYPES or (t.text not in KEYWORDS and self.typed_ahead())):
+        if t.kind == "ident" and (t.text in TYPES or self.collection_ahead()
+                                  or (t.text not in KEYWORDS and self.typed_ahead())):
             return self.decl(local=True)
         if self.at("record"):
             self.error("records are defined at the top level or inside a module, not in a procedure")
@@ -1231,12 +1271,9 @@ class Parser:
 
     def decl(self, const=False, allocatable=False, local=False, field=False):
         """A declaration. `local` is true inside a program or procedure body and `field` in a record: the
-        places a map or a set can be declared (module variables are not supported yet)."""
+        places a record's fields are told apart from variables (a map or a set can be declared in either)."""
         line = self.tok.line
         if self.collection_ahead():
-            if not (local or field):
-                self.error(f"a {self.tok.text} cannot be a module variable yet; it can be a local variable, "
-                           f"a parameter, a function result or a record field")
             return self.collection_decl(line, const, allocatable, field)
         typ = self.type_name()
         dims = None
@@ -1269,6 +1306,8 @@ class Parser:
         if const or allocatable:
             self.error(f"a {word} cannot be 'const' or 'allocatable': it starts empty and grows by itself")
         typ = self.collection_type()
+        if self.at("?"):
+            self.error(f"a {word} cannot be optional: it is always there, and may be empty")
         self.expect("::")
         name = self.ident()
         if self.at("["):
@@ -1671,6 +1710,17 @@ class Parser:
         step = self.expr() if self.accept(",") else None
         return Gen(body, var, lo, hi, step, line, var_col)
 
+    def chain_subscript(self, name):
+        """After `m[key]`: an optional second subscript, `m[key][i]`, that reaches into an entry that is an
+        array. Only one extra subscript exists (there are no arrays of arrays), and whether the entry is an
+        array is checked when the program runs."""
+        if not self.accept("["):
+            return None
+        subs = self.call_args("]")
+        if self.at("["):
+            self.error(f"'{name}' takes a key and then one more subscript: write {name}[key][i, j] for a matrix entry")
+        return subs
+
     def primary(self):
         t = self.tok
         if t.kind == "int":
@@ -1714,11 +1764,13 @@ class Parser:
                 e = Apply(name, self.call_args(), t.line, t.col)
             elif self.accept("["):
                 e = Apply(name, self.call_args("]"), t.line, t.col, True)
+                e.chain = self.chain_subscript(name)
             while self.at("."):                    # record fields: p.x, pts[2].pos.y, p.v[3]
                 self.next()
                 field = self.ident()
                 if self.accept("["):
                     e = FieldAccess(e, field, self.call_args("]"), t.line, True)
+                    e.chain = self.chain_subscript(field)
                 else:
                     e = FieldAccess(e, field, self.call_args() if self.accept("(") else None, t.line)
             return e

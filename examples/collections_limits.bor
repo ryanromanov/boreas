@@ -1,0 +1,120 @@
+! What you cannot do with maps and sets, and what to write instead.
+!
+! Every line below that starts with `!  >` is real code that Boreas refuses. The line after it,
+! starting with `!  error:`, is what Boreas says. Each one stops a whole program, so they are
+! comments here. The program at the bottom runs, and shows the workarounds.
+! (tests/test_collections_limits.py checks that these messages are still the real ones.)
+
+! ---- What a map or set can be ------------------------------------------------------------
+!
+!  > const map[string, integer] :: m
+!  error: a map cannot be 'const' or 'allocatable': it starts empty and grows by itself
+!
+!  > map[string, integer] :: ms[3]
+!  error: an array of maps is not supported: a map is declared on its own
+!
+!  > map[string, integer]? :: m
+!  error: a map cannot be optional: it is always there, and may be empty
+!
+!  > map[real, integer] :: m
+!  error: a map's key must be integer or string, not real
+!
+!  > map[string, map[string, integer]] :: m
+!  error: a map's value cannot be another map; use a set or an array as the value
+!
+!  > map[string, integer?] :: m
+!  error: a map's value cannot be optional: get(m, key) already gives null for a missing key
+!
+!  > set[set[string]] :: s
+!  error: a set's member must be a single value: arrays, optional values and other collections are not supported here
+!
+!  > map[string, integer[3]] :: m
+!  error: a map's array value is written without sizes, as in 'integer[]' or 'real[,]'
+!
+!  In a record, a map or set field starts empty, so it cannot have a default:
+!  > map[string, integer] :: stock = other
+!  error: a map field starts empty, so it has no default value
+
+! ---- Things you cannot do to one -----------------------------------------------------------
+!
+!  > same = a == b                         (a and b are maps)
+!  error: a map cannot be used with '=='; maps and sets cannot be compared yet: compare keys(...) and values(...), or their sizes
+!
+!  > b = a + a
+!  error: a map cannot be used with '+'
+!
+!  > println(s["x"])                       (s is a set)
+!  error: 's' is a set, which has no entries to index; test a member with has(s, x)
+!
+!  > call add(m, "x")                      (m is a map)
+!  error: add needs a set, but 'm' is a map; a map gets entries with m[key] = value
+!
+!  > x = a[1][2]                           (a is an ordinary array: a second subscript only follows a map entry)
+!  error: 'a' is not a map, so it takes one subscript list: write a[i, j] for a matrix
+!
+!  > x = m["a"][2]                         (m holds integers, not arrays)
+!  error: an entry of 'm' is one integer, not an array, so it takes no second subscript
+!
+!  > println(values(g))                    (g is a map of sets)
+!  error: values() gives an array of single values, but this map's values are sets; loop with do k in keys(m), or read one entry at a time
+
+! ---- Mistakes the checks catch at run time ---------------------------------------------------
+!
+!  > println(m["x"])                       (no such key)
+!  error: the map 'm' has no key "x" (test with has(m, key), or use get(m, key) ?? default)
+!
+!  > call remove(m, "x")                   (no such key)
+!  error: cannot remove "x": 'm' has no such key (test with has first)
+!
+!  > m[1] = 2                              (m has string keys)
+!  error: the map 'm' has string keys, got integer
+!
+!  > m["a"] = "x"                          (m holds integers)
+!  error: a value of 'm': cannot assign string to integer
+!
+!  > call add(g["a"], "x")                 (g is a map of sets and has no key "a": it is not created for you)
+!  error: the map 'g' has no key "a" (test with has(g, key), or use get(g, key) ?? default)
+!
+!  > do i, j in [1, 2]
+!  error: an array loop takes one variable, like 'do x in a' (for the position as well, use do i = 1, size(a))
+!
+!  > do k in m                             (m is a map)
+!  error: a map loop takes two variables, like 'do key, value in m' (to loop over the keys alone, use a set or keys(m))
+
+! ---- What to write instead -----------------------------------------------------------------
+
+program workarounds
+  map[string, integer] :: a
+  map[string, integer] :: b
+  map[string, set[string]] :: groups
+  map[string, integer[]] :: lists
+  set[string] :: none
+  string :: key
+  integer :: value
+  logical :: same
+
+  a["x"] = 1
+  b["x"] = 1
+
+  ! No a == b: compare the sizes, then every key and value.
+  ! TODO we should add comparisons. Maybe == compares objects and === compares all key and values?
+  same = size(a) == size(b)
+  do key, value in a
+    same = same and (get(b, key) ?? -1) == value
+  end do
+  println(same)                              ! true
+
+  ! A missing outer key is an error: store an empty set first, then change it in place.
+  ! TODO: you should be able to add a key and value to a map in one go.
+  groups["fruit"] = none
+  call add(groups["fruit"], "apple")
+  println(groups)                            ! {fruit: {apple}}
+
+  ! An entry that is an array can be indexed in place: read it, change it, or pass an element on.
+  lists["a"] = [10, 20]
+  lists["a"][2] = 99
+  println(lists, lists["a"][1])              ! {a: [10, 99]} 10
+
+  ! An optional value is already there: get gives null for a missing key, and ?? supplies a default.
+  println(get(a, "nope") ?? 0)               ! 0
+end program

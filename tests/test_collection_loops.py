@@ -75,6 +75,33 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(run_bor(src), ["9"])
 
 
+class ArrayLoopTests(unittest.TestCase):
+    def test_a_literal(self):
+        out = show('  do n in [3, 1, 2]\n    println(n)\n  end do')
+        self.assertEqual(out, ["3", "1", "2"])
+
+    def test_keys_and_values(self):
+        out = show('  age["a"] = 1\n  age["b"] = 2\n  do name in keys(age)\n    println(name)\n  end do\n'
+                   '  total = 0\n  do n in values(age)\n    total = total + n\n  end do\n  println(total)')
+        self.assertEqual(out, ["a", "b", "3"])
+
+    def test_a_matrix_is_column_major(self):
+        out = show('  integer[2, 2] :: g = reshape([1, 2, 3, 4], [2, 2])\n  do n in g\n    println(n)\n  end do')
+        self.assertEqual(out, ["1", "2", "3", "4"])
+
+    def test_an_empty_array(self):
+        out = show('  allocatable integer[] :: e\n  allocate e[0]\n  do n in e\n    println(n)\n  end do\n  println("done")')
+        self.assertEqual(out, ["done"])
+
+    def test_the_loop_walks_a_snapshot(self):
+        out = show('  integer[3] :: a = [1, 2, 3]\n  do n in a\n    a[3] = 0\n    println(n)\n  end do')
+        self.assertEqual(out, ["1", "2", "3"])
+
+    def test_a_string_array_and_exit(self):
+        out = show('  string[3] :: w = ["a", "b", "c"]\n  do name in w\n    if name == "b" then\n      exit\n    end if\n    println(name)\n  end do')
+        self.assertEqual(out, ["a"])
+
+
 class ErrorTests(unittest.TestCase):
     def test_a_map_needs_two_variables(self):
         fails(self, '  do name in age\n    println(name)\n  end do', "a map loop takes two variables")
@@ -82,11 +109,11 @@ class ErrorTests(unittest.TestCase):
     def test_a_set_needs_one_variable(self):
         fails(self, '  do name, n in seen\n    println(name)\n  end do', "a set loop takes one variable")
 
-    def test_an_array_is_not_looped_this_way(self):
-        fails(self, '  do n in [1, 2, 3]\n    println(n)\n  end do', "loops over a map or a set")
+    def test_an_array_needs_one_variable(self):
+        fails(self, '  do name, n in [1, 2, 3]\n    println(n)\n  end do', "an array loop takes one variable")
 
     def test_a_scalar_is_not_looped(self):
-        fails(self, '  do n in total\n    println(n)\n  end do', "loops over a map or a set")
+        fails(self, '  do n in total\n    println(n)\n  end do', "loops over a map, a set or an array")
 
     def test_a_wrong_variable_type(self):
         fails(self, '  age["a"] = 1\n  do n, name in age\n    println(n)\n  end do',

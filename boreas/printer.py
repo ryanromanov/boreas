@@ -64,11 +64,13 @@ def _expr(e):
         return ((expr(e.lo) if e.lo is not None else "") + ":" + (expr(e.hi) if e.hi is not None else "")
                 + (":" + expr(e.step) if e.step is not None else ""))
     if k is Apply:
-        return f"{e.name}{_args(e.args, e.bracket)}"
+        return f"{e.name}{_args(e.args, e.bracket)}" + (_args(e.chain, True) if e.chain is not None else "")
     if k is NamedArg:
         return f"{e.name} = {expr(e.value)}"
     if k is FieldAccess:
         args = "" if e.args is None else _args(e.args, e.bracket)
+        if e.chain is not None:
+            args += _args(e.chain, True)
         return f"{expr(e.base, ATOM)}.{e.field}{args}"
     if k is Unary:
         sep = " " if e.op == "not" else ""

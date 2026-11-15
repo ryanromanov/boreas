@@ -661,8 +661,10 @@ and a map's values are single values (numbers, strings, logicals). They start em
         println(name, years)
       end do
 
-- `keys(age)` and `values(age)` give arrays in the same order (`keys(seen)` gives the members), for when you
-  want the whole list at once, to sort it or to index it.
+- `do x in a` also walks an array's elements (column-major, like everything else), so `do name in keys(age)` and
+  `do v in values(age)` loop over just the keys or just the values. For the position as well, use
+  `do i = 1, size(a)`. `keys(age)` and `values(age)` give the arrays in the same order (`keys(seen)` gives the
+  members), for when you want the whole list at once, to sort it or to index it.
 - `println(age)` shows `{ann: 31}` and a set `{x, y}`. Counting words: `count[w] = (get(count, w) ?? 0) + 1`.
 - Assigning copies, like an array: after `b = a`, changing `b` leaves `a` alone. A declaration can start from a
   copy (`map[string, integer] :: b = a`). A map and a set cannot be compared or used in arithmetic yet.
@@ -674,9 +676,36 @@ and a map's values are single values (numbers, strings, logicals). They start em
   record field starts empty and is used like a variable (`b.stock["pen"] = 3`, `call add(b.tags, "x")`);
   copying a record copies its maps and sets too. They also work in a callback's signature
   (`function(map[string, integer]) -> integer :: f`).
-- Not supported yet: a module variable, `const` or `allocatable` ones, arrays of them, an optional one, values
-  that are arrays, optional or other collections, and a map entry as an `out` or `inout` argument. See
-  `examples/collections.bor`.
+- One entry of a map can be passed to an `inout` or `out` parameter: `call bump(count[w])` changes that entry
+  (`inout` needs the key to exist; `out` creates it). Two entries with different keys are fine in one call; the
+  same entry twice is refused as aliasing.
+- A module can hold a map or a set as a module variable (`public map[string, integer] :: hits`). It starts empty,
+  and the usual module-variable rules apply: a subroutine changes it with `@hits[k] = v` or `call add(seen, x)`,
+  a function may only read it, and other code imports it with `use`.
+- A map's value can also be a set or an array: `map[string, set[string]]` (a graph, or words grouped by letter)
+  or `map[string, integer[]]` (`integer[,]` for a matrix). A missing outer key is an error, as always, so
+  store an empty one first and then change it in place:
+
+      map[string, set[string]] :: groups
+      set[string] :: none                    ! an empty set to copy in
+      groups["fruit"] = none                 ! the map keeps its own copy
+      call add(groups["fruit"], "apple")     ! changes the stored set
+      println(size(groups["fruit"]), has(groups["fruit"], "apple"))
+      do w in groups["fruit"]
+        println(w)
+      end do
+
+  `groups["fruit"]` can be read, measured, searched and looped over, and passed to an `inout` or `out`
+  parameter (`call double(lists["a"])`). An entry that is an array can be indexed in place with a second
+  subscript: `lists["a"][2] = 99`, `x = lists["a"][1]`, `lists["a"][1:2]`, `lists["m"][i, j]` for a matrix,
+  and `call bump(lists["a"][2])`. This is the only place a second subscript is allowed (there are no arrays
+  of arrays, so `a[1][2]` on an ordinary array is an error: write `a[1, 2]`). Storing and reading a whole entry
+  always copy, so the map never shares a set or array with a variable. `values(m)` is refused
+  for these maps (it would be an array of sets); loop with `do k in keys(m)`. A map cannot hold maps or
+  optional values, and a set's members stay single values.
+- Not supported yet: `const` or `allocatable` ones, arrays of them, an optional one, and collection literals
+  (there is no `{...}` for an empty or filled map). See `examples/collections.bor`, and
+  `examples/collections_limits.bor` for each refusal with its exact error message and what to write instead.
 
 ## Subroutines and parameter modes
 

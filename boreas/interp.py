@@ -268,6 +268,8 @@ class MapValue:
         self.keytype, self.valtype, self.data = keytype, valtype, {} if data is None else data
 
     def copy(self):
+        if isinstance(self.valtype, (SetType, ArrayOf)):          # the values are collections or arrays: copy them too
+            return MapValue(self.keytype, self.valtype, {k: x.copy() for k, x in self.data.items()})
         return MapValue(self.keytype, self.valtype, dict(self.data))
 
 
@@ -299,6 +301,27 @@ def collection_check(typ, v, what):
             f"a set[{v.elemtype}]" if isinstance(v, SetValue) else f"a {type_of(v)}"
         raise LangError(f"{what}: expected a {typ}, got {got}")
     return v
+
+
+def store_value(typ, v, what):
+    """What a map keeps when `v` is stored as a value of type `typ`: a single value as `coerce` makes it, or a
+    private copy of a set or an array (the map owns its values, so changing the original later leaves it alone)."""
+    if isinstance(typ, SetType):
+        return collection_check(typ, v, what).copy()
+    if isinstance(typ, ArrayOf):
+        if not isinstance(v, Array):
+            raise LangError(f"{what}: expected {article_for(typ)}, got {article_for(type_of(v))}")
+        if v.rank != typ.rank:
+            raise LangError(f"{what}: expected {article_for(typ)}, got {describe_array_type(f'{type_of(v.data[0]) if v.data else typ.elem}[{chr(44) * (v.rank - 1)}]')}")
+        return Array(v.shape, [coerce(typ.elem, x, what) for x in v.data])
+    return coerce(typ, v, what)
+
+
+def article_for(typ):
+    text = str(typ)
+    if isinstance(typ, ArrayOf):
+        return describe_array_type(text)
+    return ("an " if text[0] in "aeiou" else "a ") + text
 
 
 def check_key(kind, key, who, noun="keys"):
@@ -387,6 +410,10 @@ def _keys(c):
 def _values(m):
     """The values of a map as an array, in the same order as keys(m)."""
     _need_collection("values", m, "map")
+    if isinstance(m.valtype, (SetType, ArrayOf)):
+        raise LangError(f"values() gives an array of single values, but this map's values are "
+                        f"{'sets' if isinstance(m.valtype, SetType) else 'arrays'}; "
+                        f"loop with do k in keys(m), or read one entry at a time")
     return Array((len(m.data),), list(m.data.values()))
 
 
@@ -1032,6 +1059,8 @@ def overlaps(a, b):
     """Could two subscript lists of the same array touch a common element?"""
     if a is None or b is None:
         return True
+    if isinstance(a, MapKey) or isinstance(b, MapKey):      # two entries of a map: the same key is the same storage
+        return not (isinstance(a, MapKey) and isinstance(b, MapKey)) or a.key == b.key
     return all(_share(x, y) for x, y in zip(a, b))
 
 
@@ -1831,7 +1860,9 @@ class Interp:
         if isinstance(t, Var):
             return Ref(slot, None, t.name)
         if isinstance(slot[TYPE], (MapType, SetType)):
-            return self.collection_ref(slot, t.name, t.bracket, t.args, env, line)
+            return self.collection_ref(slot, t.name, t.bracket, t.args, env, line, chain=t.chain)
+        if t.chain is not None:
+            raise self.no_chain(t.name, line)
         if not t.bracket and (slot[IS_ARRAY] or slot[TYPE] == "string"):
             raise LangError(f"line {line}: index with brackets: write {t.name}[...], not {t.name}(...)")
         if not slot[IS_ARRAY]:
@@ -1840,17 +1871,45 @@ class Interp:
             raise LangError(f"line {line}: '{t.name}' is not an array")
         return Ref(slot, self.subscripts(slot[VALUE], t.args, env, line, t.name), t.name)
 
-    def collection_ref(self, slot, name, bracket, args, env, line, parent=None, field=None):
-        """`age["ann"]` or `r.ages["ann"]`: a reference to one entry of a map."""
+    def collection_ref(self, slot, name, bracket, args, env, line, parent=None, field=None, chain=None):
+        """`age["ann"]` or `r.ages["ann"]`: a reference to one entry of a map. With `chain` (`m[key][i]`) it is a
+        reference to part of an entry that is an array: an ordinary array reference onto the stored array, so
+        reading, writing, passing as inout and the aliasing check all work as they do for any array."""
         if not isinstance(slot[TYPE], MapType):
             raise LangError(f"line {line}: '{name}' is a set, which has no entries to index; "
                             f"test a member with has({name}, x)")
         if not bracket or len(args) != 1 or isinstance(args[0], Slice):
             raise LangError(f"line {line}: '{name}' is a map: look up one key with {name}[key]")
         key = check_key(slot[TYPE].key, self.eval(args[0], env), f"line {line}: the map '{name}'")
+        entry = MapKey(key, line)
+        if chain is not None:
+            return self.entry_part(slot, name, entry, chain, env, line, parent, field)
         if parent is None:
-            return Ref(slot, MapKey(key, line), name)
-        return Ref(slot, MapKey(key, line), name, parent.root, parent.rsubs, parent.fpath + (field,))
+            return Ref(slot, entry, name)
+        return Ref(slot, entry, name, parent.root, parent.rsubs, parent.fpath + (field,))
+
+    @staticmethod
+    def no_chain(name, line):
+        return LangError(f"line {line}: '{name}' is not a map, so it takes one subscript list: "
+                         f"write {name}[i, j] for a matrix")
+
+    def entry_part(self, slot, name, entry, chain, env, line, parent, field):
+        """`m[key][i]`: a reference into the array stored under `key`."""
+        valtype = slot[TYPE].value
+        if not isinstance(valtype, ArrayOf):
+            what = ("a set, so test a member with has(m[key], x)" if isinstance(valtype, SetType)
+                    else f"one {valtype}, not an array, so it takes no second subscript")
+            raise LangError(f"line {line}: an entry of '{name}' is {what}")
+        arr = self.read(Ref(slot, entry, name))                  # a missing key is the usual missing-key error
+        if len(chain) != arr.rank:
+            raise LangError(f"line {line}: this entry of '{name}' is {describe_array_type(str(valtype))}, "
+                            f"so it takes {arr.rank} subscript{'s' if arr.rank != 1 else ''}, got {len(chain)}")
+        part = [valtype.elem, arr, True, None]                   # a view of the stored array (changed in place)
+        subs = self.subscripts(arr, chain, env, line, name)
+        shown = f"{name}[{show_value(entry.key)}]"
+        if parent is None:
+            return Ref(part, subs, shown, slot, entry)
+        return Ref(part, subs, shown, parent.root, parent.rsubs, parent.fpath + (field, ("key", entry.key)))
 
     def substring_bounds(self, slot, args, env, line, name):
         """The (lo, hi) of s[lo:hi], 1-based and inclusive, either end optional, as a one-entry subscript list."""
@@ -1910,7 +1969,9 @@ class Interp:
         if t.args is None:
             return Ref(slot, None, name, ref.root, ref.rsubs, fpath)
         if isinstance(slot[TYPE], (MapType, SetType)):
-            return self.collection_ref(slot, name, t.bracket, t.args, env, line, ref, t.field)
+            return self.collection_ref(slot, name, t.bracket, t.args, env, line, ref, t.field, t.chain)
+        if t.chain is not None:
+            raise self.no_chain(name, line)
         if not slot[IS_ARRAY]:
             raise LangError(f"line {line}: field '{name}' is not an array")
         if not t.bracket:
@@ -1946,7 +2007,7 @@ class Interp:
             if subs is None:                    # a whole map or set: a copy, so the two stay separate
                 slot[VALUE] = self.collection_copy(slot[TYPE], v, f"{where}: '{name}'")
             else:
-                slot[VALUE].data[subs.key] = coerce(slot[TYPE].value, v, f"{where}: a value of '{name}'")
+                slot[VALUE].data[subs.key] = store_value(slot[TYPE].value, v, f"{where}: a value of '{name}'")
             return
         if not slot[IS_ARRAY]:
             if subs is not None:                # a substring keeps the string's length
@@ -2562,8 +2623,8 @@ class Interp:
         return Array(shape, out)
 
     def exec_each(self, s, env):
-        """`do key, value in m` / `do x in s`. The loop walks a snapshot, so the body may add to or remove
-        from the collection without disturbing the loop."""
+        """`do key, value in m` / `do x in s` / `do x in a`. The loop walks a snapshot, so the body may add to or
+        remove from the collection (or change the array) without disturbing the loop."""
         c = self.eval(s.source, env)
         if isinstance(c, MapValue):
             want, shape = 2, "do key, value in m"
@@ -2571,13 +2632,17 @@ class Interp:
         elif isinstance(c, SetValue):
             want, shape = 1, "do x in s"
             rows = [(k,) for k in c.data]
+        elif isinstance(c, Array):
+            want, shape = 1, "do x in a"
+            rows = [(x,) for x in c.data]            # the elements in column-major order, as a snapshot
         else:
-            raise LangError(f"line {s.line}: 'do ... in' loops over a map or a set, got {type_of(c)}"
-                            " (for an array, use do i = 1, size(a))")
-        what = "map" if want == 2 else "set"
+            raise LangError(f"line {s.line}: 'do ... in' loops over a map, a set or an array, got {type_of(c)}")
+        what = {MapValue: "map", SetValue: "set", Array: "array"}[type(c)]
         if len(s.vars) != want:
-            hint = " (to loop over the keys alone, use a set or keys(m) with an index)" if want == 2 else ""
-            raise LangError(f"line {s.line}: a {what} loop takes {'two variables' if want == 2 else 'one variable'}"
+            hint = " (to loop over the keys alone, use a set or keys(m))" if want == 2 else ""
+            if what == "array":
+                hint = " (for the position as well, use do i = 1, size(a))"
+            raise LangError(f"line {s.line}: {article(what + ' loop')} takes {'two variables' if want == 2 else 'one variable'}"
                             f", like '{shape}'{hint}")
         refs = [self.resolve(Var(v), env, s.line) for v in s.vars]
         for row in rows:
@@ -2666,6 +2731,8 @@ class Interp:
             return self.resolve(a, env, line)
         if isinstance(a, Var) and a.name in env:
             return Ref(env[a.name], None, a.name)
+        if isinstance(a, Apply) and a.name in env and isinstance(env[a.name][TYPE], MapType) and a.bracket:
+            return self.resolve(a, env, line)                  # one entry of a map
         if isinstance(a, Apply) and a.name in env and env[a.name][IS_ARRAY]:
             slot = env[a.name]
             return Ref(slot, self.subscripts(slot[VALUE], a.args, env, line, a.name), a.name)
@@ -2710,12 +2777,13 @@ class Interp:
             raise LangError(f"line {s.line}: {s.name} expects 2 arguments: call {s.name}({what.split(' ')[-1]}, "
                             f"{'member' if s.name == 'add' else 'key'})")
         first = s.args[0]
-        if not (isinstance(first, FieldAccess) or (isinstance(first, Var) and first.name in env)):
-            raise LangError(f"line {s.line}: {s.name} changes {what}, so its first argument must be a variable "
-                            f"or a record's field")
+        entry = isinstance(first, Apply) and first.bracket and first.name in env and isinstance(env[first.name][TYPE], MapType)
+        if not (entry or isinstance(first, FieldAccess) or (isinstance(first, Var) and first.name in env)):
+            raise LangError(f"line {s.line}: {s.name} changes {what}, so its first argument must be a variable, "
+                            f"a record's field or an entry of a map")
         ref = self.resolve(s.args[0], env, s.line)
         slot = ref[0]
-        c = slot[VALUE]
+        c = self.read(ref) if isinstance(ref[1], MapKey) else slot[VALUE]   # an entry: its set (a missing key is an error)
         if not isinstance(c, SetValue if s.name == "add" else (MapValue, SetValue)):
             raise LangError(f"line {s.line}: {s.name} needs {what}, but '{ref[2]}' is "
                             f"{'a ' + type_of(c) if c is not None else 'not one'}"
@@ -2767,9 +2835,8 @@ class Interp:
                 continue
             ref = self.resolve(a, env, s.line)
             slot = ref[0]
-            if isinstance(ref[1], MapKey):
-                raise LangError(f"line {s.line}: an entry of a map cannot be passed as an {intent} argument yet; "
-                                f"copy it to a variable, call, and store it back")
+            entry = isinstance(ref[1], MapKey)
+            full = typ                                            # (an array parameter is `integer[]`; below, `integer`)
             typ = typ[:typ.index("[")] if isinstance(typ, str) and typ.endswith("]") else typ
             if ref.root[INTENT] in ("in", "const"):
                 what = "an 'in' parameter" if ref.root[INTENT] == "in" else "a constant"
@@ -2781,14 +2848,22 @@ class Interp:
             # class(shape), intent(inout): the routine can change the record but not what kind it is
             as_record = (isinstance(wanted, IfaceType) and not slot[IS_ARRAY] and slot[TYPE] != typ
                          and isinstance(slot[VALUE], Record) and slot[TYPE] == slot[VALUE].rdef.name)
-            if slot[TYPE] != typ and not through_interface and not as_record:   # (an interface value is checked when it is written back)
-                raise LangError(f"line {s.line}: argument '{name}' is {typ} but '{ref[2]}' is {slot[TYPE]}")
+            have = slot[TYPE].value if entry else slot[TYPE]       # an entry of a map has the map's value type
+            if isinstance(have, ArrayOf):
+                have, typ = str(have), full                       # an entry that is an array: compare `integer[]` with `integer[]`
+            if have != typ and not through_interface and not as_record:   # (an interface value is checked when it is written back)
+                raise LangError(f"line {s.line}: argument '{name}' is {typ} but "
+                                f"{'an entry of ' if entry else ''}'{ref[2]}' is {have}")
             if as_record:
                 problems = conformance(slot[VALUE].rdef, wanted.idef)
                 if problems:
                     raise LangError(f"line {s.line}: '{ref[2]}' is a {slot[TYPE]}, which cannot be used as {wanted}: {problems[0]}")
             outs.append((n, ref))
-            current = self.read(ref)
+            if entry and intent == "out" and not isinstance(slot[TYPE].value, ArrayOf):
+                # an entry passed as out need not exist yet (an array entry is caller-owned storage, like any array)
+                values.append(self.new_collection(typ) if isinstance(typ, SetType) else None)
+                continue
+            current = self.read(ref)                              # (a missing key is the usual missing-key error)
             if isinstance(typ, (MapType, SetType)):
                 values.append(self.new_collection(typ) if intent == "out" else current.copy())   # out starts empty
             elif intent == "out" and typ not in DEFAULTS:           # an out record starts with no values

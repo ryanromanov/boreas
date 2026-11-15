@@ -156,12 +156,12 @@ class EntryArgumentTests(unittest.TestCase):
     def run_it(self, body):
         return run_bor(self.SWAP + "program t\n" + DECLS + '  age["a"] = 1\n  age["b"] = 2\n' + body + "\nend program\n")
 
-    def test_a_map_entry_cannot_be_an_inout_or_out_argument_yet(self):
-        for body in ('call swap(age["a"], age["b"])', 'integer :: n\n  call swap(n, age["a"])',
-                     'call swap(age["a"], age["a"])'):
-            with self.subTest(body):
-                with self.assertRaisesRegex(LangError, "an entry of a map cannot be passed as an inout argument"):
-                    self.run_it(body)
+    def test_swapping_two_entries(self):
+        self.assertEqual(self.run_it('call swap(age["a"], age["b"])\n  println(age)'), ["{a: 2, b: 1}"])
+
+    def test_the_same_entry_twice_is_refused(self):
+        with self.assertRaisesRegex(LangError, "must not alias"):
+            self.run_it('call swap(age["a"], age["a"])')
 
     def test_an_entry_can_be_read_as_an_in_argument_and_unpacked_into(self):
         out = self.run_it('(age["q"], age["r"]) = divmod(7, 2)\n  println(age)')
@@ -178,12 +178,6 @@ class ParseTests(unittest.TestCase):
             parse(src)
         self.assertIn(message, str(cm.exception))
 
-    def test_a_module_variable_is_not_supported_yet(self):
-        for src in ["module m\n  public map[string, integer] :: age\nend module\nprogram t\nend program\n",
-                    "module m\n  map[string, integer] :: age\nend module\nprogram t\nend program\n"]:
-            with self.subTest(src.splitlines()[1]):
-                self.refused(src, "cannot be a module variable yet")
-
     def test_parameters_results_and_fields_parse(self):
         parse("function f(map[string, integer] :: m, set[integer] :: s) -> map[string, integer]\n  return m\nend function\n"
               "record r\n  set[string] :: tags\nend record\nprogram t\nend program\n")
@@ -196,11 +190,6 @@ class ParseTests(unittest.TestCase):
     def test_keys_must_be_integer_or_string(self):
         self.refused("program t\n  map[real, integer] :: m\nend program\n", "must be integer or string, not real")
         self.refused("program t\n  set[logical] :: m\nend program\n", "must be integer or string, not logical")
-
-    def test_values_must_be_single_values(self):
-        for typ in ("integer[]", "integer?", "map[string, integer]", "set[integer]"):
-            with self.subTest(typ):
-                self.refused(f"program t\n  map[string, {typ}] :: m\nend program\n", "must be a single value")
 
     def test_no_const_allocatable_or_arrays(self):
         self.refused("program t\n  const map[string, integer] :: m\nend program\n", "cannot be 'const' or 'allocatable'")
