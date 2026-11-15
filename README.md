@@ -650,8 +650,19 @@ and a map's values are single values (numbers, strings, logicals). They start em
     call add(seen, "x")                ! adding a member that is already there does nothing
     println(has(seen, "x"), size(seen))
 
-- `keys(age)` and `values(age)` give arrays in the same order (`keys(seen)` gives the members), so a plain `do`
-  loop walks a map. Order is the order the keys were first added, so a program prints the same every run.
+- Loop with `do key, value in age` (a set takes one variable: `do word in seen`). The variables are declared
+  first, like any loop variable. The order is the order the keys were first added, so a program prints the same
+  every run. The loop walks a snapshot, so the body can add to or remove from the collection safely. `exit`,
+  `cycle` and labels work as in any `do`:
+
+      string :: name
+      integer :: years
+      do name, years in age
+        println(name, years)
+      end do
+
+- `keys(age)` and `values(age)` give arrays in the same order (`keys(seen)` gives the members), for when you
+  want the whole list at once, to sort it or to index it.
 - `println(age)` shows `{ann: 31}` and a set `{x, y}`. Counting words: `count[w] = (get(count, w) ?? 0) + 1`.
 - Assigning copies, like an array: after `b = a`, changing `b` leaves `a` alone. A declaration can start from a
   copy (`map[string, integer] :: b = a`). A map and a set cannot be compared or used in arithmetic yet.

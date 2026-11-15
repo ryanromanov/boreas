@@ -223,6 +223,8 @@ def stmt(s, depth):
         if s.step is not None:
             head += f", {expr(s.step)}"
         return [head] + stmts(s.body, depth + 1) + [pad + _end_do(s)]
+    if k is DoEach:
+        return [f"{pad}{_label(s)}do {', '.join(s.vars)} in {expr(s.source)}"] + stmts(s.body, depth + 1) + [pad + _end_do(s)]
     if k is DoWhile:
         return [f"{pad}{_label(s)}do while {expr(s.cond)}"] + stmts(s.body, depth + 1) + [pad + _end_do(s)]
     if k is Allocate:
@@ -316,7 +318,7 @@ def without_comments(unit):
                 for _, b in s.branches:
                     strip(b)
                 strip(s.orelse)
-            elif isinstance(s, (Do, DoWhile)):
+            elif isinstance(s, (Do, DoEach, DoWhile)):
                 strip(s.body)
             elif isinstance(s, Where):
                 strip(s.body)

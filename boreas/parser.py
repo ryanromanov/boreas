@@ -83,6 +83,12 @@ class Do:
     label: str = None          # `outer: do ...` / `end do outer`
     var_col: int = field(default=0, compare=False, repr=False)
 @dataclass
+class DoEach:
+    """`do key, value in m` over a map, or `do x in s` over a set."""
+    vars: list; source: object; body: list; line: int
+    label: str = None
+    cols: list = field(default_factory=list, compare=False, repr=False)
+@dataclass
 class DoWhile: cond: object; body: list; label: str = None; line: int = 0
 @dataclass
 class Case:
@@ -343,6 +349,11 @@ def check_writes(body, params, shared=None, is_sub=True):
             if s.var in params:
                 raise LangError(f"line {s.line}: loop variable '{s.var}' cannot be a parameter")
             check_writes(s.body, params, shared, is_sub)
+        elif isinstance(s, DoEach):
+            for v in s.vars:
+                if v in params:
+                    raise LangError(f"line {s.line}: loop variable '{v}' cannot be a parameter")
+            check_writes(s.body, params, shared, is_sub)
         elif isinstance(s, DoWhile):
             check_writes(s.body, params, shared, is_sub)
 
@@ -355,7 +366,7 @@ def sub_bodies(s):
     """The statement lists nested directly inside `s`."""
     if isinstance(s, If):
         return [b for _, b in s.branches] + [s.orelse]
-    if isinstance(s, (Do, DoWhile)):
+    if isinstance(s, (Do, DoEach, DoWhile)):
         return [s.body]
     if isinstance(s, Where):
         return [s.body, s.orelse]
@@ -379,7 +390,7 @@ def check_loops(body, enclosing=()):
             raise LangError(f"line {s.line}: '{word} {s.label}' does not name an enclosing loop ({known})")
         else:
             inner = enclosing
-            if isinstance(s, (Do, DoWhile)) and s.label is not None:
+            if isinstance(s, (Do, DoEach, DoWhile)) and s.label is not None:
                 if s.label in enclosing:
                     raise LangError(f"line {s.line}: loop label '{s.label}' is already "
                                     f"used by an enclosing loop")
@@ -1385,6 +1396,20 @@ class Parser:
             return DoWhile(cond, body, label, line)
         var_col = self.tok.col
         var = self.ident()
+        if self.at(",", "in"):
+            names, cols = [var], [var_col]
+            if self.accept(","):
+                cols.append(self.tok.col)
+                names.append(self.ident())
+            self.expect("in")
+            source = self.expr()
+            self.newline()
+            self.inside.append("loop")
+            body = self.block("do")
+            self.inside.pop()
+            self.expect("do")
+            self.end_label(label)
+            return DoEach(names, source, body, line, label, cols)
         self.expect("=")
         lo = self.expr()
         self.expect(",")

@@ -2,12 +2,11 @@
 
 ! A map can be a parameter: read-only unless it is `inout`.
 function total(map[string, integer] :: m) -> integer
-  allocatable string[] :: ks
-  integer :: i
+  string :: k
+  integer :: v
   integer :: t = 0
-  ks = keys(m)
-  do i = 1, size(ks)
-    t = t + m[ks[i]]
+  do k, v in m
+    t = t + v
   end do
   return t
 end function
@@ -40,6 +39,8 @@ program demo
   allocatable string[] :: words
   allocatable string[] :: names
   integer :: i
+  string :: word
+  integer :: n
 
   ! A map: insert or replace with an assignment, read with brackets.
   age["ann"] = 31
@@ -60,13 +61,16 @@ program demo
   end do
   println(count)                        ! {the: 3, cat: 2, saw: 1, dog: 1, and: 1}
 
-  ! keys() and values() are arrays in the same order, so an ordinary loop walks a map.
-  names = keys(count)
-  do i = 1, size(names)
-    if count[names[i]] > 1 then
-      println(names[i], "appears", count[names[i]], "times")
+  ! do key, value in walks a map in the order the keys were added.
+  do word, n in count
+    if n > 1 then
+      println(word, "appears", n, "times")
     end if
   end do
+
+  ! keys() and values() give the same data as arrays, when you want to index or sort it.
+  names = keys(count)
+  println(names[1], size(names))
 
   ! A set remembers members. add and remove are subroutines, so they are called.
   do i = 1, size(words)

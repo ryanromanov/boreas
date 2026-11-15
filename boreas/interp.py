@@ -1435,6 +1435,8 @@ class Interp:
                 i += step
             if not exited:                  # like Fortran: the variable ends one step past the range
                 self.write(ref, i, s.line)
+        elif k is DoEach:
+            self.exec_each(s, env)
         elif k is DoWhile:
             while self.truth(self.eval(s.cond, env)):
                 try:
@@ -2558,6 +2560,44 @@ class Interp:
                    for (typ, _, _), v in zip(f.params, args)]
             out.append(self.result_value(f, f.ret, self.run_body(f, self.bind(f, one, line))))
         return Array(shape, out)
+
+    def exec_each(self, s, env):
+        """`do key, value in m` / `do x in s`. The loop walks a snapshot, so the body may add to or remove
+        from the collection without disturbing the loop."""
+        c = self.eval(s.source, env)
+        if isinstance(c, MapValue):
+            want, shape = 2, "do key, value in m"
+            rows = list(c.data.items())
+        elif isinstance(c, SetValue):
+            want, shape = 1, "do x in s"
+            rows = [(k,) for k in c.data]
+        else:
+            raise LangError(f"line {s.line}: 'do ... in' loops over a map or a set, got {type_of(c)}"
+                            " (for an array, use do i = 1, size(a))")
+        what = "map" if want == 2 else "set"
+        if len(s.vars) != want:
+            hint = " (to loop over the keys alone, use a set or keys(m) with an index)" if want == 2 else ""
+            raise LangError(f"line {s.line}: a {what} loop takes {'two variables' if want == 2 else 'one variable'}"
+                            f", like '{shape}'{hint}")
+        refs = [self.resolve(Var(v), env, s.line) for v in s.vars]
+        for row in rows:
+            for name, ref, value in zip(s.vars, refs, row):
+                try:
+                    self.write(ref, value, s.line)
+                except LangError as e:
+                    reason = str(e).split(": ", 1)[-1]
+                    part = ("key", "value")[s.vars.index(name)] if want == 2 else "member"
+                    raise LangError(f"line {s.line}: loop variable '{name}' takes the {part} of the {what}, "
+                                    f"but {reason}") from None
+            try:
+                self.exec_block(s.body, env)
+            except _Cycle as e:
+                if not _mine(e, s):
+                    raise
+            except _Exit as e:
+                if not _mine(e, s):
+                    raise
+                break
 
     def exec_where(self, s, env):
         """`where mask then ... elsewhere ... end where`: each assignment changes only the elements the mask
