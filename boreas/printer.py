@@ -60,6 +60,10 @@ def _expr(e):
         if len(e.items) == 1 and isinstance(e.items[0], Gen) and len(e.items[0].body) == 1:
             return "[" + generator(e.items[0]) + "]"            # shorthand: [value do i = 1, n]
         return "[" + ", ".join(f"({generator(x)})" if isinstance(x, Gen) else expr(x) for x in e.items) + "]"
+    if k is CollLit:
+        if e.kind == "map":
+            return "{" + ", ".join(f"{expr(a)}: {expr(b)}" for a, b in zip(e.keys, e.values)) + "}"
+        return "{" + ", ".join(expr(x) for x in e.keys) + "}"
     if k is Slice:
         return ((expr(e.lo) if e.lo is not None else "") + ":" + (expr(e.hi) if e.hi is not None else "")
                 + (":" + expr(e.step) if e.step is not None else ""))

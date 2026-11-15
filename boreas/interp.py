@@ -262,10 +262,11 @@ def aliased(a, b):
 class MapValue:
     """A map's contents. A dict keeps the order the keys were added in, so a program prints the same thing
     every run. It is copied when assigned (value semantics, like an array)."""
-    __slots__ = ("keytype", "valtype", "data")
+    __slots__ = ("keytype", "valtype", "data", "loose")
 
-    def __init__(self, keytype, valtype, data=None):
+    def __init__(self, keytype, valtype, data=None, loose=False):
         self.keytype, self.valtype, self.data = keytype, valtype, {} if data is None else data
+        self.loose = loose                       # a literal that has not met its declared type yet
 
     def copy(self):
         if isinstance(self.valtype, (SetType, ArrayOf)):          # the values are collections or arrays: copy them too
@@ -275,18 +276,48 @@ class MapValue:
 
 class SetValue:
     """A set's members, in the order they were added (a dict with no values)."""
-    __slots__ = ("elemtype", "data")
+    __slots__ = ("elemtype", "data", "loose")
 
-    def __init__(self, elemtype, data=None):
+    def __init__(self, elemtype, data=None, loose=False):
         self.elemtype, self.data = elemtype, {} if data is None else data
+        self.loose = loose
 
     def copy(self):
         return SetValue(self.elemtype, dict(self.data))
 
 
+def adapt_literal(typ, v, what):
+    """A map or set literal taken as the collection type `typ`: its keys and values are checked and converted
+    the way an assignment would. `{}` fits either kind, being empty."""
+    if isinstance(typ, MapType):
+        if isinstance(v, SetValue) and v.data:
+            raise LangError(f"{what}: expected a {typ}, got a set literal; a map is written {{key: value}}")
+        out = MapValue(typ.key, typ.value)
+        for k, x in v.data.items():
+            check_key(typ.key, k, f"{what}: the map literal")
+            out.data[k] = store_value(typ.value, x, f"{what}: a value of the map literal")
+        return out
+    if isinstance(v, MapValue) and v.data:
+        raise LangError(f"{what}: expected a {typ}, got a map literal; a set is written {{a, b}}")
+    out = SetValue(typ.elem)
+    for k in v.data:
+        check_key(typ.elem, k, f"{what}: the set literal", "members")
+        out.data[k] = None
+    return out
+
+
+def collection_type(v):
+    return MapType(v.keytype, v.valtype) if isinstance(v, MapValue) else SetType(v.elemtype)
+
+
 def collection_equal(a, b):
     """`a == b` for maps and sets: the same kind, the same declared types, and the same contents. The order
     the entries were added in does not matter. A set or array value inside a map is compared the same way."""
+    if isinstance(a, (MapValue, SetValue)) and isinstance(b, (MapValue, SetValue)) and a.loose != b.loose:                             # a literal is read as the type of the other side
+        if a.loose:
+            a = adapt_literal(collection_type(b), a, "comparison")
+        else:
+            b = adapt_literal(collection_type(a), b, "comparison")
     if isinstance(a, MapValue) and isinstance(b, MapValue):
         if (a.keytype, a.valtype) != (b.keytype, b.valtype):
             raise LangError(f"cannot compare a {type_of(a)} with a {type_of(b)}: their types differ")
@@ -317,7 +348,9 @@ class MapKey:
 
 
 def collection_check(typ, v, what):
-    """`v` itself, if it is a collection of the type `typ`; else an error."""
+    """`v` itself, if it is a collection of the type `typ`; else an error. A literal is checked and converted."""
+    if isinstance(v, (MapValue, SetValue)) and v.loose:
+        return adapt_literal(typ, v, what)
     same = (isinstance(typ, MapType) and isinstance(v, MapValue) and (v.keytype, v.valtype) == (typ.key, typ.value)) \
         or (isinstance(typ, SetType) and isinstance(v, SetValue) and v.elemtype == typ.elem)
     if not same:
@@ -1149,6 +1182,9 @@ def iter_apply(e):
     elif isinstance(e, ArrayLit):
         for x in e.items:
             yield from iter_apply(x)
+    elif isinstance(e, CollLit):
+        for x in (*e.keys, *e.values):
+            yield from iter_apply(x)
     elif isinstance(e, Gen):
         for x in (*e.body, e.lo, e.hi, e.step):
             if x is not None:
@@ -1805,6 +1841,21 @@ class Interp:
             raise LangError(f"line {line}: '{name}' is not declared" if line else f"'{name}' is not declared")
         return env[name]
 
+    def collection_literal(self, e, env):
+        """`{...}`: the items as they are written; the declared type is applied where it is stored."""
+        keys = [self.eval(k, env) for k in e.keys]
+        for k in keys:
+            if isinstance(k, (Array, Record, MapValue, SetValue)) or k is NULL:
+                raise LangError(f"line {e.line}: a {'key' if e.kind == 'map' else 'member'} must be a single "
+                                f"integer or string, not {article_for(type_of(k))}")
+        if len(set(keys)) != len(keys):
+            dup = next(k for i, k in enumerate(keys) if k in keys[:i])
+            raise LangError(f"line {e.line}: {show_value(dup)} appears twice in this literal")
+        if e.kind == "set":
+            return SetValue(None, dict.fromkeys(keys), True)
+        values = [self.eval(x, env) for x in e.values]
+        return MapValue(None, None, dict(zip(keys, values)), True)
+
     def literal_values(self, items, env):
         """The values of an array literal's items: a one-dimensional array or a generator is spliced in."""
         out = []
@@ -2076,6 +2127,8 @@ class Interp:
         if k is ArrayLit:
             items = self.literal_values(e.items, env)
             return Array((len(items),), items)
+        if k is CollLit:
+            return self.collection_literal(e, env)
         if k is FieldAccess:
             return self.field_value(e, env)
         if k is NamedArg:

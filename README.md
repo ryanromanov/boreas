@@ -667,8 +667,15 @@ and a map's values are single values (numbers, strings, logicals). They start em
   members), for when you want the whole list at once, to sort it or to index it.
 - `println(age)` shows `{ann: 31}` and a set `{x, y}`. Counting words: `count[w] = (get(count, w) ?? 0) + 1`.
 - Assigning copies, like an array: after `b = a`, changing `b` leaves `a` alone. A declaration can start from a
-  copy (`map[string, integer] :: b = a`). `==` and `/=` compare two maps (or two sets) of the same type by contents, in any order: the same keys with
-  equal values, or the same members. They cannot be ordered with `<`, or used in arithmetic.
+  copy (`map[string, integer] :: b = a`). `==` and `/=` compare two maps (or two sets) of the same type by
+  contents, in any order: the same keys with equal values, or the same members. They cannot be ordered with `<`, or used in arithmetic.
+- A literal builds a whole collection in one go: `age = {"ann": 31, "bob": 27}` for a map, `seen = {"x", "y"}`
+  for a set, and `{}` for an empty one (it is a map or a set, whichever the variable is). A literal takes the type
+  of what it is stored in, so keys and values are checked and converted as in an assignment (`{"pi": 3}` into a
+  `map[string, real]`). It works wherever a value is stored: an assignment, an argument, a result, a map value
+  (`groups["fruit"] = {"apple", "pear"}`, or nested, `{"fruit": {"apple"}, "none": {}}`) and a comparison
+  (`age == {}`). A key or member listed twice is an error. A literal on its own, like `println({"a": 1})`, shows
+  as written. A record field cannot have one as a default (it starts empty).
 - `add` and `remove` are subroutines built in, so they are called with `call`, like `call swap(x, y)`. `map` and
   `set` are not reserved: they are types only before `[` and a type name, so variables called `map` still work.
 - A map or set can be a parameter, a function result and a record field, as well as a local variable. A
@@ -685,12 +692,11 @@ and a map's values are single values (numbers, strings, logicals). They start em
   a function may only read it, and other code imports it with `use`.
 - A map's value can also be a set or an array: `map[string, set[string]]` (a graph, or words grouped by letter)
   or `map[string, integer[]]` (`integer[,]` for a matrix). A missing outer key is an error, as always, so
-  store an empty one first and then change it in place:
+  store one first and then change it in place:
 
       map[string, set[string]] :: groups
-      set[string] :: none                    ! an empty set to copy in
-      groups["fruit"] = none                 ! the map keeps its own copy
-      call add(groups["fruit"], "apple")     ! changes the stored set
+      groups["fruit"] = {"apple"}            ! the map keeps its own copy (here, built from a literal)
+      call add(groups["fruit"], "pear")      ! changes the stored set
       println(size(groups["fruit"]), has(groups["fruit"], "apple"))
       do w in groups["fruit"]
         println(w)

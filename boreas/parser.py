@@ -22,6 +22,11 @@ class Null: pass          # the absent value of an optional (`T?`) variable
 @dataclass
 class ArrayLit: items: list
 @dataclass
+class CollLit:
+    """A map or set literal: `{"a": 1}`, `{"a", "b"}` or `{}`. `kind` is "map", "set" or "empty"; `values`
+    runs alongside `keys` for a map."""
+    kind: str; keys: list; values: list; line: int = 0
+@dataclass
 class Gen:
     """A generator inside an array literal: `(value do i = lo, hi, step)`. `body` holds one or more values
     (scalars or one-dimensional arrays) that are spliced in for each i."""
@@ -1670,6 +1675,30 @@ class Parser:
             return Binary("**", base, self.unary())  # right-associative
         return base
 
+    def collection_literal(self):
+        """`{}`, a set `{a, b}` or a map `{k: v, ...}`; which one is decided by the first item."""
+        line = self.next().line
+        if self.accept("}"):
+            return CollLit("empty", [], [], line)
+        keys, values = [self.expr()], []
+        kind = "set"
+        if self.accept(":"):
+            kind = "map"
+            values.append(self.expr())
+        while self.accept(","):
+            if self.at("}"):
+                break
+            keys.append(self.expr())
+            if kind == "map":
+                self.expect(":")
+                values.append(self.expr())
+            elif self.at(":"):
+                self.error("a set literal lists members only: {a, b}; for a map, write every item as key: value")
+        if kind == "map" and len(values) != len(keys):
+            self.error("every item of a map literal is key: value")
+        self.expect("}")
+        return CollLit(kind, keys, values, line)
+
     def literal_item(self):
         """One item of an array literal: an expression, or a parenthesized generator."""
         if self.at("(") and self.generator_ahead():
@@ -1741,6 +1770,8 @@ class Parser:
                 self.error("a generator belongs in an array literal: [(value do i = 1, n)]")
             self.expect(")")
             return e
+        if self.at("{"):
+            return self.collection_literal()
         if self.accept("["):
             items = []
             if not self.at("]"):

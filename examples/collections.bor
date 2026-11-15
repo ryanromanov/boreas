@@ -99,17 +99,22 @@ program demo
   println(tally, total(tally))               ! {x: 2, y: 1} 3
   println(distinct(words))                   ! {the, cat, saw, dog, and}
 
+  ! A literal builds a whole collection at once. It takes the type of what it is stored in.
+  map[string, real] :: price = {"pen": 2, "ink": 7.5}
+  set[string] :: tags = {"new", "sale"}
+  println(price, tags)                        ! {pen: 2.0, ink: 7.5} {new, sale}
+  tags = {}                                   ! an empty literal fits a map or a set
+  println(size(tags), tags == {})             ! 0 true
+
   inventory :: shop
   shop.stock["pen"] = 3
   call bump(shop.stock, "pen")
   call add(shop.tags, "office")
   println(shop)                              ! inventory(owner=shop, stock={pen: 4}, tags={office})
 
-  ! A map's value can be a set or an array. A missing outer key is an error, so store an empty one first.
+  ! A map's value can be a set or an array. A missing outer key is an error, so store a set first.
   map[string, set[string]] :: groups
-  set[string] :: none
-  groups["fruit"] = none
-  call add(groups["fruit"], "apple")
+  groups["fruit"] = {"apple"}                 ! a literal builds the whole set in one go
   call add(groups["fruit"], "pear")
   println(groups, size(groups["fruit"]))      ! {fruit: {apple, pear}} 2
   do word in groups["fruit"]
