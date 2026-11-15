@@ -667,7 +667,8 @@ and a map's values are single values (numbers, strings, logicals). They start em
   members), for when you want the whole list at once, to sort it or to index it.
 - `println(age)` shows `{ann: 31}` and a set `{x, y}`. Counting words: `count[w] = (get(count, w) ?? 0) + 1`.
 - Assigning copies, like an array: after `b = a`, changing `b` leaves `a` alone. A declaration can start from a
-  copy (`map[string, integer] :: b = a`). A map and a set cannot be compared or used in arithmetic yet.
+  copy (`map[string, integer] :: b = a`). `==` and `/=` compare two maps (or two sets) of the same type by contents, in any order: the same keys with
+  equal values, or the same members. They cannot be ordered with `<`, or used in arithmetic.
 - `add` and `remove` are subroutines built in, so they are called with `call`, like `call swap(x, y)`. `map` and
   `set` are not reserved: they are types only before `[` and a type name, so variables called `map` still work.
 - A map or set can be a parameter, a function result and a record field, as well as a local variable. A

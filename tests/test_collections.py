@@ -137,7 +137,7 @@ class ErrorTests(unittest.TestCase):
 
     def test_no_arithmetic_or_comparison(self):
         fails(self, "  println(age + 1)", "a map cannot be used with '+'")
-        fails(self, "  map[string, integer] :: b\n  println(age == b)", "cannot be compared")
+        fails(self, "  map[string, integer] :: b\n  println(age < b)", "not ordered")
         fails(self, "  println(-age)", "cannot be used with '-'")
 
     def test_no_dimension_for_size(self):

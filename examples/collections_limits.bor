@@ -37,8 +37,11 @@
 
 ! ---- Things you cannot do to one -----------------------------------------------------------
 !
-!  > same = a == b                         (a and b are maps)
-!  error: a map cannot be used with '=='; maps and sets cannot be compared yet: compare keys(...) and values(...), or their sizes
+!  > same = a < b                          (a and b are maps; == and /= work, ordering does not)
+!  error: a map cannot be used with '<'; maps and sets can be compared with == and /=, not ordered
+
+!  > same = a == b                         (a is a map[string, integer], b a map[string, real])
+!  error: cannot compare a map with a map: their types differ
 !
 !  > b = a + a
 !  error: a map cannot be used with '+'
@@ -96,12 +99,8 @@ program workarounds
   a["x"] = 1
   b["x"] = 1
 
-  ! No a == b: compare the sizes, then every key and value.
-  ! TODO we should add comparisons. Maybe == compares objects and === compares all key and values?
-  same = size(a) == size(b)
-  do key, value in a
-    same = same and (get(b, key) ?? -1) == value
-  end do
+  ! == compares contents, in any order: the same keys with equal values.
+  same = a == b
   println(same)                              ! true
 
   ! A missing outer key is an error: store an empty set first, then change it in place.
