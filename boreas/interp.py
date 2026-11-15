@@ -1584,7 +1584,7 @@ class Interp:
             val = self.new_collection(s.type)
             if s.init is not None:
                 val = self.collection_copy(s.type, self.eval(s.init, env), f"{where}: '{s.name}'")
-            env[s.name] = [s.type, val, False, None]
+            env[s.name] = [s.type, val, False, "const" if s.const else None]
             return
         sub = None
         base = base_type(s.type)

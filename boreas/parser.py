@@ -1308,8 +1308,8 @@ class Parser:
 
     def collection_decl(self, line, const, allocatable, field=False):
         word = self.tok.text
-        if const or allocatable:
-            self.error(f"a {word} cannot be 'const' or 'allocatable': it starts empty and grows by itself")
+        if allocatable:
+            self.error(f"a {word} cannot be 'allocatable': it is always there, and grows by itself")
         typ = self.collection_type()
         if self.at("?"):
             self.error(f"a {word} cannot be optional: it is always there, and may be empty")
@@ -1319,11 +1319,13 @@ class Parser:
             self.error(f"an array of {word}s is not supported: a {word} is declared on its own")
         if field and self.at("="):
             self.error(f"a {word} field starts empty, so it has no default value")
-        init = self.expr() if self.accept("=") else None      # another collection of the same type: a copy
+        init = self.expr() if self.accept("=") else None      # a literal, or another collection of the same type
+        if const and init is None:
+            self.error(f"constant '{name}' needs a value: a literal such as {{...}}, or another {word}")
         if self.at(","):
             self.error("declare one variable per line")
         self.newline()
-        return Decl(typ, name, None, init, line)
+        return Decl(typ, name, None, init, line, const)
 
     def type_dims(self, allocatable):
         """The `[...]` after a type in a declaration: sizes for a fixed array (`real[2, 3]`), or only commas

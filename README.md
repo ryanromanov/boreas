@@ -710,8 +710,11 @@ and a map's values are single values (numbers, strings, logicals). They start em
   always copy, so the map never shares a set or array with a variable. `values(m)` is refused
   for these maps (it would be an array of sets); loop with `do k in keys(m)`. A map cannot hold maps or
   optional values, and a set's members stay single values.
-- Not supported yet: `const` or `allocatable` ones, arrays of them, an optional one, and collection literals
-  (there is no `{...}` for an empty or filled map). See `examples/collections.bor`, and
+- A map or set can be `const`, with a literal or another collection as its value
+  (`const map[string, integer] :: limits = {"a": 1, "b": 2}`, also `public const` in a module). It can be read,
+  looped over and copied, but not assigned to, added to or removed from, or passed as `inout` or `out`.
+  `allocatable` makes no sense (a collection is always there), so it is refused.
+- Not supported yet: arrays of them and an optional one. See `examples/collections.bor`, and
   `examples/collections_limits.bor` for each refusal with its exact error message and what to write instead.
 
 ## Subroutines and parameter modes

@@ -192,8 +192,8 @@ class ParseTests(unittest.TestCase):
         self.refused("program t\n  set[logical] :: m\nend program\n", "must be integer or string, not logical")
 
     def test_no_const_allocatable_or_arrays(self):
-        self.refused("program t\n  const map[string, integer] :: m\nend program\n", "cannot be 'const' or 'allocatable'")
-        self.refused("program t\n  allocatable set[string] :: m\nend program\n", "cannot be 'const' or 'allocatable'")
+        self.refused("program t\n  const map[string, integer] :: m\nend program\n", "constant 'm' needs a value")
+        self.refused("program t\n  allocatable set[string] :: m\nend program\n", "cannot be 'allocatable'")
         self.refused("program t\n  map[string, integer] :: m[3]\nend program\n", "an array of maps is not supported")
 
     def test_map_and_set_are_still_ordinary_names(self):

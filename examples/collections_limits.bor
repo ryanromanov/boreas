@@ -7,8 +7,17 @@
 
 ! ---- What a map or set can be ------------------------------------------------------------
 !
+!  > allocatable map[string, integer] :: m
+!  error: a map cannot be 'allocatable': it is always there, and grows by itself
+!
 !  > const map[string, integer] :: m
-!  error: a map cannot be 'const' or 'allocatable': it starts empty and grows by itself
+!  error: constant 'm' needs a value: a literal such as {...}, or another map
+!
+!  > m["a"] = 2                            (m is a const map)
+!  error: 'm' is a constant and cannot be assigned
+!
+!  > call add(s, "b")                      (s is a const set)
+!  error: 's' is a constant and cannot be changed
 !
 !  > map[string, integer] :: ms[3]
 !  error: an array of maps is not supported: a map is declared on its own

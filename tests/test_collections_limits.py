@@ -10,7 +10,10 @@ EXAMPLE = os.path.join(os.path.dirname(__file__), "..", "examples", "collections
 M = "  map[string, integer] :: m\n"
 A_B = "  map[string, integer] :: a\n  map[string, integer] :: b\n"
 CASES = [
-    ("  const map[string, integer] :: m\n", "a map cannot be 'const' or 'allocatable': it starts empty and grows by itself"),
+    ("  allocatable map[string, integer] :: m\n", "a map cannot be 'allocatable': it is always there, and grows by itself"),
+    ("  const map[string, integer] :: m\n", "constant 'm' needs a value: a literal such as {...}, or another map"),
+    ("  const map[string, integer] :: m = {\"a\": 1}\n  m[\"a\"] = 2\n", "'m' is a constant and cannot be assigned"),
+    ("  const set[string] :: s = {\"a\"}\n  call add(s, \"b\")\n", "'s' is a constant and cannot be changed"),
     ("  map[string, integer] :: ms[3]\n", "an array of maps is not supported: a map is declared on its own"),
     ("  map[string, integer]? :: m\n", "a map cannot be optional: it is always there, and may be empty"),
     ("  map[real, integer] :: m\n", "a map's key must be integer or string, not real"),
