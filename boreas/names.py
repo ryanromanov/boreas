@@ -6,7 +6,7 @@ declaration is in a branch: only the program's path decides whether that fails, 
 reported here should always be a real one. The interpreter still catches those cases when it
 runs them."""
 from .interp import BUILTINS, ELEMENTAL, SUBROUTINE_BUILTINS
-from .parser import (Allocate, Apply, ArrayLit, Assign, Binary, Call, Close, Decl, Do, DoEach, DoWhile,
+from .parser import (Allocate, Apply, ArrayLit, Assign, CollLit, Binary, Call, Close, Decl, Do, DoEach, DoWhile,
                      ExprStmt, FieldAccess, Gen, If, IsType, MapType, MultiAssign, NamedArg, Print, ProcType, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, SetType, Slice, Stop,
                      Unary, Var, Where, sub_bodies)
 
@@ -98,6 +98,9 @@ class Walker:
             self.expr([e.left, e.right])
         elif isinstance(e, ArrayLit):
             self.expr(e.items)
+        elif isinstance(e, CollLit):
+            self.expr(e.keys)
+            self.expr(e.values)
         elif isinstance(e, Gen):                  # its variable exists only inside the generator
             self.expr([e.lo, e.hi, e.step])
             added = e.var not in self.variables

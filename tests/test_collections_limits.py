@@ -62,7 +62,7 @@ class LimitsExampleTests(unittest.TestCase):
 
     def test_the_program_at_the_bottom_runs(self):
         out = run_bor(open(EXAMPLE).read())
-        self.assertEqual(out, ["true", "{fruit: {apple}}", "{a: [10, 99]} 10", "0"])
+        self.assertEqual(out, ["true", "{fruit: {apple, pear}}", "{a: [10, 99]} 10", "0"])
 
 
 if __name__ == "__main__":
