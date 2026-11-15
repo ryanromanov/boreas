@@ -1032,6 +1032,8 @@ def overlaps(a, b):
     """Could two subscript lists of the same array touch a common element?"""
     if a is None or b is None:
         return True
+    if isinstance(a, MapKey) or isinstance(b, MapKey):      # two entries of a map: the same key is the same storage
+        return not (isinstance(a, MapKey) and isinstance(b, MapKey)) or a.key == b.key
     return all(_share(x, y) for x, y in zip(a, b))
 
 
@@ -2666,6 +2668,8 @@ class Interp:
             return self.resolve(a, env, line)
         if isinstance(a, Var) and a.name in env:
             return Ref(env[a.name], None, a.name)
+        if isinstance(a, Apply) and a.name in env and isinstance(env[a.name][TYPE], MapType) and a.bracket:
+            return self.resolve(a, env, line)                  # one entry of a map
         if isinstance(a, Apply) and a.name in env and env[a.name][IS_ARRAY]:
             slot = env[a.name]
             return Ref(slot, self.subscripts(slot[VALUE], a.args, env, line, a.name), a.name)
@@ -2767,9 +2771,7 @@ class Interp:
                 continue
             ref = self.resolve(a, env, s.line)
             slot = ref[0]
-            if isinstance(ref[1], MapKey):
-                raise LangError(f"line {s.line}: an entry of a map cannot be passed as an {intent} argument yet; "
-                                f"copy it to a variable, call, and store it back")
+            entry = isinstance(ref[1], MapKey)
             typ = typ[:typ.index("[")] if isinstance(typ, str) and typ.endswith("]") else typ
             if ref.root[INTENT] in ("in", "const"):
                 what = "an 'in' parameter" if ref.root[INTENT] == "in" else "a constant"
@@ -2781,14 +2783,19 @@ class Interp:
             # class(shape), intent(inout): the routine can change the record but not what kind it is
             as_record = (isinstance(wanted, IfaceType) and not slot[IS_ARRAY] and slot[TYPE] != typ
                          and isinstance(slot[VALUE], Record) and slot[TYPE] == slot[VALUE].rdef.name)
-            if slot[TYPE] != typ and not through_interface and not as_record:   # (an interface value is checked when it is written back)
-                raise LangError(f"line {s.line}: argument '{name}' is {typ} but '{ref[2]}' is {slot[TYPE]}")
+            have = slot[TYPE].value if entry else slot[TYPE]       # an entry of a map has the map's value type
+            if have != typ and not through_interface and not as_record:   # (an interface value is checked when it is written back)
+                raise LangError(f"line {s.line}: argument '{name}' is {typ} but "
+                                f"{'an entry of ' if entry else ''}'{ref[2]}' is {have}")
             if as_record:
                 problems = conformance(slot[VALUE].rdef, wanted.idef)
                 if problems:
                     raise LangError(f"line {s.line}: '{ref[2]}' is a {slot[TYPE]}, which cannot be used as {wanted}: {problems[0]}")
             outs.append((n, ref))
-            current = self.read(ref)
+            if entry and intent == "out":
+                values.append(None)                               # an entry passed as out need not exist yet
+                continue
+            current = self.read(ref)                              # (a missing key is the usual missing-key error)
             if isinstance(typ, (MapType, SetType)):
                 values.append(self.new_collection(typ) if intent == "out" else current.copy())   # out starts empty
             elif intent == "out" and typ not in DEFAULTS:           # an out record starts with no values

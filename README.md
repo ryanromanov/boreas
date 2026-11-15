@@ -674,9 +674,11 @@ and a map's values are single values (numbers, strings, logicals). They start em
   record field starts empty and is used like a variable (`b.stock["pen"] = 3`, `call add(b.tags, "x")`);
   copying a record copies its maps and sets too. They also work in a callback's signature
   (`function(map[string, integer]) -> integer :: f`).
-- Not supported yet: a module variable, `const` or `allocatable` ones, arrays of them, an optional one, values
-  that are arrays, optional or other collections, and a map entry as an `out` or `inout` argument. See
-  `examples/collections.bor`.
+- One entry of a map can be passed to an `inout` or `out` parameter: `call bump(count[w])` changes that entry
+  (`inout` needs the key to exist; `out` creates it). Two entries with different keys are fine in one call; the
+  same entry twice is refused as aliasing.
+- Not supported yet: a module variable, `const` or `allocatable` ones, arrays of them, an optional one, and values
+  that are arrays, optional or other collections. See `examples/collections.bor`.
 
 ## Subroutines and parameter modes
 

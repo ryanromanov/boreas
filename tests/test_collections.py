@@ -156,12 +156,12 @@ class EntryArgumentTests(unittest.TestCase):
     def run_it(self, body):
         return run_bor(self.SWAP + "program t\n" + DECLS + '  age["a"] = 1\n  age["b"] = 2\n' + body + "\nend program\n")
 
-    def test_a_map_entry_cannot_be_an_inout_or_out_argument_yet(self):
-        for body in ('call swap(age["a"], age["b"])', 'integer :: n\n  call swap(n, age["a"])',
-                     'call swap(age["a"], age["a"])'):
-            with self.subTest(body):
-                with self.assertRaisesRegex(LangError, "an entry of a map cannot be passed as an inout argument"):
-                    self.run_it(body)
+    def test_swapping_two_entries(self):
+        self.assertEqual(self.run_it('call swap(age["a"], age["b"])\n  println(age)'), ["{a: 2, b: 1}"])
+
+    def test_the_same_entry_twice_is_refused(self):
+        with self.assertRaisesRegex(LangError, "must not alias"):
+            self.run_it('call swap(age["a"], age["a"])')
 
     def test_an_entry_can_be_read_as_an_in_argument_and_unpacked_into(self):
         out = self.run_it('(age["q"], age["r"]) = divmod(7, 2)\n  println(age)')
