@@ -96,5 +96,84 @@ class EntryArgumentTests(unittest.TestCase):
         fails(self, '  call add(s, "x")\n  call bump(s["x"])', "set", "  set[string] :: s\n")
 
 
+REGISTRY = """
+module registry
+  public map[string, integer] :: hits
+  public set[string] :: seen
+  map[string, integer] :: hidden
+
+  public subroutine record(in string :: who)
+    @hits[who] = (get(hits, who) ?? 0) + 1
+    call add(seen, who)
+    @hidden[who] = 1
+  end subroutine
+
+  public function total() -> integer
+    string :: k
+    integer :: v
+    integer :: t = 0
+    do k, v in hits
+      t = t + v
+    end do
+    return t + size(hidden)
+  end function
+end module
+"""
+
+
+def with_registry(body, decls="", uses="hits, seen, record, total"):
+    return run_bor(REGISTRY + "program t\n  use registry: " + uses + "\n" + decls + body + "\nend program\n")
+
+
+class ModuleVariableTests(unittest.TestCase):
+    def test_starts_empty_and_is_shared(self):
+        out = with_registry('  println(size(hits), size(seen))\n  call record("a")\n  call record("a")\n  call record("b")\n'
+                            '  println(hits, seen, total())')
+        self.assertEqual(out, ["0 0", "{a: 2, b: 1} {a, b} 5"])
+
+    def test_the_importer_can_write_it(self):
+        out = with_registry('  @hits["z"] = 9\n  call add(seen, "q")\n  call remove(seen, "q")\n  println(hits, size(seen))')
+        self.assertEqual(out, ["{z: 9} 0"])
+
+    def test_the_importer_can_loop_over_it(self):
+        out = with_registry('  string :: k\n  integer :: v\n  call record("a")\n  do k, v in hits\n    println(k, v)\n  end do')
+        self.assertEqual(out, ["a 1"])
+
+    def test_a_private_one_cannot_be_imported(self):
+        with self.assertRaises(LangError):
+            with_registry('  println(hidden)', uses="hits, record, hidden")
+
+    def test_an_importer_write_needs_the_mark(self):
+        with self.assertRaises(LangError) as cm:
+            with_registry('  hits["z"] = 9')
+        self.assertIn("('hits')", str(cm.exception))
+
+    def test_a_function_cannot_change_one(self):
+        for stmt in ('@hits["k"] = 1', 'call add(seen, "x")', 'call remove(seen, "x")'):
+            with self.subTest(stmt):
+                src = ("module reg\n  public map[string, integer] :: hits\n  public set[string] :: seen\n"
+                       "  public function f() -> integer\n    " + stmt + "\n    return 1\n  end function\nend module\n"
+                       "program t\n  use reg: f\n  integer :: n\n  n = f()\nend program\n")
+                with self.assertRaises(LangError) as cm:
+                    run_bor(src)
+                self.assertIn("a function cannot change the module variable", str(cm.exception))
+
+    def test_a_function_may_change_a_local_one(self):
+        src = ("module reg\n  public function f() -> integer\n    set[string] :: s\n    call add(s, \"x\")\n"
+               "    return size(s)\n  end function\nend module\nprogram t\n  use reg: f\n  println(f())\nend program\n")
+        self.assertEqual(run_bor(src), ["1"])
+
+    def test_a_function_may_read_one(self):
+        out = with_registry('  call record("a")\n  println(total())')
+        self.assertEqual(out, ["2"])
+
+    def test_check_is_clean(self):
+        src = REGISTRY + "program t\n  use registry: hits, seen, record\n  call record(\"a\")\n  @hits[\"z\"] = 1\n  println(seen)\nend program\n"
+        self.assertEqual(check_errors(src), [])
+
+    def test_a_program_level_declaration_still_works(self):
+        self.assertEqual(run('  m["a"] = 1\n  println(m)'), ["{a: 1}"])
+
+
 if __name__ == "__main__":
     unittest.main()

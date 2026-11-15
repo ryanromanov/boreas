@@ -335,6 +335,12 @@ def check_writes(body, params, shared=None, is_sub=True):
                     name = root_name(target)
                     write(s, update, name, target_text(target) if isinstance(target, FieldAccess) else name,
                           reaches(name, update), name in shared and not shared[name] and name not in params)
+        elif isinstance(s, Call) and s.name in ("add", "remove") and s.receiver is None and s.args \
+                and isinstance(s.args[0], (Var, FieldAccess)):
+            name = root_name(s.args[0])           # `call add(seen, x)` changes `seen` like an assignment would
+            if name in shared and name not in params and not is_sub:
+                raise LangError(f"line {s.line}: a function cannot change the module variable '{name}'; "
+                                f"make it a subroutine")
         elif isinstance(s, If):
             for _, b in s.branches:
                 check_writes(b, params, shared, is_sub)
@@ -1231,12 +1237,9 @@ class Parser:
 
     def decl(self, const=False, allocatable=False, local=False, field=False):
         """A declaration. `local` is true inside a program or procedure body and `field` in a record: the
-        places a map or a set can be declared (module variables are not supported yet)."""
+        places a record's fields are told apart from variables (a map or a set can be declared in either)."""
         line = self.tok.line
         if self.collection_ahead():
-            if not (local or field):
-                self.error(f"a {self.tok.text} cannot be a module variable yet; it can be a local variable, "
-                           f"a parameter, a function result or a record field")
             return self.collection_decl(line, const, allocatable, field)
         typ = self.type_name()
         dims = None

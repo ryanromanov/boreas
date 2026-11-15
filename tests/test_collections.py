@@ -178,12 +178,6 @@ class ParseTests(unittest.TestCase):
             parse(src)
         self.assertIn(message, str(cm.exception))
 
-    def test_a_module_variable_is_not_supported_yet(self):
-        for src in ["module m\n  public map[string, integer] :: age\nend module\nprogram t\nend program\n",
-                    "module m\n  map[string, integer] :: age\nend module\nprogram t\nend program\n"]:
-            with self.subTest(src.splitlines()[1]):
-                self.refused(src, "cannot be a module variable yet")
-
     def test_parameters_results_and_fields_parse(self):
         parse("function f(map[string, integer] :: m, set[integer] :: s) -> map[string, integer]\n  return m\nend function\n"
               "record r\n  set[string] :: tags\nend record\nprogram t\nend program\n")
