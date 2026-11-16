@@ -7,7 +7,7 @@ reported here should always be a real one. The interpreter still catches those c
 runs them."""
 from types import SimpleNamespace
 from .effects import mark_problem, types_in
-from .interp import BUILTINS, ELEMENTAL, SUBROUTINE_BUILTINS
+from .interp import BUILTINS, ELEMENTAL, PREDEFINED, SUBROUTINE_BUILTINS
 from .parser import (Allocate, Apply, ArrayLit, Assign, CollLit, Binary, Call, Close, Decl, Do, DoEach, DoWhile,
                      ExprStmt, FieldAccess, Gen, If, IsType, Marked, MapType, MultiAssign, NamedArg, Print, ProcType, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, SetType, Slice, Stop,
                      Unary, Var, Where, sub_bodies)
@@ -76,7 +76,7 @@ class Walker:
         self.errors.append((line, col, message, len(name)))
 
     def variable(self, name, line, col):
-        if name not in self.variables:
+        if name not in self.variables and name not in PREDEFINED:
             self.report(name, line, col, f"'{name}' is not declared")
 
     def expr(self, e):

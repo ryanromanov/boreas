@@ -92,6 +92,25 @@ def single_function(name):
     return fn
 
 
+_double_cache = {}
+
+
+def libm_function(c_name):
+    """A double-precision C library function of one double (`j0`) or of an int and a double (`jn`), or None."""
+    if c_name not in _double_cache:
+        fn = None
+        try:
+            if not _libm:
+                _libm.append(ctypes.CDLL(ctypes.util.find_library("m")))
+            fn = getattr(_libm[0], c_name)
+            fn.restype = ctypes.c_double
+            fn.argtypes = [ctypes.c_int, ctypes.c_double] if c_name in ("jn", "yn") else [ctypes.c_double]
+        except (OSError, AttributeError, TypeError):
+            fn = None
+        _double_cache[c_name] = fn
+    return _double_cache[c_name]
+
+
 def single_check(name, r, xs):
     """A library result that is NaN or infinite where the arguments were finite is a domain or range
     error, which stops the program unless the file says `use ieee`."""
