@@ -232,10 +232,11 @@ INT_KINDS = {1: "int8", 2: "int16", 4: "integer", 8: "int64"}
 REAL_KINDS = {4: "real32", 8: "real"}
 # Fortran lets an intrinsic's arguments be passed by name; Boreas built-ins are positional, so the converter
 # puts them in this order. (Looking into keyword arguments for Boreas parameters is on the list: see D52.)
+LOC_PARAMS = ["array", "dim", "mask", "kind", "back"]
 INTRINSIC_PARAMS = {"cshift": ["array", "shift", "dim"], "merge": ["tsource", "fsource", "mask"],
                     "count": ["mask", "dim"], "pack": ["array", "mask", "vector"],
-                    "maxloc": ["array", "dim"], "minloc": ["array", "dim"], "norm2": ["x", "dim"],
-                    "spread": ["source", "dim", "ncopies"], "findloc": ["array", "value", "dim"],
+                    "maxloc": LOC_PARAMS, "minloc": LOC_PARAMS, "norm2": ["x", "dim"],
+                    "spread": ["source", "dim", "ncopies"], "findloc": ["array", "value", "dim", "mask", "kind", "back"],
                     "lbound": ["array", "dim"], "ubound": ["array", "dim"]}
 UNSET = object()          # "not given", for an argument that may be None
 KIND_ARGUMENT = {"real", "int", "cmplx", "dble", "dcmplx", "float", "sngl", "nint", "floor", "ceiling"}
@@ -853,7 +854,8 @@ class FParser:
                 if not self.accept_op(","):
                     break
         self.expect_op(")")
-        if any(isinstance(a, NamedArg) and a.name != "kind" for a in args) and fname in INTRINSIC_PARAMS:
+        positional_mask = fname in ("maxloc", "minloc", "findloc") and len(args) > (3 if fname == "findloc" else 2)
+        if (any(isinstance(a, NamedArg) and a.name != "kind" for a in args) or positional_mask) and fname in INTRINSIC_PARAMS:
             args = self.positional_order(fname, args)
         return args
 
@@ -870,7 +872,16 @@ class FParser:
             if key in slots:
                 raise Unsupported(f"argument given twice in {fname}()")
             slots[key] = value
+        if fname in ("maxloc", "minloc", "findloc"):
+            first = 2 if fname == "findloc" else 1                       # where `dim` goes
+            if first + 1 in slots or first + 2 in slots:
+                raise Unsupported(f"{fname}() with mask= or kind= is not supported")
+            if first + 3 in slots and first not in slots:
+                slots[first] = Num(0)                                    # dim 0: the whole array, so back can follow
         top = max(slots)
+        if fname in ("maxloc", "minloc", "findloc") and top > (2 if fname == "findloc" else 1):
+            slots = {(k - 2 if k > (2 if fname == "findloc" else 1) else k): v for k, v in slots.items()}
+            top = max(slots)
         if any(k not in slots for k in range(top + 1)):
             raise Unsupported(f"{fname}() with an argument left out before a later one")
         return [slots[k] for k in range(top + 1)]
@@ -3373,23 +3384,34 @@ class FParser:
         if self.peek() is not None:                     # where (mask) a = b
             inner = self.statement(it, self.toks[self.k:], scope)
             return [self.where_node(cond, inner, [], it)]
+        return [self.where_chain(cond, scope, it)]
+
+    def where_chain(self, cond, scope, it):
+        """The rest of a where block after its mask: the body, then each `elsewhere (mask)` as a where of its
+        own inside the previous one's `elsewhere` (the elements no earlier mask took, that this mask takes)."""
         body = self.parse_body(scope, {("end", "where"), ("elsewhere",)})
         orelse = []
         cur = self.items[self.i]
         self.i += 1
         toks = self.tokens(cur)
         if classify(toks) == ("elsewhere",):
-            if len(toks) > (2 if toks[0].text == "else" else 1):
-                self.skip_block("where")
-                raise Unsupported("'elsewhere' with its own mask is not supported; skipped")
-            orelse = self.parse_body(scope, {("end", "where")})
-            self.i += 1
-        return [self.where_node(cond, body, orelse, it)]
+            head = 2 if toks[0].text == "else" else 1
+            if len(toks) > head:                          # elsewhere (mask2)
+                saved, self.toks, self.k = self.toks, toks, head
+                self.expect_op("(")
+                cond2 = self.expr()
+                self.expect_op(")")
+                self.toks = saved
+                orelse = [self.where_chain(cond2, scope, cur)]
+            else:
+                orelse = self.parse_body(scope, {("end", "where")})
+                self.i += 1
+        return self.where_node(cond, body, orelse, it)
 
     def where_node(self, cond, body, orelse, it):
         for st in body + orelse:
-            if not isinstance(st, (Assign, Comment)):
-                raise Unsupported("only assignments are supported inside 'where'")
+            if not isinstance(st, (Assign, Where, Comment)):
+                raise Unsupported("only assignments and other 'where' blocks are supported inside 'where'")
         return Where(cond, body, orelse, it.line)
 
     def st_forall(self, it, scope):

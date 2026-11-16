@@ -266,7 +266,9 @@ end where
 ```
 
 The test must be an array of logicals, and every assignment inside must have a target of the same shape.
-Only assignments go inside (use `if` or a loop for anything else), and there is at most one `elsewhere`.
+Only assignments and other `where` blocks go inside (use `if` or a loop for anything else), and there is at most one
+`elsewhere`. A `where` inside another works on the elements both masks select, and one inside an `elsewhere` on the
+elements the first mask skipped, so `elsewhere (mask2)` in Fortran becomes a `where` inside `elsewhere`.
 The test is worked out once, before any assignment. Each right-hand side is computed for every element,
 like any array expression, and only the selected elements are stored. `where` is a statement only when the
 line ends in `then`, so a variable called `where` still works.
@@ -306,6 +308,8 @@ true, down the columns, as a one-dimensional array (`pack(v, v > 0)`; a single `
 `minloc(v)` are the position (counting from 1) of the first largest or smallest element of a one-dimensional array of
 numbers or strings; unlike Fortran they give a plain integer, not a one-element array. For a matrix, `maxloc(m)` gives
 the subscripts as an array (`[row, col]`), and `maxloc(m, 1)` / `maxloc(m, 2)` give one position per column / per row.
+A last argument of `true` (`maxloc(v, 1, true)`, `findloc(v, x, 1, true)`) picks the last of equal elements instead of the
+first, Fortran's `back=`; a `dim` of 0 means the whole array, so `maxloc(m, 0, true)` is the whole-matrix answer.
 
 `norm2(x)` is the length of a real array (the square root of the sum of its squares). `spread(source, dim, n)` repeats
 `source` (a single value or an array) `n` times along a new dimension `dim`: `spread([1, 2, 3], 1, 2)` is two rows of

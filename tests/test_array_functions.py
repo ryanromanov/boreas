@@ -91,7 +91,7 @@ class MatrixLocateTests(unittest.TestCase):
         self.assertEqual(out, ["[2, 2, 2]", "[2, 2]", "[[2, 2], [2, 2]]"])
 
     def test_dim_must_fit_the_rank(self):
-        for body in ("maxloc(m, 3)", "findloc(m, 1, 0)"):
+        for body in ("maxloc(m, 3)", "findloc(m, 1, -1)"):
             with self.subTest(body):
                 with self.assertRaisesRegex(LangError, "dimension must be 1..2"):
                     show(M + "  println(" + body + ")")

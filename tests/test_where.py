@@ -50,6 +50,29 @@ class RunTests(unittest.TestCase):
         self.assertEqual(show("  integer :: where = 4\n  where = where + 1\n  println(where)"), ["5"])
 
 
+class NestedTests(unittest.TestCase):
+    def test_a_where_inside_a_where_works_on_the_elements_both_select(self):
+        out = show(A + "  where a > -1.5 then\n    where a < 3.5 then\n      b = 1.0\n    elsewhere\n      b = 2.0\n"
+                   "    end where\n  end where\n  println(b)")
+        self.assertEqual(out, ["[0.0, 1.0, 1.0, 2.0, 1.0]"])
+
+    def test_a_where_inside_elsewhere(self):
+        out = show(A + "  where a > 0.0 then\n    b = 1.0\n  elsewhere\n    where a < -1.5 then\n      b = 9.0\n"
+                   "    end where\n  end where\n  println(b)")
+        self.assertEqual(out, ["[9.0, 1.0, 0.0, 1.0, 0.0]"])
+
+    def test_the_masks_must_have_the_same_shape(self):
+        with self.assertRaises(LangError) as cm:
+            show(A + "  real[2] :: c = 0.0\n  where a > 0.0 then\n    where c > 0.0 then\n      b = 1.0\n"
+                 "    end where\n  end where")
+        self.assertIn("but the 'where' around it has shape", str(cm.exception))
+
+    def test_it_prints_and_parses_back(self):
+        src = "program t\n  real[3] :: a = [1.0, -1.0, 2.0]\n  where a > 0.0 then\n    where a > 1.5 then\n      a = 0.0\n    end where\n  end where\nend program\n"
+        once = to_source(parse(src))
+        self.assertEqual(to_source(parse(once)), once)
+
+
 class ErrorTests(unittest.TestCase):
     def fails(self, body, message):
         with self.assertRaises(LangError) as cm:
@@ -106,11 +129,19 @@ class ConversionTests(unittest.TestCase):
             want = fortran_output(src)
             self.assertTrue(same_output("\n".join(got), want), f"\nBoreas:\n{chr(10).join(got)}\n\ngfortran:\n{want}")
 
-    def test_a_masked_elsewhere_is_left_as_a_todo(self):
-        src = ("program t\n  real :: a(3)\n  a = 1.0\n  where (a > 5.0)\n    a = 0.0\n  elsewhere (a > 0.5)\n"
-               "    a = 2.0\n  end where\nend program\n")
-        _, findings = converted(src)
-        self.assertTrue(any("elsewhere" in f[2] for f in findings), findings)
+    def test_a_masked_elsewhere_and_a_nested_where_match_gfortran(self):
+        src = ("program t\n  implicit none\n  real :: a(6), b(6)\n  a = [-2.0, 3.0, 0.0, 4.0, -1.0, 9.0]\n  b = 0.0\n"
+               "  where (a > 5.0)\n    b = 1.0\n  elsewhere (a > 0.5)\n    b = 2.0\n  elsewhere (a < -1.5)\n    b = 3.0\n"
+               "  elsewhere\n    b = 4.0\n  end where\n  print *, b\n"
+               "  where (a > 0.0)\n    where (a > 3.5)\n      b = 7.0\n    elsewhere\n      b = 8.0\n    end where\n"
+               "  end where\n  print *, b\nend program\n")
+        text, findings = converted(src)
+        self.assertEqual(todos(findings), [])
+        got = run_bor(text)
+        self.assertEqual(got, ["[3.0, 2.0, 4.0, 2.0, 4.0, 1.0]", "[3.0, 8.0, 4.0, 7.0, 4.0, 7.0]"])
+        if GFORTRAN:
+            want = fortran_output(src)
+            self.assertTrue(same_output("\n".join(got), want), f"\nBoreas:\n{chr(10).join(got)}\n\ngfortran:\n{want}")
 
     def test_a_dummy_argument_changed_under_a_mask_is_inout(self):
         src = ("subroutine clip(a)\n  real :: a(3)\n  where (a < 0.0) a = 0.0\nend subroutine\n"

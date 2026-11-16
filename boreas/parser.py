@@ -1403,9 +1403,9 @@ class Parser:
                 self.error("missing 'end where'")
             else:
                 st = self.statement()
-                if not isinstance(st, (Assign, Comment)):
+                if not isinstance(st, (Assign, Where, Comment)):
                     raise LangError(f"line {getattr(st, 'line', self.tok.line)}: a 'where' holds only "
-                                    f"assignments; use 'if' or a loop for anything else")
+                                    f"assignments and other 'where' blocks; use 'if' or a loop for anything else")
                 current.append(st)
             self.skip_newlines()
 
