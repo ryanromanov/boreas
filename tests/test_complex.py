@@ -90,7 +90,7 @@ class ComplexValueTests(unittest.TestCase):
                 self.assertAlmostEqual(got.imag, want.imag)
 
     def test_real_functions_still_reject_out_of_range_arguments(self):
-        fails(self, "  println(sqrt(-1.0))", "math domain error")
+        fails(self, "  println(sqrt(-1.0))", "has no real answer")
         fails(self, "  println(log(0.0))")
 
     def test_sqrt_of_a_negative_via_complex(self):

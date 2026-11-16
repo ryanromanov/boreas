@@ -4,6 +4,7 @@ from dataclasses import replace
 import cmath
 import operator
 import random
+import inspect
 import re
 import sys
 import threading
@@ -864,22 +865,82 @@ def _len(s):
 
 def _achar(i):
     if type_of(i) not in INT_RANGE or not 0 <= i <= 0x10FFFF:
-        raise TypeError(f"needs a character code from 0 to 1114111, got {show_value(i)}")
+        raise TypeError(f"needs a character code from 0 to 1114111, got {describe(i)}")
     return chr(int(i))
 
 
 def _iachar(c):
     if not isinstance(c, str) or len(c) != 1:
-        raise TypeError(f"needs a one-character string, got {show_value(c)}")
+        raise TypeError(f"needs a one-character string, got {describe(c)}")
     return ord(c)
 
 
 _random = random.Random()
 
 
+_ARITY = {}
+
+
+def arity_problem(name, given):
+    """`sqrt() takes 1 argument, got 2`, or None when `given` arguments suit the built-in `name`."""
+    if name not in _ARITY:
+        fn = ELEMENTAL.get(name) or BUILTINS.get(name)
+        bounds = None
+        if fn is not None:
+            try:
+                ps = list(inspect.signature(fn).parameters.values())
+            except (ValueError, TypeError):
+                ps = None
+            if ps is not None:
+                pos = [p for p in ps if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+                most = None if any(p.kind is p.VAR_POSITIONAL for p in ps) else len(pos)
+                bounds = (sum(1 for p in pos if p.default is p.empty), most)
+        _ARITY[name] = bounds
+    bounds = _ARITY[name]
+    if bounds is None:
+        return None
+    lo, hi = bounds
+    if given >= lo and (hi is None or given <= hi):
+        return None
+    plural = lambda n: f"{n} argument" + ("" if n == 1 else "s")
+    want = plural(lo) if lo == hi else f"at least {plural(lo)}" if hi is None else f"{lo} to {plural(hi)}"
+    return f"{name}() takes {want}, got {given}"
+
+
+PYTHON_WORDING = re.compile(r"positional|unsupported operand|not supported between|not iterable|must be real number|"
+                            r"bad operand|<locals>|object|argument must|cannot be interpreted|takes exactly|"
+                            r"takes at least|expected at least|invalid literal|has no attribute|unhashable")
+
+
+def translate_error(name, args, err):
+    """The message for a built-in that raised `err`: Python's own wording becomes Boreas's."""
+    text = str(err)
+    shown = ", ".join(describe(a) for a in args)
+    if name in ("mod", "modulo") or isinstance(err, ZeroDivisionError) or "modulo by zero" in text or "division by zero" in text:
+        return f"{name}({shown}): division by zero"
+    if "math domain error" in text:
+        return f"{name}({shown}) has no real answer (a file that says `use ieee` gets NaN instead)"
+    if "math range error" in text or "too large to convert" in text:
+        return f"{name}({shown}) is too large for a real (a file that says `use ieee` gets Infinity instead)"
+    if isinstance(err, (TypeError, ValueError)) and PYTHON_WORDING.search(text):
+        return f"{name}() cannot be used with " + (", ".join(type_of(a) for a in args) or "no arguments")
+    return f"{name}(): {text}"
+
+
+def describe(v):
+    """A value for an error message: text in quotes, an array by its shape, anything else as it prints."""
+    if isinstance(v, str):
+        return '"' + v + '"'
+    if isinstance(v, Array):
+        return f"an array of shape {fmt_shape(v.shape)}"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
 def _count(name, what, n):
     if type_of(n) not in INT_RANGE or n < 0:
-        raise TypeError(f"{what} must be a whole number of 0 or more, got {n!r}")
+        raise TypeError(f"{what} must be a whole number of 0 or more, got {describe(n)}")
     return int(n)
 
 
@@ -914,7 +975,7 @@ def _style_arg(name, style):
     if style is None:
         return False
     if style != "fortran":
-        raise TypeError(f'{name}: the style must be "fortran" (or left off), got {style!r}')
+        raise TypeError(f'{name}: the style must be "fortran" (or left off), got {describe(style)}')
     return True
 
 
@@ -1550,7 +1611,16 @@ class Interp:
 
     def exec_block(self, stmts, env):
         for s in stmts:
-            self.exec(s, env)
+            try:
+                self.exec(s, env)
+            except LangError as err:
+                if not str(err).startswith("line "):          # a runtime error says where it happened
+                    line = getattr(s, "line", None)
+                    if line:
+                        located = LangError(f"line {line}: {err}")
+                        located.col = err.col
+                        raise located from None
+                raise
 
     def exec(self, s, env):
         k = type(s)
@@ -2651,6 +2721,9 @@ class Interp:
 
     def call_builtin(self, name, args, line):
         try:
+            problem = arity_problem(name, len(args))
+            if problem:
+                raise LangError(f"line {line}: {problem}")
             if name == "argument":              # argument(0) is the program name, "" past the last one
                 if len(args) != 1 or type_of(args[0]) not in INT_RANGE:
                     raise TypeError("needs one integer")
@@ -2696,7 +2769,7 @@ class Interp:
         except LangError:
             raise
         except (ValueError, TypeError, ZeroDivisionError, OverflowError) as err:
-            raise LangError(f"line {line}: {name}(): {err}")
+            raise LangError(f"line {line}: {translate_error(name, args, err)}")
 
     def keep_kind(self, name, result, args):
         """A function of fixed-width numbers gives a result of the same width (`sqrt` of a real32 is a
