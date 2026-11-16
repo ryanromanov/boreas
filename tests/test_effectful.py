@@ -20,7 +20,7 @@ class EffectfulFunctionTests(unittest.TestCase):
     def test_assignment_passes_the_target_directly(self):
         text, findings, out = run("  r = bump(k)\n  print *, r, k")
         self.assertEqual(todos(findings), [])
-        self.assertIn("call bump(k, r)", text)
+        self.assertIn("call bump(@k, @r)", text)
         self.assertEqual(out, ["5 6"])
 
     def test_assignment_to_an_element_uses_a_temporary(self):

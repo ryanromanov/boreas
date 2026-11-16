@@ -49,9 +49,9 @@ program demo
   real :: total = 0.0
   integer :: i
 
-  call add(sc, circle(r = 2.0))
-  call add(sc, rect(w = 3.0, h = 4.0))
-  call add(sc, circle())
+  call add(@sc, circle(r = 2.0))
+  call add(@sc, rect(w = 3.0, h = 4.0))
+  call add(@sc, circle())
 
   do i = 1, sc.count
     println(sc.items[i].name(), "area =", fixed(sc.items[i].area(), 3))

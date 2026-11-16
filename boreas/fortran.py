@@ -16,6 +16,7 @@ from .parser import *
 from .interp import BUILTINS, ELEMENTAL, PURE_BUILTINS
 from .kinds import round32
 from .printer import to_source
+from .callmarks import fill_marks
 from .fformat import FormatError, parse_format, render, substitute
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
@@ -5680,6 +5681,7 @@ def convert_files(sources, defines=None):
 def convert_free(src, label, before=()):
     """`before` holds findings made ahead of the parse (the preprocessor's)."""
     unit, trailing, findings = parse_fortran(src)
+    fill_marks(unit)                       # Fortran does not mark the arguments a call changes
     findings = list(before) + findings
     trailing = [f"TODO(convert): {msg}" for _, kind, msg in before if kind == "todo"] + list(trailing)
     todos = sum(1 for f in findings if f[1] == "todo")

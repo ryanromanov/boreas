@@ -343,7 +343,7 @@ class TranslationTests(unittest.TestCase):
         text, findings = convert(src)
         self.assertEqual(todos(findings), [])
         self.assertIn("subroutine bad(inout integer :: n, out integer :: bad_result)", text)
-        self.assertIn("call bad(k, bad_value)", text)
+        self.assertIn("call bad(@k, @bad_value)", text)
         self.assertEqual(run_bor(text), ["2 2"])
 
     def test_implicit_save_moves_to_a_module(self):

@@ -371,7 +371,7 @@ program t
   integer :: n
   n = 0
   a: do i = 1, 3
-    call inner(r)
+    call inner(@r)
     n = n + r
     if i == 2 then
       exit a
@@ -402,7 +402,7 @@ end subroutine
 program t
   integer :: total
   total = 0
-  call tally(total, 6)
+  call tally(@total, 6)
   println(total)
 end program t
 """

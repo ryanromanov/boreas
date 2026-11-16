@@ -306,7 +306,7 @@ end program
   end select
   call s%describe()
 end program
-""", ["call p.grow(3.0)", "s = p"])
+""", ["call @p.grow(3.0)", "s = p"])
 
     def test_select_type_without_an_associate_name(self):
         self.check(SHAPES + """program demo
@@ -858,7 +858,7 @@ class PassArgTests(unittest.TestCase):
   k = y%show("y is")
   print *, k
 end program
-""", ["subroutine add(inout self, integer :: amount)", "call x.add(5)"])
+""", ["subroutine add(inout self, integer :: amount)", "call @x.add(5)"])
         self.assertNotIn("subroutine add(integer", text)
 
     def test_polymorphic_calls_dispatch_through_the_override(self):

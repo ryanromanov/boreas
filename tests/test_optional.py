@@ -109,7 +109,7 @@ class OptionalRecordTests(unittest.TestCase):
 
     def test_out_record_must_assign_optional_fields(self):
         extra = ("subroutine fill(out person :: p)\n  @p.name = \"x\"\nend subroutine\n")
-        fails(self, "  person :: p\n  call fill(p)", "was not fully assigned", extra)
+        fails(self, "  person :: p\n  call fill(@p)", "was not fully assigned", extra)
 
 
 class OptionalParameterTests(unittest.TestCase):

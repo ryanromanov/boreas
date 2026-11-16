@@ -43,57 +43,57 @@ def fails(test, body, message, decls="  map[string, integer] :: m\n", defs=HELPE
 
 class EntryArgumentTests(unittest.TestCase):
     def test_inout_changes_the_entry(self):
-        self.assertEqual(run('  m["a"] = 1\n  call bump(m["a"])\n  println(m)'), ["{a: 2}"])
+        self.assertEqual(run('  m["a"] = 1\n  call bump(@m["a"])\n  println(m)'), ["{a: 2}"])
 
     def test_out_creates_the_entry(self):
-        self.assertEqual(run('  call fresh(m["z"])\n  println(m)'), ["{z: 7}"])
+        self.assertEqual(run('  call fresh(@m["z"])\n  println(m)'), ["{z: 7}"])
 
     def test_out_replaces_an_entry(self):
-        self.assertEqual(run('  m["z"] = 1\n  call fresh(m["z"])\n  println(m)'), ["{z: 7}"])
+        self.assertEqual(run('  m["z"] = 1\n  call fresh(@m["z"])\n  println(m)'), ["{z: 7}"])
 
     def test_two_different_entries(self):
-        out = run('  m["a"] = 1\n  m["b"] = 5\n  call two(m["a"], m["b"])\n  println(m)')
+        out = run('  m["a"] = 1\n  m["b"] = 5\n  call two(@m["a"], @m["b"])\n  println(m)')
         self.assertEqual(out, ["{a: 6, b: 5}"])
 
     def test_a_computed_key(self):
-        self.assertEqual(run('  m["ab"] = 1\n  call bump(m["a" + "b"])\n  println(m)'), ["{ab: 2}"])
+        self.assertEqual(run('  m["ab"] = 1\n  call bump(@m["a" + "b"])\n  println(m)'), ["{ab: 2}"])
 
     def test_a_field_entry(self):
-        out = run('  shelf :: s\n  s.stock["pen"] = 3\n  call bump(s.stock["pen"])\n  println(s.stock)', "")
+        out = run('  shelf :: s\n  s.stock["pen"] = 3\n  call bump(@s.stock["pen"])\n  println(s.stock)', "")
         self.assertEqual(out, ["{pen: 4}"])
 
     def test_the_entry_of_a_parameter_map(self):
-        defs = HELPERS + "subroutine up(inout map[string, integer] :: q)\n  call bump(q[\"a\"])\nend subroutine\n"
-        out = run('  m["a"] = 1\n  call up(m)\n  println(m)', defs=defs)
+        defs = HELPERS + "subroutine up(inout map[string, integer] :: q)\n  call bump(@q[\"a\"])\nend subroutine\n"
+        out = run('  m["a"] = 1\n  call up(@m)\n  println(m)', defs=defs)
         self.assertEqual(out, ["{a: 2}"])
 
     def test_a_string_entry(self):
-        out = run('  m["a"] = "hi"\n  call word(m["a"])\n  println(m)', "  map[string, string] :: m\n")
+        out = run('  m["a"] = "hi"\n  call word(@m["a"])\n  println(m)', "  map[string, string] :: m\n")
         self.assertEqual(out, ["{a: hi!}"])
 
     def test_the_loop_variable_still_works_alongside(self):
-        out = run('  m["a"] = 1\n  m["b"] = 2\n  string :: k\n  integer :: v\n  do k, v in m\n    call bump(m[k])\n  end do\n  println(m)')
+        out = run('  m["a"] = 1\n  m["b"] = 2\n  string :: k\n  integer :: v\n  do k, v in m\n    call bump(@m[k])\n  end do\n  println(m)')
         self.assertEqual(out, ["{a: 2, b: 3}"])
 
     def test_missing_key_for_inout(self):
-        fails(self, '  call bump(m["q"])', "has no key")
+        fails(self, '  call bump(@m["q"])', "has no key")
 
     def test_wrong_type(self):
-        fails(self, '  m["a"] = 1\n  call word(m["a"])', "argument 's' is string but an entry of 'm' is integer")
+        fails(self, '  m["a"] = 1\n  call word(@m["a"])', "argument 's' is string but an entry of 'm' is integer")
 
     def test_an_in_parameter_map_is_refused(self):
-        defs = HELPERS + "subroutine peek(in map[string, integer] :: q)\n  call bump(q[\"a\"])\nend subroutine\n"
+        defs = HELPERS + "subroutine peek(in map[string, integer] :: q)\n  call bump(@q[\"a\"])\nend subroutine\n"
         fails(self, '  m["a"] = 1\n  call peek(m)', "is an 'in' parameter and cannot be passed as inout", defs=defs)
 
     def test_the_same_entry_twice_is_aliasing(self):
-        fails(self, '  m["a"] = 1\n  call two(m["a"], m["a"])', "must not alias")
+        fails(self, '  m["a"] = 1\n  call two(@m["a"], @m["a"])', "must not alias")
 
     def test_the_whole_map_and_an_entry_alias(self):
         defs = HELPERS + "subroutine mix(inout map[string, integer] :: q, inout integer :: n)\n  @n = 0\nend subroutine\n"
-        fails(self, '  m["a"] = 1\n  call mix(m, m["a"])', "must not alias", defs=defs)
+        fails(self, '  m["a"] = 1\n  call mix(@m, @m["a"])', "must not alias", defs=defs)
 
     def test_a_set_member_is_not_an_entry(self):
-        fails(self, '  call add(s, "x")\n  call bump(s["x"])', "set", "  set[string] :: s\n")
+        fails(self, '  call add(@s, "x")\n  call bump(@s["x"])', "set", "  set[string] :: s\n")
 
 
 REGISTRY = """
@@ -104,7 +104,7 @@ module registry
 
   public subroutine record(in string :: who)
     @hits[who] = (get(hits, who) ?? 0) + 1
-    call add(seen, who)
+    call add(@seen, who)
     @hidden[who] = 1
   end subroutine
 
@@ -132,7 +132,7 @@ class ModuleVariableTests(unittest.TestCase):
         self.assertEqual(out, ["0 0", "{a: 2, b: 1} {a, b} 5"])
 
     def test_the_importer_can_write_it(self):
-        out = with_registry('  @hits["z"] = 9\n  call add(seen, "q")\n  call remove(seen, "q")\n  println(hits, size(seen))')
+        out = with_registry('  @hits["z"] = 9\n  call add(@seen, "q")\n  call remove(@seen, "q")\n  println(hits, size(seen))')
         self.assertEqual(out, ["{z: 9} 0"])
 
     def test_the_importer_can_loop_over_it(self):
@@ -149,7 +149,7 @@ class ModuleVariableTests(unittest.TestCase):
         self.assertIn("('hits')", str(cm.exception))
 
     def test_a_function_cannot_change_one(self):
-        for stmt in ('@hits["k"] = 1', 'call add(seen, "x")', 'call remove(seen, "x")'):
+        for stmt in ('@hits["k"] = 1', 'call add(@seen, "x")', 'call remove(@seen, "x")'):
             with self.subTest(stmt):
                 src = ("module reg\n  public map[string, integer] :: hits\n  public set[string] :: seen\n"
                        "  public function f() -> integer\n    " + stmt + "\n    return 1\n  end function\nend module\n"
@@ -159,7 +159,7 @@ class ModuleVariableTests(unittest.TestCase):
                 self.assertIn("a function cannot change the module variable", str(cm.exception))
 
     def test_a_function_may_change_a_local_one(self):
-        src = ("module reg\n  public function f() -> integer\n    set[string] :: s\n    call add(s, \"x\")\n"
+        src = ("module reg\n  public function f() -> integer\n    set[string] :: s\n    call add(@s, \"x\")\n"
                "    return size(s)\n  end function\nend module\nprogram t\n  use reg: f\n  println(f())\nend program\n")
         self.assertEqual(run_bor(src), ["1"])
 
@@ -184,11 +184,11 @@ subroutine double(inout integer[] :: v)
 end subroutine
 
 subroutine start(out set[string] :: s)
-  call add(s, "first")
+  call add(@s, "first")
 end subroutine
 
 subroutine tag(inout set[string] :: s, in string :: x)
-  call add(s, x)
+  call add(@s, x)
 end subroutine
 
 function members(map[string, set[string]] :: g, string :: k) -> integer
@@ -198,7 +198,7 @@ end function
 function build() -> map[string, set[string]]
   map[string, set[string]] :: g
   set[string] :: s
-  call add(s, "x")
+  call add(@s, "x")
   g["a"] = s
   return g
 end function
@@ -222,52 +222,52 @@ def nested_fails(test, body, message, decls="  map[string, set[string]] :: g\n  
 
 class NestedSetTests(unittest.TestCase):
     def test_store_and_add(self):
-        out = nested('  g["a"] = s\n  call add(g["a"], "x")\n  call add(g["a"], "y")\n  println(g, size(g["a"]), has(g["a"], "y"))')
+        out = nested('  g["a"] = s\n  call add(@g["a"], "x")\n  call add(@g["a"], "y")\n  println(g, size(g["a"]), has(g["a"], "y"))')
         self.assertEqual(out, ["{a: {x, y}} 2 true"])
 
     def test_remove(self):
-        out = nested('  call add(s, "x")\n  call add(s, "y")\n  g["a"] = s\n  call remove(g["a"], "x")\n  println(g)')
+        out = nested('  call add(@s, "x")\n  call add(@s, "y")\n  g["a"] = s\n  call remove(@g["a"], "x")\n  println(g)')
         self.assertEqual(out, ["{a: {y}}"])
 
     def test_storing_copies(self):
-        out = nested('  g["a"] = s\n  call add(s, "later")\n  println(g, size(s))')
+        out = nested('  g["a"] = s\n  call add(@s, "later")\n  println(g, size(s))')
         self.assertEqual(out, ["{a: {}} 1"])
 
     def test_one_entry_stored_into_another_is_a_copy(self):
-        out = nested('  g["a"] = s\n  call add(g["a"], "x")\n  g["b"] = g["a"]\n  call add(g["b"], "y")\n  println(g)')
+        out = nested('  g["a"] = s\n  call add(@g["a"], "x")\n  g["b"] = g["a"]\n  call add(@g["b"], "y")\n  println(g)')
         self.assertEqual(out, ["{a: {x}, b: {x, y}}"])
 
     def test_reading_into_a_variable_copies(self):
-        out = nested('  g["a"] = s\n  s = g["a"]\n  call add(s, "x")\n  println(g, s)')
+        out = nested('  g["a"] = s\n  s = g["a"]\n  call add(@s, "x")\n  println(g, s)')
         self.assertEqual(out, ["{a: {}} {x}"])
 
     def test_assigning_a_map_copies_the_inner_sets(self):
-        out = nested('  map[string, set[string]] :: h\n  g["a"] = s\n  call add(g["a"], "x")\n  h = g\n  call add(h["a"], "y")\n  println(g, h)')
+        out = nested('  map[string, set[string]] :: h\n  g["a"] = s\n  call add(@g["a"], "x")\n  h = g\n  call add(@h["a"], "y")\n  println(g, h)')
         self.assertEqual(out, ["{a: {x}} {a: {x, y}}"])
 
     def test_loop_over_an_entry(self):
-        out = nested('  call add(s, "p")\n  call add(s, "q")\n  g["a"] = s\n  do w in g["a"]\n    println(w)\n  end do')
+        out = nested('  call add(@s, "p")\n  call add(@s, "q")\n  g["a"] = s\n  do w in g["a"]\n    println(w)\n  end do')
         self.assertEqual(out, ["p", "q"])
 
     def test_loop_over_the_whole_map(self):
-        out = nested('  string :: k\n  set[string] :: m\n  call add(s, "p")\n  g["a"] = s\n  do k, m in g\n    println(k, m)\n  end do')
+        out = nested('  string :: k\n  set[string] :: m\n  call add(@s, "p")\n  g["a"] = s\n  do k, m in g\n    println(k, m)\n  end do')
         self.assertEqual(out, ["a {p}"])
 
     def test_get_and_default(self):
-        out = nested('  g["a"] = s\n  call add(s, "z")\n  println(get(g, "a") ?? s, get(g, "q") ?? s)')
+        out = nested('  g["a"] = s\n  call add(@s, "z")\n  println(get(g, "a") ?? s, get(g, "q") ?? s)')
         self.assertEqual(out, ["{} {z}"])
 
     def test_missing_outer_key_is_an_error(self):
-        nested_fails(self, '  call add(g["nope"], "x")', 'the map \'g\' has no key "nope"')
+        nested_fails(self, '  call add(@g["nope"], "x")', 'the map \'g\' has no key "nope"')
 
     def test_missing_outer_key_on_remove(self):
-        nested_fails(self, '  call remove(g["nope"], "x")', "has no key")
+        nested_fails(self, '  call remove(@g["nope"], "x")', "has no key")
 
     def test_reading_a_missing_one(self):
         nested_fails(self, '  println(size(g["nope"]))', "has no key")
 
     def test_wrong_member_type(self):
-        nested_fails(self, '  g["a"] = s\n  call add(g["a"], 3)', "members")
+        nested_fails(self, '  g["a"] = s\n  call add(@g["a"], 3)', "members")
 
     def test_wrong_value_type(self):
         nested_fails(self, '  set[integer] :: nums\n  g["a"] = nums', "expected a set[string], got a set[integer]")
@@ -276,7 +276,7 @@ class NestedSetTests(unittest.TestCase):
         nested_fails(self, '  g["a"] = 5', "expected a set[string]")
 
     def test_parameter_entry_out_and_inout(self):
-        out = nested('  g["a"] = s\n  call tag(g["a"], "x")\n  call start(g["b"])\n  println(g)')
+        out = nested('  g["a"] = s\n  call tag(@g["a"], "x")\n  call start(@g["b"])\n  println(g)')
         self.assertEqual(out, ["{a: {x}, b: {first}}"])
 
     def test_as_a_parameter_and_result(self):
@@ -284,11 +284,11 @@ class NestedSetTests(unittest.TestCase):
         self.assertEqual(out, ["{a: {x}} 1"])
 
     def test_a_record_field(self):
-        out = nested('  graph :: net\n  net.edges["a"] = s\n  call add(net.edges["a"], "b")\n  println(net.edges)', "  set[string] :: s\n")
+        out = nested('  graph :: net\n  net.edges["a"] = s\n  call add(@net.edges["a"], "b")\n  println(net.edges)', "  set[string] :: s\n")
         self.assertEqual(out, ["{a: {b}}"])
 
     def test_copying_a_record_copies_inner_sets(self):
-        out = nested('  graph :: one\n  graph :: two\n  one.edges["a"] = s\n  two = one\n  call add(two.edges["a"], "z")\n  println(one.edges, two.edges)',
+        out = nested('  graph :: one\n  graph :: two\n  one.edges["a"] = s\n  two = one\n  call add(@two.edges["a"], "z")\n  println(one.edges, two.edges)',
                      "  set[string] :: s\n")
         self.assertEqual(out, ["{a: {}} {a: {z}}"])
 
@@ -296,7 +296,7 @@ class NestedSetTests(unittest.TestCase):
         nested_fails(self, '  println(values(g))', "values() gives an array of single values")
 
     def test_an_in_parameter_entry_cannot_change(self):
-        src = (NESTED + "subroutine peek(in map[string, set[string]] :: q)\n  call add(q[\"a\"], \"x\")\nend subroutine\n"
+        src = (NESTED + "subroutine peek(in map[string, set[string]] :: q)\n  call add(@q[\"a\"], \"x\")\nend subroutine\n"
                "program t\n  map[string, set[string]] :: g\n  set[string] :: s\n  g[\"a\"] = s\n  call peek(g)\nend program\n")
         with self.assertRaises(LangError) as cm:
             run_bor(src)
@@ -304,7 +304,7 @@ class NestedSetTests(unittest.TestCase):
 
     def test_a_function_cannot_change_a_module_entry(self):
         src = ("module reg\n  public map[string, set[string]] :: g\n  public function f() -> integer\n"
-               "    call add(g[\"a\"], \"x\")\n    return 1\n  end function\nend module\n"
+               "    call add(@g[\"a\"], \"x\")\n    return 1\n  end function\nend module\n"
                "program t\n  use reg: f\n  integer :: n\n  n = f()\nend program\n")
         with self.assertRaises(LangError) as cm:
             run_bor(src)
@@ -323,7 +323,7 @@ class NestedArrayTests(unittest.TestCase):
         self.assertEqual(out, ["4", "5"])
 
     def test_inout_an_entry(self):
-        out = nested('  m["a"] = [1, 2, 3]\n  call double(m["a"])\n  println(m)', self.DECLS)
+        out = nested('  m["a"] = [1, 2, 3]\n  call double(@m["a"])\n  println(m)', self.DECLS)
         self.assertEqual(out, ["{a: [2, 4, 6]}"])
 
     def test_replacing_an_entry_changes_its_length(self):
@@ -339,7 +339,7 @@ class NestedArrayTests(unittest.TestCase):
         self.assertEqual(out, ["{k: [1, 2]} [9, 2]"])
 
     def test_assigning_the_map_copies_the_arrays(self):
-        out = nested('  map[string, integer[]] :: h\n  m["k"] = [1, 2]\n  h = m\n  call double(h["k"])\n  println(m, h)', self.DECLS)
+        out = nested('  map[string, integer[]] :: h\n  m["k"] = [1, 2]\n  h = m\n  call double(@h["k"])\n  println(m, h)', self.DECLS)
         self.assertEqual(out, ["{k: [1, 2]} {k: [2, 4]}"])
 
     def test_real_values_widen(self):
@@ -356,7 +356,7 @@ class NestedArrayTests(unittest.TestCase):
         nested_fails(self, '  m["a"] = 5', "expected a 1-dimensional integer array", self.DECLS)
 
     def test_missing_key(self):
-        nested_fails(self, '  call double(m["q"])', "has no key", self.DECLS)
+        nested_fails(self, '  call double(@m["q"])', "has no key", self.DECLS)
 
     def test_a_matrix_value(self):
         out = nested('  m["a"] = reshape([1, 2, 3, 4], [2, 2])\n  println(m)', "  map[string, integer[,]] :: m\n")
@@ -366,7 +366,7 @@ class NestedArrayTests(unittest.TestCase):
         nested_fails(self, '  println(values(m))', "values() gives an array of single values", self.DECLS)
 
     def test_a_record_field(self):
-        out = nested('  graph :: net\n  net.rows["a"] = [1, 2]\n  call double(net.rows["a"])\n  println(net.rows)', "")
+        out = nested('  graph :: net\n  net.rows["a"] = [1, 2]\n  call double(@net.rows["a"])\n  println(net.rows)', "")
         self.assertEqual(out, ["{a: [2, 4]}"])
 
 
@@ -402,20 +402,20 @@ class NestedParseTests(unittest.TestCase):
         self.assertEqual(to_source(parse(again)), again)
 
     def test_check_is_clean(self):
-        src = NESTED + "program t\n  map[string, set[string]] :: g\n  set[string] :: s\n  g[\"a\"] = s\n  call add(g[\"a\"], \"x\")\n  println(g)\nend program\n"
+        src = NESTED + "program t\n  map[string, set[string]] :: g\n  set[string] :: s\n  g[\"a\"] = s\n  call add(@g[\"a\"], \"x\")\n  println(g)\nend program\n"
         self.assertEqual(check_errors(src), [])
 
 
 class NestedEditorAndOutTests(unittest.TestCase):
     def test_an_out_array_entry_is_caller_owned_storage(self):
         defs = "subroutine squares(out integer[] :: v)\n  integer :: i\n  do i = 1, size(v)\n    @v[i] = i * i\n  end do\nend subroutine\n"
-        out = run('  m["a"] = [0, 0, 0]\n  call squares(m["a"])\n  println(m)', "  map[string, integer[]] :: m\n", defs)
+        out = run('  m["a"] = [0, 0, 0]\n  call squares(@m["a"])\n  println(m)', "  map[string, integer[]] :: m\n", defs)
         self.assertEqual(out, ["{a: [1, 4, 9]}"])
 
     def test_an_out_array_entry_must_exist(self):
         defs = "subroutine squares(out integer[] :: v)\n  @v[1] = 1\nend subroutine\n"
         with self.assertRaises(LangError) as cm:
-            run('  call squares(m["zz"])', "  map[string, integer[]] :: m\n", defs)
+            run('  call squares(@m["zz"])', "  map[string, integer[]] :: m\n", defs)
         self.assertIn("has no key", str(cm.exception))
 
     def test_hover_on_nested_declarations(self):
@@ -469,22 +469,22 @@ class ChainedEntryTests(unittest.TestCase):
         self.fails('  m["a"] = [1]\n  m["a"][1] = "x"', "cannot assign string to integer")
 
     def test_an_element_as_an_inout_argument(self):
-        self.assertEqual(self.go('  m["a"] = [1, 2]\n  call bump(m["a"][2])\n  println(m)', defs=HELPERS), ["{a: [1, 3]}"])
+        self.assertEqual(self.go('  m["a"] = [1, 2]\n  call bump(@m["a"][2])\n  println(m)', defs=HELPERS), ["{a: [1, 3]}"])
 
     def test_an_element_of_one_entry_next_to_another(self):
-        out = self.go('  m["a"] = [1, 2]\n  m["b"] = [5, 6]\n  call two(m["a"][1], m["b"][1])\n  println(m)', defs=HELPERS)
+        out = self.go('  m["a"] = [1, 2]\n  m["b"] = [5, 6]\n  call two(@m["a"][1], @m["b"][1])\n  println(m)', defs=HELPERS)
         self.assertEqual(out, ["{a: [6, 2], b: [5, 6]}"])
 
     def test_different_elements_of_one_entry_are_fine(self):
-        out = self.go('  m["a"] = [1, 2]\n  call two(m["a"][1], m["a"][2])\n  println(m)', defs=HELPERS)
+        out = self.go('  m["a"] = [1, 2]\n  call two(@m["a"][1], @m["a"][2])\n  println(m)', defs=HELPERS)
         self.assertEqual(out, ["{a: [3, 2]}"])
 
     def test_the_same_element_twice_is_aliasing(self):
-        self.fails('  m["a"] = [1, 2]\n  call two(m["a"][1], m["a"][1])', "must not alias", defs=HELPERS)
+        self.fails('  m["a"] = [1, 2]\n  call two(@m["a"][1], @m["a"][1])', "must not alias", defs=HELPERS)
 
     def test_an_element_and_its_whole_entry_alias(self):
         defs = HELPERS + "subroutine mix(inout integer[] :: v, inout integer :: n)\n  @n = 0\nend subroutine\n"
-        self.fails('  m["a"] = [1, 2]\n  call mix(m["a"], m["a"][1])', "must not alias", defs=defs)
+        self.fails('  m["a"] = [1, 2]\n  call mix(@m["a"], @m["a"][1])', "must not alias", defs=defs)
 
     def test_a_loop_over_the_entry_sees_a_snapshot(self):
         out = self.go('  m["a"] = [1, 2, 3]\n  do x in m["a"]\n    m["a"][3] = 0\n    println(x)\n  end do')
@@ -518,19 +518,19 @@ class ChainedEntryTests(unittest.TestCase):
 
     def test_an_in_parameter_entry_is_read_only(self):
         defs = NESTED + "subroutine poke(in map[string, integer[]] :: q)\n  q[\"a\"][1] = 0\nend subroutine\n"
-        self.fails('  m["a"] = [1]\n  call poke(m)', "'in' parameter", defs=defs)
+        self.fails('  m["a"] = [1]\n  call poke(@m)', "'in' parameter", defs=defs)
 
     def test_an_inout_parameter_entry_changes_the_callers_map(self):
         defs = NESTED + "subroutine poke(inout map[string, integer[]] :: q)\n  @q[\"a\"][1] = 0\nend subroutine\n"
-        self.assertEqual(self.go('  m["a"] = [1, 2]\n  call poke(m)\n  println(m)', defs=defs), ["{a: [0, 2]}"])
+        self.assertEqual(self.go('  m["a"] = [1, 2]\n  call poke(@m)\n  println(m)', defs=defs), ["{a: [0, 2]}"])
 
     def test_a_record_field(self):
-        out = self.go('  graph :: net\n  net.rows["a"] = [1, 2]\n  net.rows["a"][2] = 5\n  call bump(net.rows["a"][1])\n  println(net.rows, net.rows["a"][2])',
+        out = self.go('  graph :: net\n  net.rows["a"] = [1, 2]\n  net.rows["a"][2] = 5\n  call bump(@net.rows["a"][1])\n  println(net.rows, net.rows["a"][2])',
                       "", defs=NESTED + HELPERS.replace("record shelf\n  map[string, integer] :: stock\nend record\n", ""))
         self.assertEqual(out, ["{a: [2, 5]} 5"])
 
     def test_two_fields_keys_do_not_alias(self):
-        out = self.go('  graph :: net\n  net.rows["a"] = [1]\n  net.rows["b"] = [5]\n  call two(net.rows["a"][1], net.rows["b"][1])\n  println(net.rows)',
+        out = self.go('  graph :: net\n  net.rows["a"] = [1]\n  net.rows["b"] = [5]\n  call two(@net.rows["a"][1], @net.rows["b"][1])\n  println(net.rows)',
                       "", defs=NESTED + HELPERS.replace("record shelf\n  map[string, integer] :: stock\nend record\n", ""))
         self.assertEqual(out, ["{a: [6], b: [5]}"])
 

@@ -154,7 +154,7 @@ end subroutine
 function total(integer[] :: v) -> integer
   return sum(v)
 end function"""
-        out = run("allocatable integer[] :: a\nallocate a[4]\ncall fill(a)\nprintln(a, total(a), total(a[2:3]))", funcs)
+        out = run("allocatable integer[] :: a\nallocate a[4]\ncall fill(@a)\nprintln(a, total(a), total(a[2:3]))", funcs)
         self.assertEqual(out, ["[1, 4, 9, 16] 30 13"])
 
     def test_locals_in_procedures_are_per_call(self):
@@ -196,7 +196,7 @@ class RuntimeErrorTests(unittest.TestCase):
         cases = [
             "println(a)", "println(a[1])", "println(a[1:2])", "a[1] = 1", "a[1:2] = 1", "a = 1",
             "integer[3] :: b\nb = a", "println(size(a))", "println(shape(a))", "println(sum(a))", "println(a + 1)",
-            "call bump(a)", "println(first(a))", "integer :: n\nn = size(a, 1)",
+            "call bump(@a)", "println(first(a))", "integer :: n\nn = size(a, 1)",
         ]
         for body in cases:
             with self.subTest(body=body):

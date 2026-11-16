@@ -37,7 +37,7 @@ def fails(test, body, message, extra=RNG):
 
 class ModuleVariableTests(unittest.TestCase):
     def test_state_lives_between_calls(self):
-        body = "  use rng: next, count\n  integer :: k\n  call next(k)\n  call next(k)\n  println(k, count())"
+        body = "  use rng: next, count\n  integer :: k\n  call next(@k)\n  call next(@k)\n  println(k, count())"
         self.assertEqual(run(body), ["1 2"])
 
     def test_initial_value_and_reading_an_import(self):

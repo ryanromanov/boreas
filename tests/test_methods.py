@@ -42,14 +42,14 @@ class MethodTests(unittest.TestCase):
         self.assertEqual(run("  circle :: c = circle(r = 2.0)\n  println(c.area(), c.twice())"), ["12.0 24.0"])
 
     def test_a_subroutine_changes_the_record_it_is_called_on(self):
-        self.assertEqual(run("  circle :: c = circle(r = 2.0)\n  call c.grow(3.0)\n  println(c.r)"), ["6.0"])
+        self.assertEqual(run("  circle :: c = circle(r = 2.0)\n  call @c.grow(3.0)\n  println(c.r)"), ["6.0"])
 
     def test_a_subroutine_with_only_in_self(self):
         self.assertEqual(run("  circle :: c\n  call c.show()"), ["circle 1.0"])
 
     def test_array_elements_and_fields_can_be_receivers(self):
-        body = ("  circle[2] :: all\n  all[2].r = 2.0\n  call all[2].grow(2.0)\n  println(all[2].r, all[2].area())\n"
-                "  record_holder :: h\n  h.c.r = 3.0\n  call h.c.grow(2.0)\n  println(h.c.r)")
+        body = ("  circle[2] :: all\n  all[2].r = 2.0\n  call @all[2].grow(2.0)\n  println(all[2].r, all[2].area())\n"
+                "  record_holder :: h\n  h.c.r = 3.0\n  call @h.c.grow(2.0)\n  println(h.c.r)")
         defs = CIRCLE + "\nrecord record_holder\n  circle :: c\nend record\n"
         self.assertEqual(run(body, defs), ["4.0 48.0", "6.0"])
 
@@ -113,15 +113,15 @@ class MethodErrorTests(unittest.TestCase):
         self.fails("  circle :: c\n  call c.area()", "is a function")
 
     def test_changing_an_in_or_const_record_is_an_error(self):
-        self.fails("  const circle :: c = circle(r = 2.0)\n  call c.grow(2.0)", "cannot be passed as inout")
-        defs = CIRCLE + "\nsubroutine f(circle :: c)\n  call c.grow(2.0)\nend subroutine\n"
+        self.fails("  const circle :: c = circle(r = 2.0)\n  call @c.grow(2.0)", "cannot be passed as inout")
+        defs = CIRCLE + "\nsubroutine f(circle :: c)\n  call @c.grow(2.0)\nend subroutine\n"
         self.fails("  circle :: c\n  call f(c)", "cannot be passed as inout", defs)
 
     def test_wrong_argument_count(self):
         self.fails("  circle :: c\n  println(c.area(1.0))", "expects 1 arguments")
 
     def test_a_non_record_has_no_functions(self):
-        self.fails("  real :: x = 1.0\n  call x.grow(2.0)", "has no function 'grow'")
+        self.fails("  real :: x = 1.0\n  call @x.grow(2.0)", "has no function 'grow'")
 
     def test_old_array_indexing_still_gets_its_own_message(self):
         defs = "record r\n  integer[3] :: v\nend record\n"
@@ -135,14 +135,14 @@ class MethodCheckAndPrintTests(unittest.TestCase):
         self.assertEqual([e[2] for e in check_errors(src)], ["'k' is not declared"])
 
     def test_check_accepts_calls_through_records(self):
-        self.assertEqual(check_errors(program("  circle :: c\n  call c.grow(2.0)\n  println(c.area())")), [])
+        self.assertEqual(check_errors(program("  circle :: c\n  call @c.grow(2.0)\n  println(c.area())")), [])
 
     def test_prints_back_the_same(self):
-        src = program("  circle :: c\n  call c.grow(2.0)\n  println(c.area())")
+        src = program("  circle :: c\n  call @c.grow(2.0)\n  println(c.area())")
         text = to_source(parse(src), [])
         self.assertIn("function area(self) -> real", text)
         self.assertIn("subroutine grow(inout self, real :: factor)", text)
-        self.assertIn("call c.grow(2.0)", text)
+        self.assertIn("call @c.grow(2.0)", text)
         self.assertEqual(to_source(parse(text), []), text)
         self.assertEqual(run_bor(text), run_bor(src))
 

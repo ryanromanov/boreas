@@ -5,9 +5,10 @@ A name declared anywhere in a procedure counts as declared, even if the use come
 declaration is in a branch: only the program's path decides whether that fails, and an error
 reported here should always be a real one. The interpreter still catches those cases when it
 runs them."""
+from .effects import mark_problem
 from .interp import BUILTINS, ELEMENTAL, SUBROUTINE_BUILTINS
 from .parser import (Allocate, Apply, ArrayLit, Assign, CollLit, Binary, Call, Close, Decl, Do, DoEach, DoWhile,
-                     ExprStmt, FieldAccess, Gen, If, IsType, MapType, MultiAssign, NamedArg, Print, ProcType, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, SetType, Slice, Stop,
+                     ExprStmt, FieldAccess, Gen, If, IsType, Marked, MapType, MultiAssign, NamedArg, Print, ProcType, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, SetType, Slice, Stop,
                      Unary, Var, Where, sub_bodies)
 
 
@@ -83,6 +84,8 @@ class Walker:
             self.arguments(e.args)
             if e.chain is not None:
                 self.expr(e.chain)
+        elif isinstance(e, Marked):
+            self.report("@", e.line, e.col, "'@' marks an argument of a call statement, as in call swap(@x, @y)")
         elif isinstance(e, NamedArg):       # the name is a record field; only the value is looked up
             self.expr(e.value)
         elif isinstance(e, Slice):
@@ -235,6 +238,15 @@ class Walker:
                 self.expr(s.receiver)
             elif s.name not in self.scope.funcs and s.name not in self.variables and s.name not in SUBROUTINE_BUILTINS:
                 self.report(s.name, s.line, s.col, f"unknown subroutine '{s.name}'")
+            elif s.name in SUBROUTINE_BUILTINS and s.name not in self.scope.funcs and s.name not in self.variables:
+                marks = s.marks or [False] * len(s.args)
+                if s.args and not marks[0]:
+                    self.report(s.name, s.line, s.col, f"{s.name} changes its first argument, so mark it: "
+                                                       f"call {s.name}(@..., ...)")
+            elif s.name in self.scope.funcs and s.name not in self.variables and self.scope.funcs[s.name].is_sub:
+                problem = mark_problem(self.scope.funcs[s.name], s)
+                if problem:
+                    self.report(s.name, s.line, s.col, problem)
             self.arguments(s.args)
         elif isinstance(s, Allocate):
             self.expr(s.dims)           # the parser has already checked the array's name

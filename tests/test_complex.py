@@ -145,7 +145,7 @@ class ComplexStructureTests(unittest.TestCase):
 
     def test_update_a_complex_parameter(self):
         extra = "subroutine turn(inout complex :: z)\n  @z = z * cmplx(0.0, 1.0)\nend subroutine\n"
-        self.assertEqual(run("  complex :: z = cmplx(1.0, 0.0)\n  call turn(z)\n  println(z)", extra), ["(0.0, 1.0)"])
+        self.assertEqual(run("  complex :: z = cmplx(1.0, 0.0)\n  call turn(@z)\n  println(z)", extra), ["(0.0, 1.0)"])
 
     def test_round_trip(self):
         src = "program t\n  complex :: z = cmplx(1.0, 2.0)\n  println(z * conjg(z))\nend program t\n"

@@ -24,8 +24,8 @@ subroutine bump(string :: label, inout integer :: n)
 end subroutine
 
 subroutine twice(subroutine(string, inout integer) :: cb, inout integer :: n)
-  call cb("a", n)
-  call cb("b", n)
+  call cb("a", @n)
+  call cb("b", @n)
 end subroutine
 
 """
@@ -49,7 +49,7 @@ class PassingTests(unittest.TestCase):
         self.assertEqual(run("  println(integrate(square, 2.0))\n"), ["13.0"])
 
     def test_a_subroutine_with_an_inout_argument(self):
-        self.assertEqual(run("  integer :: n = 0\n  call twice(bump, n)\n  println(n)\n"), ["a 1", "b 2", "2"])
+        self.assertEqual(run("  integer :: n = 0\n  call twice(bump, @n)\n  println(n)\n"), ["a 1", "b 2", "2"])
 
     def test_a_procedure_parameter_can_be_passed_on(self):
         text = LIB + ("function outer(function(real) -> real :: g) -> real\n  return integrate(g, 1.0)\nend function\n"
@@ -75,11 +75,11 @@ class MismatchTests(unittest.TestCase):
         self.assertIn("'cube' is function(integer :: n) -> real", error("  println(integrate(cube, 1.0))\n"))
 
     def test_function_where_a_subroutine_is_wanted(self):
-        self.assertIn("is subroutine(", error("  integer :: n = 0\n  call twice(square, n)\n"))
+        self.assertIn("is subroutine(", error("  integer :: n = 0\n  call twice(square, @n)\n"))
 
     def test_wrong_intent(self):
         lib = LIB + "subroutine plain(string :: s, integer :: n)\n  println(s)\nend subroutine\n"
-        self.assertIn("argument 'cb' of twice", error("  integer :: n = 0\n  call twice(plain, n)\n", lib))
+        self.assertIn("argument 'cb' of twice", error("  integer :: n = 0\n  call twice(plain, @n)\n", lib))
 
     def test_wrong_return_type(self):
         lib = LIB + "function whole(real :: x) -> integer\n  return 1\nend function\n"

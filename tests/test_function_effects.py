@@ -21,7 +21,7 @@ MOD = '''module counter
     call touch()
   end subroutine
   public subroutine note(string :: w)
-    call add(seen, w)
+    call add(@seen, w)
   end subroutine
   public subroutine quiet(inout integer :: n)
     @n = n * 2
@@ -46,9 +46,9 @@ class EffectTests(unittest.TestCase):
         self.assertIn(message, str(cm.exception))
 
     def test_passing_a_module_variable_to_inout_or_out(self):
-        self.refused("  public function f() -> integer\n    call bump(hits)\n    return hits\n  end function",
+        self.refused("  public function f() -> integer\n    call bump(@hits)\n    return hits\n  end function",
                      "a function cannot change the module variable 'hits', which is passed to the inout parameter of 'bump'")
-        self.refused("  public function f() -> integer\n    call reset(hits)\n    return hits\n  end function",
+        self.refused("  public function f() -> integer\n    call reset(@hits)\n    return hits\n  end function",
                      "passed to the out parameter of 'reset'")
 
     def test_calling_a_subroutine_that_changes_one(self):
@@ -62,12 +62,12 @@ class EffectTests(unittest.TestCase):
                      "a function cannot call 'twice', which changes the module variable 'hits'")
 
     def test_a_function_may_use_a_subroutine_on_its_own_variables(self):
-        body = ("  public function f() -> integer\n    integer :: n = 3\n    call quiet(n)\n    call bump(n)\n"
+        body = ("  public function f() -> integer\n    integer :: n = 3\n    call quiet(@n)\n    call bump(@n)\n"
                 "    return n + hits\n  end function")
         self.assertEqual(run(body, "f", "f()"), ["7"])
 
     def test_a_subroutine_may_do_all_of_it(self):
-        body = ("  public subroutine g()\n    call bump(hits)\n    call twice()\n  end subroutine")
+        body = ("  public subroutine g()\n    call bump(@hits)\n    call twice()\n  end subroutine")
         src = (MOD % (body, "g", "hits")).replace("println(hits)", "call g()\n  println(hits)")
         self.assertEqual(run_bor(src), ["3"])
 

@@ -9,6 +9,27 @@ from .parser import (Allocate, Apply, Assign, Call, Deallocate, FieldAccess, Mul
 CHANGES = ("out", "inout")
 
 
+def mark_problem(f, call):
+    """What is wrong with the `@` marks of the call statement `call` to the subroutine `f`, or None. An
+    argument for an `out` or `inout` parameter must carry `@`, and no other may."""
+    from .printer import expr
+    args, marks = list(call.args), list(call.marks or [False] * len(call.args))
+    if call.receiver is not None:                     # the record is passed first, as `self`
+        args, marks = [call.receiver] + args, [call.receiver_mark] + marks
+    for (typ, name, intent), a, marked in zip(f.params, args, marks):
+        try:
+            text = expr(a)
+        except Exception:
+            text = name
+        if intent in CHANGES and not marked:
+            return (f"'{text}' is changed by '{f.name}' (its {intent} parameter '{name}'), "
+                    f"so mark it: @{text}")
+        if marked and intent not in CHANGES:
+            return (f"'@{text}' marks an argument the call changes, but '{name}' of "
+                    f"'{f.name}' is an 'in' parameter: remove the '@'")
+    return None
+
+
 def statements(body):
     for s in body:
         if isinstance(s, list):
