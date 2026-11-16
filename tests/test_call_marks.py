@@ -109,5 +109,12 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(unit.program.body[-1].marks, [True, False])
 
 
+    def test_the_migration_tool_handles_a_call_over_several_lines(self):
+        src = (SUBS + "program t\n  integer :: x\n  integer :: y\n  call swap(x, &\n       y)\nend program\n")
+        new, changes = migrate(src)
+        self.assertIn("call swap(@x, &\n       @y)", new)
+        self.assertEqual(len(changes), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
