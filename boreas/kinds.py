@@ -197,6 +197,16 @@ def int_pow(a, b):
     return 0                                    # 1 / a**|b| truncates to zero
 
 
+def finite(*xs):
+    return all(x - x == 0 for x in xs)
+
+
+def too_large(op, a, b, r):
+    """A real result that is infinite where both operands were finite is an overflow, which stops the program
+    unless the file says `use ieee`."""
+    return not IEEE and type(r) is float and r - r != 0 and finite(a, b)
+
+
 def raw_arith(op, a, b):
     """The arithmetic result as an untagged Python number."""
     try:
@@ -210,7 +220,13 @@ def raw_arith(op, a, b):
         if op == "**":
             if isinstance(a, int) and isinstance(b, int):
                 return int_pow(a, b)
-            return a ** b
+            r = a ** b
+            if type(r) is complex and not isinstance(a, complex) and not isinstance(b, complex):
+                if IEEE:                                        # (-8.0) ** (1.0 / 3.0)
+                    return float("nan")
+                raise LangError(f"({a}) ** {b} is not a real number (a negative number to a fractional power); "
+                                f"for a complex root write cmplx(a, 0.0) ** b")
+            return r
     except ZeroDivisionError:
         if IEEE and op == "/":
             return ieee_div(a, b)
