@@ -6,6 +6,7 @@ import operator
 import random
 import re
 import sys
+import threading
 from itertools import product
 from .lexer import LangError
 from .effects import mark_problem
@@ -702,8 +703,45 @@ def _present(x):
     raise LangError("present() needs a single value")   # apply() handles real calls
 
 
-def _reduce(name, f):
-    return lambda a: f(_need_array(name, a).data)
+def _reduce(name, f, numbers=False, nonempty=False):
+    """A function of a whole array. `numbers`: the elements must be numbers (not logicals or text);
+    `nonempty`: an empty array has no answer."""
+    def reduce(a):
+        data = _need_array(name, a).data
+        if nonempty and not data:
+            raise ValueError("the array is empty")
+        if numbers and any(isinstance(x, (bool, str)) for x in data):
+            raise TypeError(f"needs numbers, got {type_of(next(x for x in data if isinstance(x, (bool, str))))}s")
+        return f(data)
+    return reduce
+
+
+def _extreme(name, pick):
+    """max(a, b, ...) and min(a, b, ...): two or more numbers, or two or more strings."""
+    def extreme(*xs):
+        if len(xs) < 2:
+            raise TypeError(f"needs at least two values (use {name}val for an array)")
+        kinds_seen = {"text" if isinstance(x, str) else "logical" if isinstance(x, bool) else
+                      "complex" if isinstance(x, complex) else "number" for x in xs}
+        if kinds_seen - {"number", "text"} or len(kinds_seen) > 1:
+            raise TypeError("needs all numbers or all strings, got " + ", ".join(sorted(type_of(x) for x in xs)))
+        return pick(xs)
+    return extreme
+
+
+def _whole(name, fn):
+    """floor, ceiling, nint: a real to a whole number. It is an int64 when it does not fit in 32 bits, so
+    assigning it to an `integer` says so."""
+    def whole(x):
+        if isinstance(x, complex):
+            raise TypeError("needs a real number, got complex")
+        if x - x != 0:
+            raise ValueError("a NaN or an infinite value has no whole number")
+        n = int(fn(x))
+        if not -2 ** 63 <= n < 2 ** 63:
+            raise ValueError(f"{n} does not fit in 64 bits")
+        return lit_int(n)
+    return whole
 
 
 def _round_half_away(x):
@@ -1069,12 +1107,13 @@ BUILTINS = {
     "open": None, "try_open": None, "exists": lambda name: os.path.exists(_need_string("exists", name)),
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
     "transpose": _transpose, "cshift": _cshift, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
-    "sum": _reduce("sum", sum), "maxval": _reduce("maxval", max), "minval": _reduce("minval", min),
+    "sum": _reduce("sum", sum, numbers=True), "maxval": _reduce("maxval", max, numbers=True, nonempty=True),
+    "minval": _reduce("minval", min, numbers=True, nonempty=True),
     "any": _reduce("any", any), "all": _reduce("all", all),
     "count": _count_true, "pack": _pack, "norm2": _norm2, "spread": _spread, "findloc": _findloc,
     "lbound": _bound("lbound", True), "ubound": _bound("ubound", False),
     "maxloc": _locate("maxloc", lambda x, best: x > best), "minloc": _locate("minloc", lambda x, best: x < best),
-    "max": max, "min": min, "product": _reduce("product", math.prod),
+    "product": _reduce("product", math.prod, numbers=True),
     "huge": _huge, "epsilon": _epsilon, "tiny": _tiny,
 }
 # Elementwise functions: applied to every element when given an array.
@@ -1083,7 +1122,9 @@ ELEMENTAL = {
     "int8": _to_int("int8"), "int16": _to_int("int16"), "int32": _to_int("integer"), "int64": _to_int("int64"),
     "real32": _to_real32, "real64": _real, "atan2": math.atan2,
     "hypot": math.hypot, "gamma": math.gamma, "log_gamma": math.lgamma, "erf": math.erf, "erfc": math.erfc,
-    "floor": math.floor, "ceiling": math.ceil, "nint": lambda x: int(_round_half_away(x)),
+    "floor": _whole("floor", math.floor), "ceiling": _whole("ceiling", math.ceil),
+    "nint": _whole("nint", _round_half_away),
+    "max": _extreme("max", max), "min": _extreme("min", min),
     "aint": lambda x: float(math.trunc(x)), "anint": _round_half_away,
     "sign": _sign, "modulo": _modulo, "dim": lambda a, b: max(a - b, 0),
     "mod": lambda a, b: int(math.fmod(a, b)) if isinstance(a, int) and isinstance(b, int) else math.fmod(a, b),
@@ -1099,6 +1140,8 @@ ELEMENTAL.update({name: _complex_aware(getattr(math, name), getattr(cmath, name)
 
 
 # Functions whose result has the width of their arguments.
+MAX_DEPTH = 10000                   # calls open at once; more is nearly always a recursion that never stops
+STACK_BYTES = 512 * 1024 * 1024     # the stack of the thread a program runs in
 KEEPS_KIND = {"sqrt", "abs", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
               "asinh", "acosh", "atanh", "exp", "log", "log10", "gamma", "log_gamma", "erf", "erfc", "hypot",
               "sign", "modulo", "dim", "mod", "aint", "anint", "sum", "product", "maxval", "minval",
@@ -1268,6 +1311,7 @@ class Interp:
         self.unit, self.out = unit, out
         kinds.set_ieee(getattr(unit, "ieee", False))
         self.input = LineInput(stdin)
+        self.depth = 0                    # how many calls are open
         self.pending = ""                 # text written with `write` that is waiting for its newline
         self.unpack_node = None           # the call an unpacking statement is evaluating: the only one that may return several results
         self.open_files = []              # every file the program opened; closed when it ends
@@ -1446,7 +1490,36 @@ class Interp:
         return self.exports[name]
 
     def run(self):
-        """Run the program; returns its exit code (0, or the value given to `stop`)."""
+        """Run the program; returns its exit code (0, or the value given to `stop`). Deep recursion needs more
+        stack than the main thread has, so the program runs in a thread with a large one."""
+        outcome = []
+
+        def target():
+            try:
+                outcome.append((True, self.run_program()))
+            except BaseException as err:                   # handed back to the caller's thread
+                outcome.append((False, err))
+        saved = sys.getrecursionlimit(), threading.stack_size()
+        try:
+            sys.setrecursionlimit(MAX_DEPTH * 30)
+            threading.stack_size(STACK_BYTES)
+            worker = threading.Thread(target=target, daemon=True)
+            worker.start()
+        except (ValueError, RuntimeError):                 # no room for a big stack: run here, with less depth
+            sys.setrecursionlimit(saved[0])
+            return self.run_program()
+        finally:
+            threading.stack_size(saved[1])
+        try:
+            worker.join()
+        finally:
+            sys.setrecursionlimit(saved[0])
+        ok, value = outcome[0]
+        if ok:
+            return value
+        raise value
+
+    def run_program(self):
         self.scope = self.program_scope
         try:
             self.exec_block(self.unit.program.body, dict(self.scope.consts))
@@ -2412,11 +2485,14 @@ class Interp:
                 f = FAST_FLOAT.get(op)
                 if f is not None:
                     try:
-                        return f(a, b)
+                        r = f(a, b)
                     except ZeroDivisionError:
                         if kinds.IEEE:
                             return ieee_div(a, b)
                         raise LangError("division by zero")
+                    if type(r) is float and r - r != 0 and not kinds.IEEE and a - a == 0 and b - b == 0:
+                        raise LangError(f"{a} {op} {b} is too large for a real (use 'use ieee' to get Infinity)")
+                    return r
             elif ta is Real32:                         # two single-precision values: round each result
                 f = FAST_FLOAT.get(op)
                 if f is not None:
@@ -2429,9 +2505,12 @@ class Interp:
                     if type(r) is not float:
                         return r                       # a comparison
                     try:
-                        return Real32(_F32.unpack(_F32.pack(r))[0])
+                        r32 = _F32.unpack(_F32.pack(r))[0]
+                        if r32 - r32 == 0 or kinds.IEEE or r - r != 0:
+                            return Real32(r32)
                     except OverflowError:
-                        pass                           # too large: the general path reports it
+                        pass
+                    # too large for a real32: the general path reports it
         if a is NULL or b is NULL:
             if op in ("==", "/="):
                 return (a is b) == (op == "==")
@@ -2458,6 +2537,10 @@ class Interp:
         if op in ("<", "<=", ">", ">=") and (isinstance(a, complex) or isinstance(b, complex)):
             raise LangError(f"complex numbers cannot be ordered with '{op}'; compare abs() or the parts")
         if op in ("==", "/=", "<", "<=", ">", ">="):
+            if (isinstance(a, str), isinstance(a, bool)) != (isinstance(b, str), isinstance(b, bool)):
+                raise LangError(f"cannot compare {type_of(a)} with {type_of(b)} using '{op}'")
+            if isinstance(a, bool) and op not in ("==", "/="):
+                raise LangError(f"logicals can be compared with == and /=, not '{op}'")
             try:
                 return COMPARE[op](a, b)
             except TypeError:
@@ -2485,6 +2568,8 @@ class Interp:
                     return Real32(float("nan") if isinstance(err, ValueError) else kinds.INF)
                 raise LangError(f"{a} ** {b} is {'not a real number' if isinstance(err, ValueError) else 'too large'}")
         r = raw_arith(op, a, b)
+        if kinds.too_large(op, a, b, r):
+            raise LangError(f"{a} {op} {b} is too large for a real (use 'use ieee' to get Infinity)")
         if kind in INT_RANGE and not isinstance(r, int):    # an integer power of an integer stays an integer
             raise LangError(f"operator {op!r} on {ka} and {kb} did not give an integer")
         return tag(kind, r, f"{a} {op} {b}")
@@ -2584,6 +2669,11 @@ class Interp:
             if name in ("open", "try_open"):
                 return self.open_file(args, line, name == "open")
             if name in ELEMENTAL:
+                if name not in ("merge", "max", "min"):
+                    for a in args:
+                        bad = next((x for x in (a.data if isinstance(a, Array) else [a]) if isinstance(x, (bool, str))), None)
+                        if bad is not None:
+                            raise TypeError(f"needs numbers, got {type_of(bad)}")
                 f = single_precision(name, ELEMENTAL[name])
                 if kinds.IEEE and name in IEEE_MATH:
                     raw = f
@@ -2654,11 +2744,18 @@ class Interp:
 
     def run_body(self, f, env):
         saved, self.scope = self.scope, self.scopes[id(f)]
+        self.depth += 1
         try:
+            if self.depth > MAX_DEPTH:
+                raise LangError(f"'{f.name}' is nested more than {MAX_DEPTH} calls deep: "
+                                f"a recursive call that never stops?")
             self.exec_block(f.body, env)
         except _Return as r:
             return r.value
+        except RecursionError:
+            raise LangError(f"'{f.name}' is nested too deeply to run: a recursive call that never stops?")
         finally:
+            self.depth -= 1
             self.scope = saved
         return None
 

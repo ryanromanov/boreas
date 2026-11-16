@@ -76,6 +76,12 @@ Integers and reals come in fixed widths, named by their size:
 - Conversion functions: `int8(x)`, `int16(x)`, `int32(x)` / `int(x)`, `int64(x)` (truncate and check
   the range), `real32(x)`, `real64(x)` / `real(x)`. `huge`, `epsilon` and `tiny` work for every kind.
 - Single precision is slower than double: each result is rounded and tagged with its width.
+- **Whole numbers from reals.** `floor`, `ceiling` and `nint` give an `int64` when the answer does not fit in 32
+  bits, so `integer :: n = floor(1.0e10)` stops with "does not fit in integer" and `int64 :: n = floor(1.0e10)`
+  works. A NaN or an answer beyond 64 bits is an error.
+- **Real overflow is an error too.** `1.0e308 * 10.0` stops the program ("too large for a real") unless the file
+  says `use ieee`; so does a negative number to a fractional power (`(-8.0) ** (1.0 / 3.0)`, which has no real
+  answer: write `cmplx(-8.0, 0.0) ** (1.0 / 3.0)` for the complex root).
 
 ## Strings and the system
 
@@ -114,6 +120,9 @@ plain `integer` or `real` stops the program, so a bad value is an error unless y
 The `to_` functions also accept `null` and give `null`, so `to_integer(field(read_line(), 1))` is one line.
 
 `stop` ends the program; `stop 3` ends it with exit code 3.
+
+Functions may call themselves. A program can have up to 10000 calls open at once; beyond that it stops with
+"nested more than 10000 calls deep", which is nearly always a recursion with no way out.
 
 ## Formatting text
 
@@ -310,6 +319,11 @@ numbers or strings; unlike Fortran they give a plain integer, not a one-element 
 the subscripts as an array (`[row, col]`), and `maxloc(m, 1)` / `maxloc(m, 2)` give one position per column / per row.
 A last argument of `true` (`maxloc(v, 1, true)`, `findloc(v, x, 1, true)`) picks the last of equal elements instead of the
 first, Fortran's `back=`; a `dim` of 0 means the whole array, so `maxloc(m, 0, true)` is the whole-matrix answer.
+
+`max(a, b, ...)` and `min(a, b, ...)` take two or more numbers or two or more strings (not a mix, and not
+logicals), and work element by element when one is an array: `max(v, 0.0)` raises every negative element to 0.0.
+Functions of numbers (`sqrt`, `abs`, `floor`, `sum`, ...) refuse logicals and strings, and `==` or `/=` between a
+string, a logical and a number is an error rather than `false`.
 
 `norm2(x)` is the length of a real array (the square root of the sum of its squares). `spread(source, dim, n)` repeats
 `source` (a single value or an array) `n` times along a new dimension `dim`: `spread([1, 2, 3], 1, 2)` is two rows of

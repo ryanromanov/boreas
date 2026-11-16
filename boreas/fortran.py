@@ -854,6 +854,8 @@ class FParser:
                 if not self.accept_op(","):
                     break
         self.expect_op(")")
+        if fname in ("nint", "floor", "ceiling") and len(args) == 2 and not isinstance(args[1], NamedArg):
+            args = args[:1]                               # nint(x, 8): the kind is the target's, as for kind=
         positional_mask = fname in ("maxloc", "minloc", "findloc") and len(args) > (3 if fname == "findloc" else 2)
         if (any(isinstance(a, NamedArg) and a.name != "kind" for a in args) or positional_mask) and fname in INTRINSIC_PARAMS:
             args = self.positional_order(fname, args)
