@@ -581,7 +581,7 @@ def _merge(a, b, mask):
 def _along(name, a, dim, in_line):
     """Where `in_line(values)` (a position from 1, or 0 for none) puts its answer in `a`. A plain array gives
     one integer. A matrix gives its subscripts as an array (no `dim`), or one position per line along `dim`."""
-    if dim is None:
+    if dim is None or (type(dim) is int and dim == 0):       # 0: the whole array, so `back` can be given without a dim
         k = in_line(a.data)
         if a.rank == 1:
             return k
@@ -604,9 +604,16 @@ def _along(name, a, dim, in_line):
     return found[0] if a.rank == 1 else Array(a.shape[:dim - 1] + a.shape[dim:], found)
 
 
+def _back(name, back):
+    if not isinstance(back, bool):
+        raise LangError(f"{name}(): back must be true or false, got {type_of(back)}")
+    return back
+
+
 def _locate(name, pick):
-    def locate(a, dim=None):
+    def locate(a, dim=None, back=False):
         _need_array(name, a)
+        back = _back(name, back)
         if not a.data:
             raise LangError(f"{name}(): the array is empty")
         if any(isinstance(x, (bool, complex)) for x in a.data):
@@ -617,7 +624,7 @@ def _locate(name, pick):
                 raise LangError(f"{name}(): the array is empty")
             best = 0
             for i, x in enumerate(values):
-                if pick(x, values[best]):
+                if pick(x, values[best]) or (back and x == values[best]):     # back: the last of equal ones
                     best = i
             return best + 1
         return _along(name, a, dim, in_line)
@@ -650,13 +657,18 @@ def _spread(source, dim, ncopies):
     return Array(new, out)
 
 
-def _findloc(a, value, dim=None):
+def _findloc(a, value, dim=None, back=False):
     """The position (from 1) of the first element equal to `value`, 0 when there is none. A matrix gives its
     subscripts as an array, or (with `dim`) one position per line along that dimension."""
     _need_array("findloc", a)
     if isinstance(value, Array):
         raise LangError("findloc(): the value to look for must be a single value")
-    return _along("findloc", a, dim, lambda values: next((i + 1 for i, x in enumerate(values) if x == value), 0))
+    last = _back("findloc", back)
+
+    def in_line(values):
+        places = list(enumerate(values, 1))
+        return next((i for i, x in (reversed(places) if last else places) if x == value), 0)
+    return _along("findloc", a, dim, in_line)
 
 
 def _bound(name, low):
@@ -2749,16 +2761,25 @@ class Interp:
                     raise
                 break
 
-    def exec_where(self, s, env):
+    def exec_where(self, s, env, outer=None):
         """`where mask then ... elsewhere ... end where`: each assignment changes only the elements the mask
         selects (or, after `elsewhere`, the ones it does not). The mask is evaluated once, and each right-hand
-        side is evaluated for every element, like any array expression."""
+        side is evaluated for every element, like any array expression. A `where` inside another one works on
+        the elements both masks select (`outer` is the elements the enclosing block works on)."""
         mask = self.eval(s.cond, env)
         if not isinstance(mask, Array) or not all(isinstance(x, bool) for x in mask.data):
             raise LangError(f"line {s.line}: 'where' needs an array of logicals, such as a > 0")
+        if outer is not None and outer.shape != mask.shape:
+            raise LangError(f"line {s.line}: this 'where' has a mask of shape {list(mask.shape)}, "
+                            f"but the 'where' around it has shape {list(outer.shape)}")
+        inside = outer.data if outer is not None else [True] * len(mask.data)
         for body, want in ((s.body, True), (s.orelse, False)):
+            chosen = Array(mask.shape, [o and m == want for m, o in zip(mask.data, inside)])
             for st in body:
                 if isinstance(st, Comment):
+                    continue
+                if isinstance(st, Where):
+                    self.exec_where(st, env, chosen)
                     continue
                 current = self.eval(st.target, env)
                 value = self.eval(st.value, env)
@@ -2769,9 +2790,9 @@ class Interp:
                     if value.shape != mask.shape:
                         raise LangError(f"line {st.line}: the value has shape {list(value.shape)}, "
                                         f"but the mask has shape {list(mask.shape)}")
-                    new = [v if m == want else c for m, v, c in zip(mask.data, value.data, current.data)]
+                    new = [v if m else c for m, v, c in zip(chosen.data, value.data, current.data)]
                 else:
-                    new = [value if m == want else c for m, c in zip(mask.data, current.data)]
+                    new = [value if m else c for m, c in zip(chosen.data, current.data)]
                 self.exec(Assign(st.target, Evaluated(Array(mask.shape, new)), st.line, st.update), env)
 
     def result_value(self, f, typ, value):
