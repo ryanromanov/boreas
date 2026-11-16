@@ -1,11 +1,14 @@
 """Adds `@` to the arguments of call statements that an `out` or `inout` parameter changes, in Boreas source
 written before call sites were marked. `python3 tools/add_call_marks.py FILE...` rewrites the files in place.
 `migrate(text)` does one string and returns (new text, [(old line, new line)])."""
-import os, sys
+import os, re, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from boreas.parser import Call, parse
 from boreas.callmarks import all_procedures, bodies, needed, CHANGES
 from boreas.effects import statements
+
+
+SKIP = re.compile(r"(\s|&[ \t]*\n)*")
 
 
 def split_args(text):
@@ -53,48 +56,56 @@ def migrate(text):
             if add_recv or add_args:
                 edits.append((s.line, add_recv, add_args, s))
     changes = []
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line) + 1)
     for line_no, add_recv, add_args, s in sorted(edits, key=lambda e: -e[0]):
         old = lines[line_no - 1]
-        low = old.lower()
-        at = low.find("call")
+        at = old.lower().find("call")
         if at < 0:
             raise ValueError(f"line {line_no}: no 'call' on the line: {old.strip()}")
-        open_at = old.find("(", at)
+        base = starts[line_no - 1]
+        open_at = text.find("(", base + at)
         if open_at < 0:
             raise ValueError(f"line {line_no}: no arguments on the line: {old.strip()}")
-        # the arguments end at the matching close parenthesis
-        depth, end = 0, None
-        for i in range(open_at, len(old)):
-            if old[i] == "(":
+        # the arguments end at the matching close parenthesis, which may be on a later line
+        depth, end, quote = 0, None, None
+        for i in range(open_at, len(text)):
+            c = text[i]
+            if quote:
+                quote = None if c == quote else quote
+            elif c in "\"'":
+                quote = c
+            elif c == "(":
                 depth += 1
-            elif old[i] == ")":
+            elif c == ")":
                 depth -= 1
                 if depth == 0:
                     end = i
                     break
         if end is None:
-            raise ValueError(f"line {line_no}: the call continues on the next line: {old.strip()}")
-        inner = old[open_at + 1:end]
-        pieces = split_args(inner)
+            raise ValueError(f"line {line_no}: the call never closes: {old.strip()}")
+        inner = text[open_at + 1:end]
         out, last = [], 0
-        for n, (a, b) in enumerate(pieces):
+        for n, (a, b) in enumerate(split_args(inner)):
             out.append(inner[last:a])
             piece = inner[a:b]
-            if n in add_args and inner[a:b].strip():
-                lead = len(piece) - len(piece.lstrip())
+            if n in add_args and piece.strip():
+                lead = SKIP.match(piece).end()
                 piece = piece[:lead] + "@" + piece[lead:]
             out.append(piece)
             last = b
         out.append(inner[last:])
-        head = old[:open_at]
+        head = text[base:open_at]
         if add_recv:
             word = head[at:at + 4]
             after = head[at + 4:]
             lead = len(after) - len(after.lstrip())
             head = head[:at + 4] + after[:lead] + "@" + after[lead:]
-        new = head + "(" + "".join(out) + old[end:]
-        lines[line_no - 1] = new
-        changes.append((old, new))
+        new = head + "(" + "".join(out) + text[end:end + 1]
+        text = text[:base] + new + text[end + 1:]
+        changes.append((old, new.split("\n")[0]))
+    lines = text.split("\n")
     return "\n".join(lines), changes
 
 

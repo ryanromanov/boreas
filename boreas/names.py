@@ -5,7 +5,8 @@ A name declared anywhere in a procedure counts as declared, even if the use come
 declaration is in a branch: only the program's path decides whether that fails, and an error
 reported here should always be a real one. The interpreter still catches those cases when it
 runs them."""
-from .effects import mark_problem
+from types import SimpleNamespace
+from .effects import mark_problem, types_in
 from .interp import BUILTINS, ELEMENTAL, SUBROUTINE_BUILTINS
 from .parser import (Allocate, Apply, ArrayLit, Assign, CollLit, Binary, Call, Close, Decl, Do, DoEach, DoWhile,
                      ExprStmt, FieldAccess, Gen, If, IsType, Marked, MapType, MultiAssign, NamedArg, Print, ProcType, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, SetType, Slice, Stop,
@@ -35,6 +36,12 @@ def indexable_params(params):
             if isinstance(typ, (MapType, SetType)) or (isinstance(typ, str) and (typ == "string" or typ.endswith("]")))}
 
 
+def callback_signature(name, proc):
+    """A procedure parameter's ProcType, shaped like a Function so that mark_problem can check a call to it."""
+    return SimpleNamespace(name=name, params=[(typ, f"argument {n}", intent)
+                                              for n, (typ, intent) in enumerate(proc.params, 1)])
+
+
 def declared_in(body):
     """Every name a statement list declares, at any depth."""
     names = set()
@@ -51,10 +58,19 @@ def declared_in(body):
 
 class Walker:
     """Checks one procedure or program body against what it can see."""
-    def __init__(self, scope, variables, indexable=(), callbacks=None):
+    def __init__(self, scope, variables, indexable=(), callbacks=None, types=None):
         self.scope, self.variables, self.errors = scope, variables, []
+        self.types = types or {}                          # variable or parameter -> its declared type name
         self.callbacks = callbacks or {}                  # procedure parameter -> its ProcType
         self.indexable = set(indexable)               # arrays and strings: written name[...], never name(...)
+
+    def method(self, receiver, name):
+        """The function `name` of the record or interface a receiver was declared with, or None if unknown."""
+        if isinstance(receiver, Var) or (isinstance(receiver, Apply) and receiver.bracket):
+            kind = self.types.get(receiver.name)
+            owner = self.scope.records.get(kind) or self.scope.interfaces.get(kind)
+            return owner.functions.get(name) if owner is not None else None
+        return None
 
     def report(self, name, line, col, message):
         self.errors.append((line, col, message, len(name)))
@@ -236,6 +252,14 @@ class Walker:
         elif isinstance(s, Call):
             if s.receiver is not None:              # a record's function: the record decides which
                 self.expr(s.receiver)
+                f = self.method(s.receiver, s.name)
+                problem = mark_problem(f, s) if f is not None and f.is_sub else None
+                if problem:
+                    self.report(s.name, s.line, s.col, problem)
+            elif s.name in self.callbacks and self.callbacks[s.name].is_sub:
+                problem = mark_problem(callback_signature(s.name, self.callbacks[s.name]), s)
+                if problem:
+                    self.report(s.name, s.line, s.col, problem)
             elif s.name not in self.scope.funcs and s.name not in self.variables and s.name not in SUBROUTINE_BUILTINS:
                 self.report(s.name, s.line, s.col, f"unknown subroutine '{s.name}'")
             elif s.name in SUBROUTINE_BUILTINS and s.name not in self.scope.funcs and s.name not in self.variables:
@@ -263,12 +287,14 @@ def undeclared_names(unit, interp):
     for f, scope in bodies:
         walker = Walker(scope, set(scope.consts) | {name for _, name, _ in f.params} | declared_in(f.body),
                         indexable_in(f.body) | indexable_params(f.params),
-                        {name: typ for typ, name, _ in f.params if isinstance(typ, ProcType)})
+                        {name: typ for typ, name, _ in f.params if isinstance(typ, ProcType)},
+                        {**types_in(f.body), **{name: typ for typ, name, _ in f.params if isinstance(typ, str)}})
         walker.statements(f.body)
         errors += walker.errors
     if unit.program:
         scope = interp.program_scope
-        walker = Walker(scope, set(scope.consts) | declared_in(unit.program.body), indexable_in(unit.program.body))
+        walker = Walker(scope, set(scope.consts) | declared_in(unit.program.body), indexable_in(unit.program.body),
+                        types=types_in(unit.program.body))
         walker.statements(unit.program.body)
         errors += walker.errors
     return sorted(errors, key=lambda err: err[:2])

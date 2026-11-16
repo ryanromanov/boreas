@@ -3,7 +3,7 @@ function from assigning to one. This pass, which runs once everything is linked,
 passing a module variable to an `out` or `inout` parameter, and calling a subroutine that changes one (directly
 or through other subroutines)."""
 from .lexer import LangError
-from .parser import (Allocate, Apply, Assign, Call, Deallocate, FieldAccess, MultiAssign, Var, root_name,
+from .parser import (Allocate, Decl, Apply, Assign, Call, Deallocate, FieldAccess, MultiAssign, Var, root_name,
                      sub_bodies)
 
 CHANGES = ("out", "inout")
@@ -40,6 +40,20 @@ def statements(body):
                 yield from statements(inner)
 
 
+def types_in(body):
+    """Every variable a statement list declares, with its type name, at any depth."""
+    found = {}
+    for s in body:
+        if isinstance(s, list):
+            found.update(types_in(s))
+        elif isinstance(s, Decl):
+            found[s.name] = s.type
+        else:
+            for inner in sub_bodies(s):
+                found.update(types_in(inner))
+    return found
+
+
 def root_of(arg):
     """The variable an argument names (`x`, `x[i]`, `x.f`), or None for any other expression."""
     if isinstance(arg, Var) or (isinstance(arg, Apply) and arg.bracket):
@@ -60,9 +74,20 @@ class Effects:
         return {n: slot for n, slot in scope.consts.items()
                 if slot[3] == "module" and n not in {name for _, name, _ in f.params}}
 
+    def method(self, receiver, name, shared, types, scope):
+        """The function `name` of the record or interface `receiver` was declared with, or None. A function of
+        an interface says how it takes `self`, but not what it changes: only a record's own is followed."""
+        root = root_of(receiver)
+        kind = types.get(root)
+        if kind is None and root in shared:
+            kind = shared[root][0]
+        owner = scope.records.get(kind) or scope.interfaces.get(kind)
+        return owner.functions.get(name) if owner is not None else None
+
     def scan(self, f):
         scope = self.interp.scopes[id(f)]
         shared = self.module_vars(f, scope)
+        types = {**types_in(f.body), **{name: typ for typ, name, _ in f.params if isinstance(typ, str)}}
         direct, calls, passes = {}, [], []
         for s in statements(f.body):
             if isinstance(s, Assign):
@@ -79,10 +104,14 @@ class Effects:
                     if name in shared:
                         direct[id(shared[name])] = name
                     continue
-                g = None if s.receiver is not None or s.name in scope.consts else scope.funcs.get(s.name)
+                args = s.args
+                if s.receiver is not None:       # a record's subroutine: the record is passed first, as `self`
+                    g, args = self.method(s.receiver, s.name, shared, types, scope), [s.receiver] + list(s.args)
+                else:
+                    g = None if s.name in scope.consts else scope.funcs.get(s.name)
                 if g is not None and g.is_sub:
                     calls.append((g, s.line))
-                    for (typ, _, intent), arg in zip(g.params, s.args):
+                    for (typ, _, intent), arg in zip(g.params, args):
                         name = root_of(arg)
                         if intent in CHANGES and name in shared:
                             direct[id(shared[name])] = name
