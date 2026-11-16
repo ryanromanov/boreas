@@ -24,9 +24,9 @@ def fails(test, body, message, ieee=False, decls=""):
 class StrictByDefaultTests(unittest.TestCase):
     def test_bad_real_arithmetic_stops_the_program(self):
         fails(self, "  println(1.0 / 0.0)", "division by zero")
-        fails(self, "  println(sqrt(-1.0))", "domain error")
-        fails(self, "  println(log(0.0))", "domain error")
-        fails(self, "  println(exp(1000.0))", "range error")
+        fails(self, "  println(sqrt(-1.0))", "has no real answer")
+        fails(self, "  println(log(0.0))", "has no real answer")
+        fails(self, "  println(exp(1000.0))", "too large for a real")
         fails(self, "  println(10.0 ** 400)", "too large")
 
     def test_a_nan_made_on_purpose_is_allowed_anywhere(self):

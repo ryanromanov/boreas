@@ -76,10 +76,10 @@ class LibraryTests(unittest.TestCase):
 
 class StrictTests(unittest.TestCase):
     def test_domain_and_range_errors_still_stop_the_program(self):
-        fails(self, "  real32 :: x = 2.0\n  println(asin(x))", "domain error")
-        fails(self, "  real32 :: x = 0.0\n  println(log(x))", "domain error")
-        fails(self, "  real32 :: x = -1.0\n  println(sqrt(x))", "domain error")
-        fails(self, "  real32 :: x = 100.0\n  println(exp(x))", "range error")
+        fails(self, "  real32 :: x = 2.0\n  println(asin(x))", "has no real answer")
+        fails(self, "  real32 :: x = 0.0\n  println(log(x))", "has no real answer")
+        fails(self, "  real32 :: x = -1.0\n  println(sqrt(x))", "has no real answer")
+        fails(self, "  real32 :: x = 100.0\n  println(exp(x))", "too large for a real")
         fails(self, "  real32 :: x = 2.0\n  println(x ** 200)", "too large")
         fails(self, "  real32 :: x = -2.0\n  real32 :: y = 0.5\n  println(x ** y)", "not a real number")
 

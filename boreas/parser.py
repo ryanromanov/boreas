@@ -85,7 +85,7 @@ class InterfaceDef:
 @dataclass
 class Assign: target: object; value: object; line: int; update: bool = False
 @dataclass
-class If: branches: list; orelse: list   # branches: [(cond, body)]
+class If: branches: list; orelse: list; line: int = 0   # branches: [(cond, body)]
 @dataclass
 class Where: cond: object; body: list; orelse: list; line: int   # where cond then ... elsewhere ... end where
 @dataclass
@@ -1090,6 +1090,16 @@ class Parser:
             self.skip_newlines()
 
     def statement(self):
+        line = self.tok.line
+        st = self.statement_node()
+        if not isinstance(st, list) and not getattr(st, "line", None):
+            try:
+                st.line = line                       # every statement knows its line, for runtime errors
+            except AttributeError:
+                pass
+        return st
+
+    def statement_node(self):
         t = self.tok
         if t.kind == "ident" and t.text == "const":
             self.next()
@@ -1410,6 +1420,7 @@ class Parser:
             self.skip_newlines()
 
     def if_stmt(self):
+        line = self.tok.line
         self.expect("if")
         branches, orelse = [], []
         cond = self.condition()
@@ -1429,7 +1440,7 @@ class Parser:
                 orelse = self.block("if")
         self.expect("if")
         self.newline()
-        return If(branches, orelse)
+        return If(branches, orelse, line)
 
     def do_stmt(self):
         label = None
