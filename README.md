@@ -205,10 +205,11 @@ like Fortran's `F8.2`. Integer division by zero and turning NaN into an integer 
 
 ## Constants
 
-    const real :: pi = 3.14159
+    const real :: golden = 1.6180339887
     const integer[3] :: primes = [2, 3, 5]
 
-A `const` needs a value and can never be assigned, used as a `do` variable, or
+`pi` is always there (3.141592653589793, a `real`; `real32 :: x = pi` rounds it). A program that declares its
+own `pi` gets its own, so older code keeps working. A `const` needs a value and can never be assigned, used as a `do` variable, or
 passed as an `out`/`inout` argument. Fortran's `parameter` converts to `const`.
 
 ## Complex numbers
@@ -324,6 +325,17 @@ first, Fortran's `back=`; a `dim` of 0 means the whole array, so `maxloc(m, 0, t
 logicals), and work element by element when one is an array: `max(v, 0.0)` raises every negative element to 0.0.
 Functions of numbers (`sqrt`, `abs`, `floor`, `sum`, ...) refuse logicals and strings, and `==` or `/=` between a
 string, a logical and a number is an error rather than `false`.
+
+`sum`, `product`, `maxval`, `minval`, `any`, `all` and `count` take a second argument `dim` for a matrix: `sum(m, 1)`
+adds down each column (one answer per column) and `sum(m, 2)` along each row, as in Fortran; for a one-dimensional
+array `dim` is 1 and the answer is a single value.
+
+Whole numbers can be taken apart bit by bit, in the width of the number (`integer` 32 bits, `int64` 64, and so
+on): `iand`, `ior`, `ieor` and `bitnot` (Fortran's `not`, which is a keyword here), `ishft(i, n)` (left for a positive
+`n`, right with zeros for a negative one), `shiftl`, `shiftr` (zeros come in) and `shifta` (the sign bit comes in),
+`btest(i, pos)`, `ibset`, `ibclr`, `ibits(i, pos, len)`, `popcnt`, `leadz`, `trailz` and `bit_size`. Bits count
+from 0 at the right. They work on arrays element by element. `bessel_j0`, `bessel_j1`, `bessel_y0`, `bessel_y1`
+and `bessel_jn(n, x)`, `bessel_yn(n, x)` are the Bessel functions, from the same C library gfortran uses.
 
 `norm2(x)` is the length of a real array (the square root of the sum of its squares). `spread(source, dim, n)` repeats
 `source` (a single value or an array) `n` times along a new dimension `dim`: `spread([1, 2, 3], 1, 2)` is two rows of
@@ -843,15 +855,15 @@ marked `public`, and a program (or another module, or a single procedure) import
 exactly the names it uses:
 
     module geometry
-      public const real :: pi = 3.14159
+      public const real :: tau = 6.283185307179586
 
       public function area(real :: r) -> real
-        return pi * r ** 2
+        return tau / 2 * r ** 2
       end function
     end module
 
     program demo
-      use geometry: area, pi
+      use geometry: area, tau
       println(area(2.0))
     end program
 

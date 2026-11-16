@@ -234,7 +234,8 @@ REAL_KINDS = {4: "real32", 8: "real"}
 # puts them in this order. (Looking into keyword arguments for Boreas parameters is on the list: see D52.)
 LOC_PARAMS = ["array", "dim", "mask", "kind", "back"]
 INTRINSIC_PARAMS = {"cshift": ["array", "shift", "dim"], "merge": ["tsource", "fsource", "mask"],
-                    "count": ["mask", "dim"], "pack": ["array", "mask", "vector"],
+                    "count": ["mask", "dim"], "sum": ["array", "dim"], "product": ["array", "dim"], "maxval": ["array", "dim"],
+                    "minval": ["array", "dim"], "any": ["mask", "dim"], "all": ["mask", "dim"], "pack": ["array", "mask", "vector"],
                     "maxloc": LOC_PARAMS, "minloc": LOC_PARAMS, "norm2": ["x", "dim"],
                     "spread": ["source", "dim", "ncopies"], "findloc": ["array", "value", "dim", "mask", "kind", "back"],
                     "lbound": ["array", "dim"], "ubound": ["array", "dim"]}
@@ -254,7 +255,7 @@ SPECIFIC_NAMES = {
     "dsinh": "sinh", "dcosh": "cosh", "dtanh": "tanh", "dmod": "mod", "amod": "mod", "dsign": "sign",
     "isign": "sign", "ddim": "dim", "idim": "dim", "dmax1": "max", "amax1": "max", "max0": "max",
     "dmin1": "min", "amin1": "min", "min0": "min",
-    "char": "achar", "ichar": "iachar", "command_argument_count": "argument_count",
+    "not": "bitnot", "popcnt": "popcnt", "char": "achar", "ichar": "iachar", "command_argument_count": "argument_count",
 }
 
 

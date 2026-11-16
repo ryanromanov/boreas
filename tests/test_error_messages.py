@@ -19,7 +19,7 @@ class WordingTests(unittest.TestCase):
         self.assertIn("sqrt() takes 1 argument, got 2", message("  println(sqrt(1.0, 2.0))"))
         self.assertIn("size() takes 1 to 2 arguments, got 0", message("  println(size())"))
         self.assertIn("atan2() takes 2 arguments, got 1", message("  println(atan2(1.0))"))
-        self.assertIn("sum() takes 1 argument, got 2", message("  println(sum([1, 2], 1))"))
+        self.assertIn("sum() takes 1 to 2 arguments, got 3", message("  println(sum([1, 2], 1, 1))"))
 
     def test_out_of_range_arguments(self):
         self.assertIn("log(-1.0) has no real answer", message("  println(log(-1.0))"))

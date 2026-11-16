@@ -566,9 +566,10 @@ def _need_logical_array(name, a):
     return a
 
 
-def _count_true(mask):
+def _count_true(mask, dim=None):
     """How many elements of a logical array are true."""
-    return sum(_need_logical_array("count", mask).data)
+    mask = _need_logical_array("count", mask)
+    return sum(mask.data) if dim is None else _along("count", mask, _need_dim("count", mask, dim), sum)
 
 
 def _merge(a, b, mask):
@@ -704,16 +705,27 @@ def _present(x):
     raise LangError("present() needs a single value")   # apply() handles real calls
 
 
+def _need_dim(name, a, dim):
+    if isinstance(dim, bool) or not isinstance(dim, int) or not 1 <= dim <= a.rank:
+        raise LangError(f"{name}(): dimension must be 1..{a.rank}")
+    return dim
+
+
 def _reduce(name, f, numbers=False, nonempty=False):
-    """A function of a whole array. `numbers`: the elements must be numbers (not logicals or text);
-    `nonempty`: an empty array has no answer."""
-    def reduce(a):
-        data = _need_array(name, a).data
+    """A function of a whole array, or (with `dim`) of each line of a matrix along that dimension.
+    `numbers`: the elements must be numbers (not logicals or text); `nonempty`: nothing has no answer."""
+    def one(data):
         if nonempty and not data:
             raise ValueError("the array is empty")
         if numbers and any(isinstance(x, (bool, str)) for x in data):
             raise TypeError(f"needs numbers, got {type_of(next(x for x in data if isinstance(x, (bool, str))))}s")
         return f(data)
+
+    def reduce(a, dim=None):
+        a = _need_array(name, a)
+        if dim is None:
+            return one(a.data)
+        return _along(name, a, _need_dim(name, a, dim), one)
     return reduce
 
 
@@ -816,6 +828,113 @@ def _complex_aware(real_fn, complex_fn):
                 return complex_fn(x)
             raise
     return apply
+
+
+
+def _int_kind(name, x):
+    kind = type_of(x)
+    if kind not in INT_BITS:
+        raise TypeError(f"needs whole numbers, got {kind}")
+    return kind
+
+
+def _bit_kind(name, *xs):
+    kinds_ = [_int_kind(name, x) for x in xs]
+    kind = kinds_[0]
+    for k in kinds_[1:]:
+        kind = result_kind(kind, k)
+    return kind
+
+
+def _bits_op(name, how, kind_of=0):
+    """A bit function of whole numbers, taking the width of the first (or widest) operand: `how(bits, *xs)`
+    works on the two's-complement pattern as a non-negative number and returns one too."""
+    want = how.__code__.co_argcount - 2
+
+    def op(*xs):
+        if len(xs) != want:
+            raise TypeError(f"takes {want} argument{'s' if want != 1 else ''}, got {len(xs)}")
+        kind = _bit_kind(name, *xs[:2]) if kind_of == "all" else _bit_kind(name, xs[0])
+        for x in xs[1:]:
+            if kind_of != "all":
+                _int_kind(name, x)
+        width = INT_BITS[kind]
+        mask = (1 << width) - 1
+        return kinds.wrap(kind, how(width, mask, *[x & mask if i == 0 or kind_of == "all" else x for i, x in enumerate(xs)]))
+    return op
+
+
+def _bit_count_op(name, how):
+    """popcnt, leadz, trailz: a count of bits, as a plain integer."""
+    def op(x):
+        width = INT_BITS[_int_kind(name, x)]
+        return how(width, x & ((1 << width) - 1))
+    return op
+
+
+def _shift(name, direction):
+    def how(width, mask, u, n):
+        if isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= width:
+            raise ValueError(f"the shift must be a whole number from 0 to {width}")
+        if direction == "left":
+            return (u << n) & mask
+        if direction == "right":
+            return u >> n
+        sign = u >> (width - 1)                              # shifta: the sign bit fills in
+        return (u >> n) | (((1 << n) - 1) << (width - n) if sign and n else 0)
+    return _bits_op(name, how)
+
+
+def _ishft(width, mask, u, n):
+    if isinstance(n, bool) or not isinstance(n, int) or abs(n) > width:
+        raise ValueError(f"the shift must be a whole number from -{width} to {width}")
+    return (u << n) & mask if n >= 0 else u >> -n
+
+
+def _position(name, width, pos):
+    if isinstance(pos, bool) or not isinstance(pos, int) or not 0 <= pos < width:
+        raise ValueError(f"the bit position must be a whole number from 0 to {width - 1}")
+    return pos
+
+
+def _btest(i, pos):
+    width = INT_BITS[_int_kind("btest", i)]
+    return bool((i >> _position("btest", width, pos)) & 1)
+
+
+def _ibits(width, mask, u, pos, length):
+    _position("ibits", width, pos)
+    if isinstance(length, bool) or not isinstance(length, int) or not 0 <= length <= width - pos:
+        raise ValueError(f"the length must be a whole number from 0 to {width - pos}")
+    return (u >> pos) & ((1 << length) - 1)
+
+
+def _bit_size(x):
+    return INT_BITS[_int_kind("bit_size", x)]
+
+
+def _bessel(c_name, takes_order):
+    """bessel_j0(x), bessel_jn(n, x), ...: the C library's Bessel functions, which are what gfortran calls."""
+    def bessel(*xs):
+        if len(xs) != (2 if takes_order else 1):
+            raise TypeError(f"takes {'a whole-number order and a real number' if takes_order else 'one real number'}, got {len(xs)} arguments")
+        if takes_order and (isinstance(xs[0], bool) or not isinstance(xs[0], int)):
+            raise TypeError("takes a whole-number order and a real number")
+        x = xs[-1]
+        if isinstance(x, bool) or not isinstance(x, (int, float)):
+            raise TypeError(f"needs a real number, got {type_of(x)}")
+        fn = kinds.libm_function(c_name)
+        if fn is None:
+            raise ValueError("needs the system math library, which could not be loaded")
+        r = fn(*(xs if takes_order else (float(x),)))
+        if r != r:
+            raise ValueError("math domain error")
+        if abs(r) == kinds.INF:
+            if c_name[0] == "y" and x == 0:
+                raise ValueError("math domain error")
+            raise OverflowError("math range error")
+        return r
+    return bessel
 
 
 def _real(x):
@@ -1186,6 +1305,17 @@ ELEMENTAL = {
     "floor": _whole("floor", math.floor), "ceiling": _whole("ceiling", math.ceil),
     "nint": _whole("nint", _round_half_away),
     "max": _extreme("max", max), "min": _extreme("min", min),
+    "iand": _bits_op("iand", lambda w, m, a, b: a & b, "all"), "ior": _bits_op("ior", lambda w, m, a, b: a | b, "all"),
+    "ieor": _bits_op("ieor", lambda w, m, a, b: a ^ b, "all"), "bitnot": _bits_op("bitnot", lambda w, m, a: ~a & m),
+    "ishft": _bits_op("ishft", _ishft), "shiftl": _shift("shiftl", "left"), "shiftr": _shift("shiftr", "right"),
+    "shifta": _shift("shifta", "arithmetic"), "btest": _btest,
+    "ibset": _bits_op("ibset", lambda w, m, u, p: u | (1 << _position("ibset", w, p))),
+    "ibclr": _bits_op("ibclr", lambda w, m, u, p: u & ~(1 << _position("ibclr", w, p)) & m),
+    "ibits": _bits_op("ibits", _ibits), "popcnt": _bit_count_op("popcnt", lambda w, u: bin(u).count("1")),
+    "leadz": _bit_count_op("leadz", lambda w, u: w - u.bit_length()),
+    "trailz": _bit_count_op("trailz", lambda w, u: w if u == 0 else (u & -u).bit_length() - 1), "bit_size": _bit_size,
+    "bessel_j0": _bessel("j0", False), "bessel_j1": _bessel("j1", False), "bessel_y0": _bessel("y0", False),
+    "bessel_y1": _bessel("y1", False), "bessel_jn": _bessel("jn", True), "bessel_yn": _bessel("yn", True),
     "aint": lambda x: float(math.trunc(x)), "anint": _round_half_away,
     "sign": _sign, "modulo": _modulo, "dim": lambda a, b: max(a - b, 0),
     "mod": lambda a, b: int(math.fmod(a, b)) if isinstance(a, int) and isinstance(b, int) else math.fmod(a, b),
@@ -1201,12 +1331,14 @@ ELEMENTAL.update({name: _complex_aware(getattr(math, name), getattr(cmath, name)
 
 
 # Functions whose result has the width of their arguments.
+PREDEFINED = {"pi": ["real", math.pi, False, "const"]}     # constants every program has (a declaration of the same name wins)
 MAX_DEPTH = 10000                   # calls open at once; more is nearly always a recursion that never stops
 STACK_BYTES = 512 * 1024 * 1024     # the stack of the thread a program runs in
 KEEPS_KIND = {"sqrt", "abs", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
               "asinh", "acosh", "atanh", "exp", "log", "log10", "gamma", "log_gamma", "erf", "erfc", "hypot",
               "sign", "modulo", "dim", "mod", "aint", "anint", "sum", "product", "maxval", "minval",
-              "dot_product", "matmul", "max", "min", "norm2"}
+              "dot_product", "matmul", "max", "min", "norm2", "bessel_j0", "bessel_j1", "bessel_y0", "bessel_y1",
+              "bessel_jn", "bessel_yn"}
 
 
 # A variable slot is [type, value, is_array, intent]. `value` is None until
@@ -1247,7 +1379,8 @@ def _share(x, y):
 
 
 IEEE_MATH = {"sqrt", "log", "log10", "asin", "acos", "acosh", "atanh", "exp", "sinh", "cosh", "mod", "modulo",
-             "gamma", "log_gamma", "tan", "hypot", "erf", "erfc"}
+             "gamma", "log_gamma", "tan", "hypot", "erf", "erfc", "bessel_j0", "bessel_j1", "bessel_y0",
+             "bessel_y1", "bessel_jn", "bessel_yn"}
 
 
 def single_precision(name, f):
@@ -1273,6 +1406,8 @@ def ieee_math(name, args, err):
     if isinstance(err, OverflowError):
         return -kinds.INF if name in ("sinh", "gamma") and x < 0 else kinds.INF
     if name in ("log", "log10") and x == 0:
+        return -kinds.INF
+    if name in ("bessel_y0", "bessel_y1", "bessel_yn") and float(args[-1]) == 0:
         return -kinds.INF
     if name == "atanh" and abs(x) == 1:
         return math.copysign(kinds.INF, x)
@@ -1996,6 +2131,8 @@ class Interp:
         return v
 
     def lookup(self, name, env, line=None):
+        if name not in env and name in PREDEFINED:         # a name the language provides, until a program declares its own
+            return PREDEFINED[name]
         if name not in env:
             raise LangError(f"line {line}: '{name}' is not declared" if line else f"'{name}' is not declared")
         return env[name]
