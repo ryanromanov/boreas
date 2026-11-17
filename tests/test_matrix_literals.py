@@ -103,7 +103,6 @@ class ToolTests(unittest.TestCase):
         src = "program t\n  integer[2, 2] :: m = [1, 2;\n                        3, 4]\n  println(m)\nend program\n"
         self.assertEqual(format_source(src), src)
         loose = src.replace("                        3, 4]", "3, 4]")
-        self.assertEqual(format_source(loose), loose.replace("\n3, 4]", "\n  3, 4]") if False else format_source(loose))
         self.assertEqual(run_bor(format_source(loose)), ["[[1, 2], [3, 4]]"])
 
 
