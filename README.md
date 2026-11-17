@@ -246,7 +246,8 @@ parameter says its rank: `real[,] :: m` is a two-dimensional array, `real[] :: v
 Arrays have any number of dimensions, 1-based and stored column-major like
 Fortran. A scalar subscript drops that dimension; `:` keeps it.
 
-    real[2, 3] :: m = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
+    real[2, 3] :: m = [1.0, 3.0, 5.0;
+                       2.0, 4.0, 6.0]
     println(m[1, :], m[:, 2], m[1:2, 2:3])    ! row, column, block
     m[2, :] = 0.0                          ! sections can be assigned
     println(matmul(m, transpose(m)))
@@ -284,8 +285,21 @@ like any array expression, and only the selected elements are stored. `where` is
 line ends in `then`, so a variable called `where` still works.
 
 An array literal can contain one-dimensional arrays, which are spliced in: with `x = [1, 2, 3]`, `[x, 4]` is
-`[1, 2, 3, 4]` and `[0, x, x]` is `[0, 1, 2, 3, 1, 2, 3]`. A matrix in a literal is an error (build one with
-`reshape`).
+`[1, 2, 3, 4]` and `[0, x, x]` is `[0, 1, 2, 3, 1, 2, 3]`. A nested array is not a matrix: `[[1, 2], [3, 4]]` is
+`[1, 2, 3, 4]`.
+
+A **matrix literal** has `;` between its rows: `[1, 2, 3; 4, 5, 6]` is two rows of three, written the way the matrix
+reads. Every row needs the same number of values (anything else is an error), the values are single numbers, strings
+or logicals, and a line break after `;` needs no `&`, so a matrix can be laid out as on paper:
+
+    real[3, 3] :: id = [1.0, 0.0, 0.0;
+                        0.0, 1.0, 0.0;
+                        0.0, 0.0, 1.0]
+
+`[1; 2; 3]` is a column, a 3 x 1 matrix (not the same as the vector `[1, 2, 3]`). A matrix is stored down its
+columns, as in Fortran, but a literal and `println` both go by rows, so what you write is what you see. For the
+storage order (Fortran's `print *, m`), `flatten(m)` gives the elements as one vector: `flatten([1, 2, 3; 4, 5, 6])`
+is `[1, 4, 2, 5, 3, 6]`. Arrays of three or more dimensions are built with `reshape`, which fills down the columns.
 
 A **generator** builds an array from a loop, inside an array literal: `[i * i do i = 1, 4]` is `[1, 4, 9, 16]`,
 and `[i do i = 10, 1, -3]` is `[10, 7, 4, 1]` (the bounds and step work as in a `do` loop; an empty range gives
@@ -302,7 +316,7 @@ default) or rows (`dim` 2) of a matrix. Elements pushed off one end come back at
 (`cshift([1, 2, 3, 4, 5], 2)` is `[3, 4, 5, 1, 2]`) and a negative one toward the end.
 Built in: `size`, `shape`, `reshape`, `matmul`, `transpose`, `cshift`, `dot_product`,
 `sum`, `product`, `maxval`, `minval`, `any`, `all`, `count`, `maxloc`, `minloc`, `findloc`, `pack`, `merge`,
-`spread`, `norm2`, `lbound`, `ubound`, `max`, `min`, plus these, which apply to every element of an array:
+`spread`, `norm2`, `lbound`, `ubound`, `flatten`, `max`, `min`, plus these, which apply to every element of an array:
 
 - `sqrt`, `abs`, `exp`, `log`, `log10`, `gamma`, `log_gamma`, `erf`, `erfc`, `hypot(a, b)`
 - `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2(y, x)` (`atan(y, x)` works too), `sinh`,
@@ -1002,7 +1016,7 @@ report on stderr. Translations that change meaning are flagged, never silent:
   `r = 10 * f_value + 1`, and a plain `r = f(k)` becomes `call f(k, @r)`. Calls that Fortran evaluates only
   conditionally (after `.and.`/`.or.`, in an `else if` or `do while` condition) are TODOs.
 - `data a, b /1, 2/, c /3*0/` becomes initialisers on the declarations (arrays fill in column order, `n*value` repeats
-  a value; a 2-D array uses `reshape`). Elements, sections and implied-do loops in a `data` list are TODOs.
+  a value; a 2-D array becomes a matrix literal; `reshape` of plain numbers, with or without `order=`, does too). Elements, sections and implied-do loops in a `data` list are TODOs.
 - Array constructors with implied-do loops become generators: `[x, (0.0, i=1, n)]` is `[x, (0.0 do i = 1, n)]`, and
   `[(i*i, i=1, 4)]` is `[i * i do i = 1, 4]` (steps, nested loops and several values per step work too).
 - `character(len=n)` variables: assigning to one pads with blanks or cuts to `n` (`a = left(x, n)`; literals are

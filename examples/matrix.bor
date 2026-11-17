@@ -1,5 +1,6 @@
 ! Multidimensional arrays are stored column-major, like Fortran: the first
-! subscript varies fastest, so reshape fills down the columns.
+! subscript varies fastest, so reshape fills down the columns. A literal with ;
+! between rows is written the way the matrix reads, and is stored the same way.
 
 function trace(real[,] :: m) -> real
   integer :: i
@@ -18,8 +19,9 @@ subroutine normalize_rows(inout real[,] :: m)
 end subroutine
 
 program demo
-  real[2, 3] :: a = reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3])
-  real[2, 2] :: sq = reshape([2.0, 0.0, 0.0, 3.0], [2, 2])
+  real[2, 3] :: a = [1.0, 3.0, 5.0;
+                     2.0, 4.0, 6.0]
+  real[2, 2] :: sq = [2.0, 0.0; 0.0, 3.0]
 
   println("a =", a)
   println("shape", shape(a), " rows", size(a, 1), " cols", size(a, 2))

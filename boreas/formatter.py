@@ -62,6 +62,8 @@ def _split(src):
                 line.continued = True
             elif kind not in ("ws", "comment", "nl"):
                 line.words.append((kind, word.lower()))
+        if line.words and line.words[-1] == ("op", ";"):          # a matrix row ends the line: the next row continues it
+            line.continued = True
     return lines
 
 
