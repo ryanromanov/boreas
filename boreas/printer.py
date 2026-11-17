@@ -60,6 +60,8 @@ def _expr(e):
         if len(e.items) == 1 and isinstance(e.items[0], Gen) and len(e.items[0].body) == 1:
             return "[" + generator(e.items[0]) + "]"            # shorthand: [value do i = 1, n]
         return "[" + ", ".join(f"({generator(x)})" if isinstance(x, Gen) else expr(x) for x in e.items) + "]"
+    if k is MatrixLit:
+        return "[" + "; ".join(", ".join(expr(x) for x in row) for row in e.rows) + "]"
     if k is Marked:
         return "@" + expr(e.expr)
     if k is CollLit:

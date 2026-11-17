@@ -559,6 +559,12 @@ def _dot_product(a, b):
     return sum((x.conjugate() if isinstance(x, complex) else x) * y for x, y in zip(a.data, b.data))
 
 
+def _flatten(a):
+    """The elements of an array as a vector, in storage order (down the columns), as Fortran prints them."""
+    _need_array("flatten", a)
+    return Array((len(a.data),), list(a.data))
+
+
 def _need_logical_array(name, a):
     _need_array(name, a)
     if not all(isinstance(x, bool) for x in a.data):
@@ -1286,7 +1292,7 @@ BUILTINS = {
     "nan": lambda: float("nan"), "infinity": lambda: kinds.INF,
     "open": None, "try_open": None, "exists": lambda name: os.path.exists(_need_string("exists", name)),
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
-    "transpose": _transpose, "cshift": _cshift, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
+    "flatten": _flatten, "transpose": _transpose, "cshift": _cshift, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
     "sum": _reduce("sum", sum, numbers=True), "maxval": _reduce("maxval", max, numbers=True, nonempty=True),
     "minval": _reduce("minval", min, numbers=True, nonempty=True),
     "any": _reduce("any", any), "all": _reduce("all", all),
@@ -1435,6 +1441,10 @@ def iter_apply(e):
     elif isinstance(e, ArrayLit):
         for x in e.items:
             yield from iter_apply(x)
+    elif isinstance(e, MatrixLit):
+        for row in e.rows:
+            for x in row:
+                yield from iter_apply(x)
     elif isinstance(e, CollLit):
         for x in (*e.keys, *e.values):
             yield from iter_apply(x)
@@ -2169,6 +2179,19 @@ class Interp:
                 out.append(v)
         return out
 
+    def matrix_literal(self, e, env):
+        """`[1, 2, 3; 4, 5, 6]`: the rows in reading order, stored by columns like every matrix."""
+        flat = []
+        for n, row in enumerate(e.rows, 1):
+            for m, x in enumerate(row, 1):
+                v = self.eval(x, env)
+                if isinstance(v, Array):
+                    raise LangError(f"line {e.line}: a matrix literal holds single values, but row {n}, "
+                                    f"item {m} is an array; use reshape() or build the rows separately")
+                flat.append(v)
+        rows, cols = len(e.rows), len(e.rows[0])
+        return Array((rows, cols), [flat[i * cols + j] for j in range(cols) for i in range(rows)])
+
     def generate(self, g, env):
         """`(value do i = lo, hi, step)`: i exists only here, and hides any variable of the same name."""
         lo, hi = self.eval(g.lo, env), self.eval(g.hi, env)
@@ -2423,6 +2446,8 @@ class Interp:
         if k is ArrayLit:
             items = self.literal_values(e.items, env)
             return Array((len(items),), items)
+        if k is MatrixLit:
+            return self.matrix_literal(e, env)
         if k is Marked:
             raise LangError(f"line {e.line}: '@' marks an argument of a call statement, as in call swap(@x, @y)")
         if k is CollLit:

@@ -8,7 +8,7 @@ runs them."""
 from types import SimpleNamespace
 from .effects import mark_problem, types_in
 from .interp import BUILTINS, ELEMENTAL, PREDEFINED, SUBROUTINE_BUILTINS
-from .parser import (Allocate, Apply, ArrayLit, Assign, CollLit, Binary, Call, Close, Decl, Do, DoEach, DoWhile,
+from .parser import (Allocate, Apply, ArrayLit, Assign, MatrixLit, CollLit, Binary, Call, Close, Decl, Do, DoEach, DoWhile,
                      ExprStmt, FieldAccess, Gen, If, IsType, Marked, MapType, MultiAssign, NamedArg, Print, ProcType, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, SetType, Slice, Stop,
                      Unary, Var, Where, sub_bodies)
 
@@ -117,6 +117,9 @@ class Walker:
             self.expr([e.left, e.right])
         elif isinstance(e, ArrayLit):
             self.expr(e.items)
+        elif isinstance(e, MatrixLit):
+            for row in e.rows:
+                self.expr(row)
         elif isinstance(e, CollLit):
             self.expr(e.keys)
             self.expr(e.values)

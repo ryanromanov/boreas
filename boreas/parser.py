@@ -22,6 +22,11 @@ class Null: pass          # the absent value of an optional (`T?`) variable
 @dataclass
 class ArrayLit: items: list
 @dataclass
+class MatrixLit:
+    """`[1, 2, 3; 4, 5, 6]`: rows of single values, written the way the matrix reads."""
+    rows: list
+    line: int = field(default=0, compare=False, repr=False)
+@dataclass
 class Marked:
     """An argument written `@x`. Only a call statement may have these; the parser takes the mark off."""
     expr: object; line: int = 0; col: int = 0
@@ -305,6 +310,10 @@ def check_constant(e, what, line):
     elif isinstance(e, ArrayLit):
         for x in e.items:
             check_constant(x, what, line)
+    elif isinstance(e, MatrixLit):
+        for row in e.rows:
+            for x in row:
+                check_constant(x, what, line)
     elif isinstance(e, Apply):
         for a in e.args:
             check_constant(a.value if isinstance(a, NamedArg) else a, what, line)
@@ -1720,6 +1729,27 @@ class Parser:
         self.expect("}")
         return CollLit(kind, keys, values, line)
 
+    def matrix_literal(self, first, line):
+        """The rest of `[a, b; c, d]` once the first row is read: every row has the same number of values, and a
+        line break after `;` is allowed."""
+        rows = [first]
+        while self.accept(";"):
+            self.skip_newlines()
+            if self.at("]"):
+                self.error("a matrix literal needs a row after ';'")
+            row = [self.literal_item()]
+            while self.accept(","):
+                row.append(self.literal_item())
+            rows.append(row)
+        self.expect("]")
+        for n, row in enumerate(rows, 1):
+            if any(isinstance(x, Gen) for x in row):
+                raise LangError(f"line {line}: a generator cannot be used in a matrix literal; use reshape()")
+            if len(row) != len(rows[0]):
+                raise LangError(f"line {line}: row {n} of the matrix has {len(row)} value{'s' if len(row) != 1 else ''}, "
+                                f"but row 1 has {len(rows[0])}")
+        return MatrixLit(rows, line)
+
     def literal_item(self):
         """One item of an array literal: an expression, or a parenthesized generator."""
         if self.at("(") and self.generator_ahead():
@@ -1799,6 +1829,8 @@ class Parser:
                 items.append(self.literal_item())
                 while self.accept(","):
                     items.append(self.literal_item())
+                if self.at(";"):
+                    return self.matrix_literal(items, t.line)
                 if self.at("do"):                      # shorthand: [value do i = 1, n]
                     if len(items) != 1:
                         self.error("with several items, write the generator in parentheses: [x, (0.0 do i = 1, n)]")

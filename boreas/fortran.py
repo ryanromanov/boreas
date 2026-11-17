@@ -17,6 +17,7 @@ from .interp import BUILTINS, ELEMENTAL, PURE_BUILTINS
 from .kinds import round32
 from .printer import to_source
 from .callmarks import fill_marks
+from .matrixlit import matrixify
 from .fformat import FormatError, parse_format, render, substitute
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
@@ -238,7 +239,7 @@ INTRINSIC_PARAMS = {"cshift": ["array", "shift", "dim"], "merge": ["tsource", "f
                     "minval": ["array", "dim"], "any": ["mask", "dim"], "all": ["mask", "dim"], "pack": ["array", "mask", "vector"],
                     "maxloc": LOC_PARAMS, "minloc": LOC_PARAMS, "norm2": ["x", "dim"],
                     "spread": ["source", "dim", "ncopies"], "findloc": ["array", "value", "dim", "mask", "kind", "back"],
-                    "lbound": ["array", "dim"], "ubound": ["array", "dim"]}
+                    "reshape": ["source", "shape", "pad", "order"], "lbound": ["array", "dim"], "ubound": ["array", "dim"]}
 UNSET = object()          # "not given", for an argument that may be None
 KIND_ARGUMENT = {"real", "int", "cmplx", "dble", "dcmplx", "float", "sngl", "nint", "floor", "ceiling"}
 
@@ -785,6 +786,8 @@ class FParser:
         epsilon/huge/tiny look at."""
         kind_args = [a for a in args if isinstance(a, NamedArg) and a.name == "kind"]
         args = [a for a in args if not (isinstance(a, NamedArg) and a.name == "kind")]
+        if name == "reshape" and len(args) == 3 and isinstance(args[2], NamedArg):
+            return self.reshape_with_order(args)
         if name in ("epsilon", "tiny", "huge") and args and isinstance(args[0], Num) \
                 and isinstance(args[0].value, float) and id(args[0]) not in self.double_literals:
             return name, [Apply("real32", [args[0]], self.line)]
@@ -809,6 +812,19 @@ class FParser:
             elif name == "real" and not self.is_complex_expr(args[0] if args else None):
                 name = "real32"                              # real(x) is a default (single) real, unless x is complex
         return name, args
+
+    def reshape_with_order(self, args):
+        """reshape(source, shape, order=[2, 1]) fills along the rows: the transpose of a reshape to the reversed
+        shape. order=[1, 2] is the ordinary column order."""
+        source, shape, order = args[0], args[1], args[2].value
+        if not (isinstance(order, ArrayLit) and all(isinstance(x, Num) for x in order.items)):
+            raise Unsupported("reshape() with an order that is not a literal list")
+        wanted = [x.value for x in order.items]
+        if wanted == list(range(1, len(wanted) + 1)):
+            return "reshape", [source, shape]
+        if wanted == [2, 1] and isinstance(shape, ArrayLit) and len(shape.items) == 2:
+            return "transpose", [Apply("reshape", [source, ArrayLit(list(reversed(shape.items)))], self.line)]
+        raise Unsupported(f"reshape() with order={wanted}")
 
     def is_complex_expr(self, e):
         """Is this expression certainly complex? (real(z) is the real part, in z's own kind.)"""
@@ -855,6 +871,8 @@ class FParser:
                 if not self.accept_op(","):
                     break
         self.expect_op(")")
+        if fname == "reshape" and len(args) > 2 and not isinstance(args[2], NamedArg):
+            raise Unsupported("reshape() with pad=")
         if fname in ("nint", "floor", "ceiling") and len(args) == 2 and not isinstance(args[1], NamedArg):
             args = args[:1]                               # nint(x, 8): the kind is the target's, as for kind=
         positional_mask = fname in ("maxloc", "minloc", "findloc") and len(args) > (3 if fname == "findloc" else 2)
@@ -866,6 +884,8 @@ class FParser:
         """Boreas built-ins take positional arguments only, so `cshift(array = a, shift = 2)` becomes
         `cshift(a, 2)`. A parameter left out in the middle cannot be skipped."""
         names = INTRINSIC_PARAMS[fname]
+        if fname == "reshape":
+            return self.reshape_arguments(args)
         slots = {}
         for n, a in enumerate(args):
             if isinstance(a, NamedArg) and a.name in names:
@@ -888,6 +908,19 @@ class FParser:
         if any(k not in slots for k in range(top + 1)):
             raise Unsupported(f"{fname}() with an argument left out before a later one")
         return [slots[k] for k in range(top + 1)]
+
+    def reshape_arguments(self, args):
+        """reshape(source, shape, pad, order): `pad` is not supported; an `order` comes back as a third argument,
+        a NamedArg, for convert_intrinsic."""
+        slots = {}
+        for n, a in enumerate(args):
+            key, value = (["source", "shape", "pad", "order"].index(a.name), a.value) if isinstance(a, NamedArg) else (n, a)
+            slots[key] = value
+        if 2 in slots:
+            raise Unsupported("reshape() with pad=")
+        if any(k not in slots for k in (0, 1)):
+            raise Unsupported("reshape() without its source and shape")
+        return [slots[0], slots[1]] + ([NamedArg("order", slots[3])] if 3 in slots else [])
 
     def argument(self, fname):
         t, t2 = self.peek(), self.peek(1)
@@ -5707,6 +5740,7 @@ def convert_free(src, label, before=()):
     """`before` holds findings made ahead of the parse (the preprocessor's)."""
     unit, trailing, findings = parse_fortran(src)
     fill_marks(unit)                       # Fortran does not mark the arguments a call changes
+    matrixify(unit)                        # reshape of plain numbers becomes a [1, 2; 3, 4] literal
     findings = list(before) + findings
     trailing = [f"TODO(convert): {msg}" for _, kind, msg in before if kind == "todo"] + list(trailing)
     todos = sum(1 for f in findings if f[1] == "todo")
