@@ -1234,9 +1234,51 @@ def _trim(s):
     return _need_string("trim", s).rstrip(" ")
 
 
-def _index(s, sub):
-    """Where `sub` first occurs in `s`, counting from 1; 0 when it does not occur."""
-    return _need_string("index", s).find(_need_string("index", sub)) + 1
+def _index(s, sub, back=False):
+    """Where `sub` first occurs in `s` (last, with `back`), counting from 1; 0 when it does not occur."""
+    _need_string("index", s), _need_string("index", sub)
+    return (s.rfind(sub) if _back("index", back) else s.find(sub)) + 1
+
+
+def _scan(s, chars, back=False):
+    """The position of the first character of `s` that is one of `chars` (the last, with `back`); 0 for none."""
+    _need_string("scan", s), _need_string("scan", chars)
+    places = [i for i, c in enumerate(s, 1) if c in chars]
+    return (places[-1] if _back("scan", back) else places[0]) if places else 0
+
+
+def _verify(s, chars, back=False):
+    """The position of the first character of `s` that is NOT one of `chars` (the last, with `back`); 0 for none."""
+    _need_string("verify", s), _need_string("verify", chars)
+    places = [i for i, c in enumerate(s, 1) if c not in chars]
+    return (places[-1] if _back("verify", back) else places[0]) if places else 0
+
+
+def _adjustl(s):
+    """The text moved left, leading blanks going to the end (the length stays the same)."""
+    text = _need_string("adjustl", s)
+    return text.lstrip(" ") + " " * (len(text) - len(text.lstrip(" ")))
+
+
+def _adjustr(s):
+    text = _need_string("adjustr", s)
+    return " " * (len(text) - len(text.rstrip(" "))) + text.rstrip(" ")
+
+
+def _replace(s, old, new):
+    """`s` with every `old` replaced by `new` (`old` must not be empty)."""
+    _need_string("replace", s), _need_string("replace", old), _need_string("replace", new)
+    if old == "":
+        raise ValueError("the text to replace must not be empty")
+    return s.replace(old, new)
+
+
+def _join(parts, sep):
+    """The strings of a one-dimensional array with `sep` between them."""
+    _need_array("join", parts, rank=(1,))
+    if not all(isinstance(x, str) for x in parts.data):
+        raise TypeError("needs an array of strings")
+    return _need_string("join", sep).join(parts.data)
 
 
 def _split(s, sep):
@@ -1285,7 +1327,12 @@ def _to_number(typ):
 BUILTINS = {
     "has": _has, "get": _get, "keys": _keys, "values": _values,
     "split": _split, "fields": _fields, "field": _field, "to_integer": _to_number("integer"), "to_real": _to_number("real"), "to_logical": _to_number("logical"),
-    "trim": _trim, "len_trim": lambda s: len(_trim(s)), "index": _index,
+    "trim": _trim, "len_trim": lambda s: len(_trim(s)), "index": _index, "scan": _scan, "verify": _verify,
+    "adjustl": _adjustl, "adjustr": _adjustr, "upper": lambda s: _need_string("upper", s).upper(),
+    "lower": lambda s: _need_string("lower", s).lower(), "replace": _replace, "join": _join,
+    "contains": lambda s, sub: _need_string("contains", sub) in _need_string("contains", s),
+    "starts_with": lambda s, sub: _need_string("starts_with", s).startswith(_need_string("starts_with", sub)),
+    "ends_with": lambda s, sub: _need_string("ends_with", s).endswith(_need_string("ends_with", sub)),
     "fixed": _fixed, "tf": _tf, "scientific": _scientific, "general": _general, "right": _pad("right"), "left": _pad("left"), "repeat": _repeat,
     "len": _len, "achar": _achar, "iachar": _iachar,
     "random": lambda: _random.random(),
@@ -2312,8 +2359,15 @@ class Interp:
         text = slot[VALUE]
         if text is None:
             raise LangError(f"line {line}: '{name}' is used before it is assigned")
-        if len(args) != 1 or not isinstance(args[0], Slice):
-            raise LangError(f"line {line}: '{name}' is a string; take part of it with {name}[lo:hi]")
+        if len(args) == 1 and not isinstance(args[0], Slice):          # s[i]: one character
+            i = self.eval(args[0], env)
+            if type_of(i) not in INT_RANGE:
+                raise LangError(f"line {line}: the index of '{name}' must be an integer")
+            if not 1 <= i <= len(text):
+                raise LangError(f"line {line}: index {i} out of bounds 1..{len(text)}")
+            return [(int(i), int(i))]
+        if len(args) != 1:
+            raise LangError(f"line {line}: '{name}' is a string; take one character with {name}[i] or part of it with {name}[lo:hi]")
         if args[0].step is not None:
             raise LangError(f"line {line}: a substring has no step; write {name}[lo:hi]")
         lo = 1 if args[0].lo is None else self.eval(args[0].lo, env)
@@ -2321,7 +2375,7 @@ class Interp:
         if type_of(lo) not in INT_RANGE or type_of(hi) not in INT_RANGE:
             raise LangError(f"line {line}: substring bounds of '{name}' must be integers")
         if lo < 1 or hi > len(text) or lo > hi + 1:
-            raise LangError(f"line {line}: substring {name}({lo}:{hi}) is outside the string "
+            raise LangError(f"line {line}: substring {name}[{lo}:{hi}] is outside the string "
                             f"(length {len(text)})")
         return [(int(lo), int(hi))]
 
@@ -2409,7 +2463,7 @@ class Interp:
             if subs is not None:                # a substring keeps the string's length
                 lo, hi = subs[0]
                 if not isinstance(v, str) or len(v) != hi - lo + 1:
-                    raise LangError(f"{where}: {name}({lo}:{hi}) holds {hi - lo + 1} characters; "
+                    raise LangError(f"{where}: {name}[{lo}:{hi}] holds {hi - lo + 1} character{'s' if hi - lo else ''}; "
                                     f"got {show_value(v) if isinstance(v, str) else type_of(v)}")
                 slot[VALUE] = slot[VALUE][:lo - 1] + v + slot[VALUE][hi:]
                 return
@@ -2498,7 +2552,7 @@ class Interp:
             raise LangError("'-' needs a number, got logical")
         if t is str:
             raise LangError("'-' needs a number, got string")
-        return tag(TYPE_NAMES[t], -x, f"-{x}")
+        return tag(TYPE_NAMES[t], -x, f"negating {x}")
 
     def method_of(self, rec, name):
         """The function `name` that the record value `rec` has, or None."""
