@@ -11,6 +11,7 @@ import threading
 from itertools import product
 from .lexer import LangError
 from .effects import mark_problem
+from .hints import name_hint
 from .printer import expr as expr_text
 from .parser import *
 from .kinds import *
@@ -2144,7 +2145,8 @@ class Interp:
         if name not in env and name in PREDEFINED:         # a name the language provides, until a program declares its own
             return PREDEFINED[name]
         if name not in env:
-            raise LangError(f"line {line}: '{name}' is not declared" if line else f"'{name}' is not declared")
+            more = name_hint(name, [*env, *self.scope.funcs, *BUILTINS])
+            raise LangError(f"line {line}: '{name}' is not declared{more}" if line else f"'{name}' is not declared{more}")
         return env[name]
 
     def collection_literal(self, e, env):
@@ -2852,7 +2854,8 @@ class Interp:
             return self.call_function(f, args, e.line, e)
         if e.name in BUILTINS or e.name in ELEMENTAL:
             return self.call_builtin(e.name, args, e.line)
-        raise LangError(f"line {e.line}: unknown function or array '{e.name}'")
+        raise LangError(f"line {e.line}: unknown function or array '{e.name}'"
+                        + name_hint(e.name, [*env, *self.scope.funcs, *self.scope.records, *BUILTINS, *ELEMENTAL]))
 
     def file_value(self, e, env, line, want=None):
         """The open file an expression names; `want` is "read" or "write" when the use needs that mode."""

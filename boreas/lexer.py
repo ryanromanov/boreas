@@ -32,7 +32,9 @@ def lex(src):
     while pos < len(src):
         m = TOKEN_RE.match(src, pos)
         if not m:
-            err = LangError(f"line {line}: unexpected character {src[pos]!r}")
+            from .hints import lexer_hint
+            hint = lexer_hint(src, pos)
+            err = LangError(f"line {line}: {hint}" if hint else f"line {line}: unexpected character {src[pos]!r}")
             err.col = pos - bol + 1
             raise err
         kind, text, start = m.lastgroup, m.group(), pos

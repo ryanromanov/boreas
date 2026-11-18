@@ -921,6 +921,13 @@ stops the check, so it is reported alone. Errors print as `file:line:col: messag
 (column 1 when the error has no column) and the exit status is 1; a clean file prints
 nothing and exits 0. `--json` prints `{"file": ..., "errors": [{"line", "col", "message"}]}`.
 
+Common slips from Fortran, C and Python get a message that says what to write instead: `.eq.` and `.and.`
+(write `==` and `and`), `!=` (`!` starts a comment here; write `/=`), `&&`, `||`, `%`, `^` and `//` (write `and`,
+`or`, `mod(a, b)`, `**` and `+`), `x += 1` and `x++`, `print *`, `endif` and `elseif` (two words each), `while` and
+`for` loops, `continue` (write `cycle`), `real*8`, a stray `;`, and `return` in a program (write `stop`). A name that is
+almost right gets "did you mean ...?". These are only looked up after a parse has failed, so they never change what a
+correct program means.
+
 ## Formatting
 
     boreas fmt [--check] [--indent N | --tabs] FILE.bor [FILE...]

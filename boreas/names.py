@@ -7,6 +7,7 @@ reported here should always be a real one. The interpreter still catches those c
 runs them."""
 from types import SimpleNamespace
 from .effects import mark_problem, types_in
+from .hints import name_hint
 from .interp import BUILTINS, ELEMENTAL, PREDEFINED, SUBROUTINE_BUILTINS
 from .parser import (Allocate, Apply, ArrayLit, Assign, MatrixLit, CollLit, Binary, Call, Close, Decl, Do, DoEach, DoWhile,
                      ExprStmt, FieldAccess, Gen, If, IsType, Marked, MapType, MultiAssign, NamedArg, Print, ProcType, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, SetType, Slice, Stop,
@@ -72,12 +73,15 @@ class Walker:
             return owner.functions.get(name) if owner is not None else None
         return None
 
+    def known_names(self):
+        return [*self.variables, *self.scope.funcs, *self.scope.records, *BUILTINS, *ELEMENTAL]
+
     def report(self, name, line, col, message):
         self.errors.append((line, col, message, len(name)))
 
     def variable(self, name, line, col):
         if name not in self.variables and name not in PREDEFINED:
-            self.report(name, line, col, f"'{name}' is not declared")
+            self.report(name, line, col, f"'{name}' is not declared" + name_hint(name, self.known_names()))
 
     def expr(self, e):
         if isinstance(e, list):
@@ -90,7 +94,7 @@ class Walker:
                 self.report(e.name, e.line, e.col, f"index with brackets: write {e.name}[...], not {e.name}(...)")
             elif not (e.name in self.variables or e.name in self.scope.funcs or e.name in self.scope.records
                     or e.name in BUILTINS or e.name in ELEMENTAL or e.name in ("present", "allocated")):
-                self.report(e.name, e.line, e.col, f"unknown function or array '{e.name}'")
+                self.report(e.name, e.line, e.col, f"unknown function or array '{e.name}'" + name_hint(e.name, self.known_names()))
             else:
                 many = self.results(e)
                 if many:
