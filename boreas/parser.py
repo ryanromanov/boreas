@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field, fields, is_dataclass
 from .lexer import lex, LangError
+from .hints import parse_hint
 from .kinds import lit_int, SPELLINGS, KIND_TYPES
 
 TYPES = {"integer", "real", "logical", "string", "file", "complex", "int8", "int16", "int32", "int64", "real32", "real64"}
@@ -413,6 +414,19 @@ def sub_bodies(s):
     return []
 
 
+def check_no_return(body):
+    """`return` leaves a function or subroutine; a program ends with `stop` (or at its last line)."""
+    for s in body:
+        if isinstance(s, list):
+            check_no_return(s)
+        elif isinstance(s, (Return, ReturnMany)):
+            raise LangError(f"line {s.line}: 'return' leaves a function or subroutine; "
+                            f"to end the program early, write 'stop'")
+        else:
+            for b in sub_bodies(s):
+                check_no_return(b)
+
+
 def check_loops(body, enclosing=()):
     """`exit L` / `cycle L` must name an enclosing loop, and a label cannot be
     reused by a loop inside the loop that already carries it."""
@@ -576,6 +590,7 @@ class Parser:
     def __init__(self, src):
         self.module_checks = []                     # one list per module being parsed: its procedures, checked at its end
         self.toks, self.i = lex(src), 0
+        self.src_lines = src.split("\n")
         self.inside = []                  # enclosing "select" / "loop" constructs, innermost last
         self.procs = []                   # (name, result) of the functions being parsed, innermost last
 
@@ -584,6 +599,12 @@ class Parser:
         return self.toks[self.i]
 
     def error(self, msg):
+        better = parse_hint(self.toks, self.i, msg, self.src_lines)
+        if better is not None:
+            line, col, text = better
+            err = LangError(f"line {line}: {text}")
+            err.col = col or None
+            raise err
         err = LangError(f"line {self.tok.line}: {msg} (at {self.tok.text!r})")
         err.col = self.tok.col or None
         raise err
@@ -752,6 +773,7 @@ class Parser:
             self.next()
         check_writes(body, {}, {n: False for n in (n for u in uses for n in u.names)})
         check_loops(body)
+        check_no_return(body)
         check_allocs(body, set(), {n: None for u in uses for n in u.names})
         return Program(name, body, uses=uses)
 
