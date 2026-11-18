@@ -18,6 +18,7 @@ from .kinds import round32
 from .printer import to_source
 from .callmarks import fill_marks
 from .matrixlit import matrixify
+from .tree import rewrite, walk
 from .fformat import FormatError, parse_format, render, substitute
 
 # Words the Boreas parser treats specially; Fortran has no reserved words,
@@ -362,31 +363,13 @@ def type_names(typ):
     return {base_type(typ)}
 
 
-def iter_nodes(obj):
-    """Every dataclass node reachable from `obj` (statements, expressions, lists, tuples)."""
-    if isinstance(obj, (list, tuple)):
-        for x in obj:
-            yield from iter_nodes(x)
-    elif is_dataclass(obj):
-        yield obj
-        for f in fields(obj):
-            yield from iter_nodes(getattr(obj, f.name))
+iter_nodes = walk                       # every node inside an object, outer ones first (see tree.py)
 
 
 def replace_nodes(obj, make):
     """Rebuild `obj` with each node for which `make(node)` returns a node replaced by that node.
     Children are rewritten first; lists change in place, tuples are rebuilt."""
-    if isinstance(obj, list):
-        obj[:] = [replace_nodes(x, make) for x in obj]
-        return obj
-    if isinstance(obj, tuple):
-        return tuple(replace_nodes(x, make) for x in obj)
-    if is_dataclass(obj) and not isinstance(obj, type):
-        for f in fields(obj):
-            setattr(obj, f.name, replace_nodes(getattr(obj, f.name), make))
-        new = make(obj)
-        return obj if new is None else new
-    return obj
+    return rewrite(obj, lambda node: make(node) or node)
 
 
 @dataclass

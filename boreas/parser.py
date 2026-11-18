@@ -374,27 +374,15 @@ def check_writes(body, params, shared=None, is_sub=True):
             if name in shared and name not in params and not is_sub:
                 raise LangError(f"line {s.line}: a function cannot change the module variable '{name}'; "
                                 f"make it a subroutine")
-        elif isinstance(s, If):
-            for _, b in s.branches:
-                check_writes(b, params, shared, is_sub)
-            check_writes(s.orelse, params, shared, is_sub)
-        elif isinstance(s, Where):
-            check_writes(s.body, params, shared, is_sub)
-            check_writes(s.orelse, params, shared, is_sub)
-        elif isinstance(s, Select):
-            for c in s.cases:
-                check_writes(c.body, params, shared, is_sub)
-        elif isinstance(s, Do):
-            if s.var in params:
+        else:
+            if isinstance(s, Do) and s.var in params:
                 raise LangError(f"line {s.line}: loop variable '{s.var}' cannot be a parameter")
-            check_writes(s.body, params, shared, is_sub)
-        elif isinstance(s, DoEach):
-            for v in s.vars:
-                if v in params:
-                    raise LangError(f"line {s.line}: loop variable '{v}' cannot be a parameter")
-            check_writes(s.body, params, shared, is_sub)
-        elif isinstance(s, DoWhile):
-            check_writes(s.body, params, shared, is_sub)
+            if isinstance(s, DoEach):
+                for v in s.vars:
+                    if v in params:
+                        raise LangError(f"line {s.line}: loop variable '{v}' cannot be a parameter")
+            for b in sub_bodies(s):                 # an if, loop, where or select: look inside
+                check_writes(b, params, shared, is_sub)
 
 
 def article(what):
@@ -402,16 +390,9 @@ def article(what):
 
 
 def sub_bodies(s):
-    """The statement lists nested directly inside `s`."""
-    if isinstance(s, If):
-        return [b for _, b in s.branches] + [s.orelse]
-    if isinstance(s, (Do, DoEach, DoWhile)):
-        return [s.body]
-    if isinstance(s, Where):
-        return [s.body, s.orelse]
-    if isinstance(s, Select):
-        return [c.body for c in s.cases]
-    return []
+    """The statement lists nested directly inside `s` (see tree.bodies)."""
+    from .tree import bodies
+    return bodies(s)
 
 
 def check_no_return(body):
@@ -533,14 +514,9 @@ def arm_types(arms):
 
 
 def _nodes(obj):
-    """Every dataclass node inside `obj` (statements, expressions, lists, tuples), in source order."""
-    if isinstance(obj, (list, tuple)):
-        for x in obj:
-            yield from _nodes(x)
-    elif is_dataclass(obj):
-        yield obj
-        for f in fields(obj):
-            yield from _nodes(getattr(obj, f.name))
+    """Every node inside `obj` (statements, expressions, lists, tuples), in source order."""
+    from .tree import walk
+    return walk(obj)
 
 
 def check_allocs(body, params, shared=None, is_sub=True):
