@@ -37,8 +37,8 @@ class SubstringTests(unittest.TestCase):
     def test_assigned_text_must_fit_exactly(self):
         fails(self, '  string :: s = "Hello"\n  s[1:2] = "J"', "holds 2 characters")
 
-    def test_a_single_index_is_not_a_substring(self):
-        fails(self, '  string :: s = "Hi"\n  println(s[1])', "take part of it with")
+    def test_a_single_index_is_one_character(self):
+        self.assertEqual(run_bor('program t\n  string :: s = "Hi"\n  println(s[1], s[2])\nend program\n'), ["H i"])
 
 
 class StringFunctionTests(unittest.TestCase):

@@ -239,7 +239,9 @@ INTRINSIC_PARAMS = {"cshift": ["array", "shift", "dim"], "merge": ["tsource", "f
                     "minval": ["array", "dim"], "any": ["mask", "dim"], "all": ["mask", "dim"], "pack": ["array", "mask", "vector"],
                     "maxloc": LOC_PARAMS, "minloc": LOC_PARAMS, "norm2": ["x", "dim"],
                     "spread": ["source", "dim", "ncopies"], "findloc": ["array", "value", "dim", "mask", "kind", "back"],
-                    "reshape": ["source", "shape", "pad", "order"], "lbound": ["array", "dim"], "ubound": ["array", "dim"]}
+                    "reshape": ["source", "shape", "pad", "order"],
+                    "index": ["string", "substring", "back"], "scan": ["string", "set", "back"],
+                    "verify": ["string", "set", "back"], "lbound": ["array", "dim"], "ubound": ["array", "dim"]}
 UNSET = object()          # "not given", for an argument that may be None
 KIND_ARGUMENT = {"real", "int", "cmplx", "dble", "dcmplx", "float", "sngl", "nint", "floor", "ceiling"}
 

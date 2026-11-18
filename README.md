@@ -85,10 +85,22 @@ Integers and reals come in fixed widths, named by their size:
 
 ## Strings and the system
 
-A `string` is text of any length. Join with `+`. Take part of one with `s[lo:hi]`, counting from 1 and
-including both ends (either end may be left off). Assign to part of a string with `s[lo:hi] = text`; the
-text must have exactly that many characters. `len(s)` is the length, `trim(s)` removes trailing blanks (`len_trim(s)` is the length without them), `achar(n)` the character with code
+A `string` is text of any length. Join with `+`. Take one character with `s[i]` and part of one with `s[lo:hi]`,
+counting from 1 and including both ends (either end of a part may be left off). Assign to a character or a part
+with `s[i] = "x"` or `s[lo:hi] = text`; the text must have exactly that many characters. `len(s)` is the length, `trim(s)` removes trailing blanks (`len_trim(s)` is the length without them), `achar(n)` the character with code
 `n` and `iachar(c)` the code of a one-character string.
+
+More string functions (none of them changes its argument):
+
+- `upper(s)`, `lower(s)`: the text in capitals or small letters.
+- `replace(s, old, new)`: every `old` replaced by `new` (`old` cannot be empty).
+- `contains(s, sub)`, `starts_with(s, sub)`, `ends_with(s, sub)`: true or false.
+- `join(parts, sep)`: the strings of an array with `sep` between them, the opposite of `split`:
+  `join(split("a b c", " "), "-")` is `a-b-c`.
+- `index(s, sub)` is where `sub` first occurs, 0 for none; a last argument of `true` gives the last occurrence.
+  `scan(s, chars)` is the first position holding any of `chars`, `verify(s, chars)` the first holding none of them
+  (0 for none; `true` as the last argument counts from the end). `adjustl(s)` and `adjustr(s)` move the text left or
+  right inside the same length, as in Fortran.
 
 `random()` gives a real in `[0, 1)`. `argument_count()` is the number of command-line arguments after the
 program file and `argument(n)` the n-th one (`""` past the end; `argument(0)` is the program file):
