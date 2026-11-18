@@ -8,6 +8,7 @@ runs them."""
 from types import SimpleNamespace
 from .effects import mark_problem, types_in
 from .hints import name_hint
+from .tree import STATEMENTS, children, statements_in
 from .interp import BUILTINS, ELEMENTAL, PREDEFINED, SUBROUTINE_BUILTINS
 from .parser import (Allocate, Apply, ArrayLit, Assign, MatrixLit, CollLit, Binary, Call, Close, Decl, Do, DoEach, DoWhile,
                      ExprStmt, FieldAccess, Gen, If, IsType, Marked, MapType, MultiAssign, NamedArg, Print, ProcType, Return, ReturnMany, ResultList, Select, SelectExpr, SelectType, SetType, Slice, Stop,
@@ -19,17 +20,8 @@ MISSING = object()                                  # a callee the check cannot 
 
 def indexable_in(body):
     """The names a statement list declares as arrays or strings, which are indexed with brackets."""
-    names = set()
-    for s in body:
-        if isinstance(s, list):
-            names |= indexable_in(s)
-        elif isinstance(s, Decl):
-            if s.dims is not None or s.allocatable or s.type == "string" or isinstance(s.type, (MapType, SetType)):
-                names.add(s.name)
-        else:
-            for inner in sub_bodies(s):
-                names |= indexable_in(inner)
-    return names
+    return {s.name for s in statements_in(body) if isinstance(s, Decl) and (
+        s.dims is not None or s.allocatable or s.type == "string" or isinstance(s.type, (MapType, SetType)))}
 
 
 def indexable_params(params):
@@ -45,16 +37,7 @@ def callback_signature(name, proc):
 
 def declared_in(body):
     """Every name a statement list declares, at any depth."""
-    names = set()
-    for s in body:
-        if isinstance(s, list):
-            names |= declared_in(s)
-        elif isinstance(s, Decl):
-            names.add(s.name)
-        else:
-            for inner in sub_bodies(s):
-                names |= declared_in(inner)
-    return names
+    return {s.name for s in statements_in(body) if isinstance(s, Decl)}
 
 
 class Walker:
@@ -106,27 +89,6 @@ class Walker:
                 self.expr(e.chain)
         elif isinstance(e, Marked):
             self.report("@", e.line, e.col, "'@' marks an argument of a call statement, as in call swap(@x, @y)")
-        elif isinstance(e, NamedArg):       # the name is a record field; only the value is looked up
-            self.expr(e.value)
-        elif isinstance(e, Slice):
-            self.expr([e.lo, e.hi, e.step])
-        elif isinstance(e, FieldAccess):    # the field depends on the value's type, so it is not checked
-            self.expr(e.base)
-            self.expr(e.args)
-            if e.chain is not None:
-                self.expr(e.chain)
-        elif isinstance(e, Unary):
-            self.expr(e.operand)
-        elif isinstance(e, Binary):
-            self.expr([e.left, e.right])
-        elif isinstance(e, ArrayLit):
-            self.expr(e.items)
-        elif isinstance(e, MatrixLit):
-            for row in e.rows:
-                self.expr(row)
-        elif isinstance(e, CollLit):
-            self.expr(e.keys)
-            self.expr(e.values)
         elif isinstance(e, Gen):                  # its variable exists only inside the generator
             self.expr([e.lo, e.hi, e.step])
             added = e.var not in self.variables
@@ -134,11 +96,16 @@ class Walker:
             self.expr(e.body)
             if added:
                 self.variables.discard(e.var)
-        elif isinstance(e, SelectExpr):
-            self.expr(e.subject)
-            for arm in e.arms:
-                self.expr(arm.values)
-                self.expr(arm.value)
+        else:                                       # anything else: look inside it (a field's name is not looked up)
+            self.inside(e)
+
+    def inside(self, node):
+        """Check what is directly inside `node`: statements as statements, the rest as expressions."""
+        for child in children(node):
+            if isinstance(child, tuple(STATEMENTS)):
+                self.statement(child)
+            else:
+                self.expr(child)
 
     def return_of(self, e):
         """What the call `e` gives back: a type, a ResultList, or None for a subroutine; MISSING when the
@@ -188,11 +155,6 @@ class Walker:
     def statement(self, s):
         if isinstance(s, list):
             self.statements(s)
-        elif isinstance(s, Decl):
-            self.expr(s.dims)
-            self.expr(s.init)
-        elif isinstance(s, Assign):
-            self.expr([s.target, s.value])
         elif isinstance(s, If):
             for cond, body in s.branches:
                 added = False
@@ -211,20 +173,11 @@ class Walker:
             self.statements(s.orelse)
         elif isinstance(s, Do):
             self.variable(s.var, s.line, s.var_col)
-            self.expr([s.lo, s.hi, s.step])
-            self.statements(s.body)
+            self.inside(s)
         elif isinstance(s, DoEach):
             for v, col in zip(s.vars, s.cols):
                 self.variable(v, s.line, col)
-            self.expr(s.source)
-            self.statements(s.body)
-        elif isinstance(s, DoWhile):
-            self.expr(s.cond)
-            self.statements(s.body)
-        elif isinstance(s, Where):
-            self.expr(s.cond)
-            self.statements(s.body)
-            self.statements(s.orelse)
+            self.inside(s)
         elif isinstance(s, SelectType):               # `p` exists only inside the cases
             self.expr(s.subject)
             added = s.var not in self.variables
@@ -236,26 +189,8 @@ class Walker:
                 self.statements(case.body)
             if added:
                 self.variables.discard(s.var)
-        elif isinstance(s, Select):
-            self.expr(s.subject)
-            for case in s.cases:
-                self.expr(case.values)
-                self.statements(case.body)
-        elif isinstance(s, Print):
-            self.expr(s.args)
-            self.expr(s.to)
-        elif isinstance(s, Close):
-            self.expr(s.file)
-        elif isinstance(s, Stop):
-            self.expr(s.code)
-        elif isinstance(s, Return):
-            self.expr(s.value)
-        elif isinstance(s, ReturnMany):
-            self.expr(s.values)
         elif isinstance(s, MultiAssign):
             self.unpacking(s)
-        elif isinstance(s, ExprStmt):
-            self.expr(s.expr)
         elif isinstance(s, Call):
             if s.receiver is not None:              # a record's function: the record decides which
                 self.expr(s.receiver)
@@ -279,8 +214,8 @@ class Walker:
                 if problem:
                     self.report(s.name, s.line, s.col, problem)
             self.arguments(s.args)
-        elif isinstance(s, Allocate):
-            self.expr(s.dims)           # the parser has already checked the array's name
+        else:                                         # assignments, prints, plain loops, selects, ...: look inside
+            self.inside(s)
 
 
 def undeclared_names(unit, interp):

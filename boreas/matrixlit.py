@@ -1,7 +1,7 @@
 """Turns `reshape([1, 4, 2, 5, 3, 6], [2, 3])` (and the same with `transpose` for Fortran's `order=[2, 1]`) into
 the matrix literal `[1, 2, 3; 4, 5, 6]`, for `boreas convert`, when the data and the shape are plain values."""
-from dataclasses import fields, is_dataclass
 from .parser import Apply, ArrayLit, Gen, MatrixLit, Num
+from .tree import rewrite
 
 
 def plain_shape(e):
@@ -40,28 +40,13 @@ def as_matrix(e):
     return None
 
 
+def flipped_reshape(node):
+    """`transpose(reshape(...))` as a literal, tried before its reshape inside becomes a literal of its own."""
+    if isinstance(node, Apply) and node.name == "transpose":
+        return as_matrix(node)
+    return None
+
+
 def matrixify(node):
     """Rewrite every such call inside `node` (a unit, a statement, an expression, a list or a dict)."""
-    if isinstance(node, list):
-        node[:] = [matrixify(x) for x in node]                         # in place: the lists are shared with their owners
-        return node
-    if isinstance(node, tuple):
-        return tuple(matrixify(x) for x in node)
-    if isinstance(node, dict):
-        for k, v in list(node.items()):
-            node[k] = matrixify(v)
-        return node
-    if is_dataclass(node) and not isinstance(node, type):
-        if type(node).__dataclass_params__.frozen:                      # types such as ProcType hold no expressions
-            return node
-        if isinstance(node, Apply) and node.name == "transpose":      # before its reshape inside becomes a literal
-            flipped = as_matrix(node)
-            if flipped is not None:
-                return matrixify(flipped)
-        for f in fields(node):
-            old = getattr(node, f.name)
-            new = matrixify(old)
-            if new is not old:
-                setattr(node, f.name, new)
-        return as_matrix(node) or node
-    return node
+    return rewrite(node, lambda n: as_matrix(n) or n, first=flipped_reshape)

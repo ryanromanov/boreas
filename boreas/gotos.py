@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 from .parser import (Assign, Bool, Case, Comment, Cycle, Do, DoEach, DoWhile, Exit, If, IsType, Num, Return, Select, Stop, Unary, Var, Where)
 
+from .tree import STATEMENTS, bodies, register, statements_in
+
 
 @dataclass
 class Goto:
@@ -29,24 +31,17 @@ class LabelMark:
     label: int
 
 
+register(STATEMENTS, Goto)
+register(STATEMENTS, LabelMark)
+
+
 def child_lists(s):
-    if isinstance(s, If):
-        return [b for _, b in s.branches] + [s.orelse]
-    if isinstance(s, Select):
-        return [c.body for c in s.cases]
-    if isinstance(s, (Do, DoEach, DoWhile)):
-        return [s.body]
-    if isinstance(s, Where):
-        return [s.body, s.orelse]
-    return []
+    return bodies(s)
 
 
 def walk(stmts):
     """Every statement in `stmts`, nested ones included."""
-    for s in stmts:
-        yield s
-        for sub in child_lists(s):
-            yield from walk(sub)
+    return statements_in(stmts)
 
 
 def holds(stmt, target):

@@ -3,8 +3,8 @@ function from assigning to one. This pass, which runs once everything is linked,
 passing a module variable to an `out` or `inout` parameter, and calling a subroutine that changes one (directly
 or through other subroutines)."""
 from .lexer import LangError
-from .parser import (Allocate, Decl, Apply, Assign, Call, Deallocate, FieldAccess, MultiAssign, Var, root_name,
-                     sub_bodies)
+from .tree import statements_in
+from .parser import (Allocate, Decl, Apply, Assign, Call, Deallocate, FieldAccess, MultiAssign, Var, root_name)
 
 CHANGES = ("out", "inout")
 
@@ -31,27 +31,13 @@ def mark_problem(f, call):
 
 
 def statements(body):
-    for s in body:
-        if isinstance(s, list):
-            yield from statements(s)
-        else:
-            yield s
-            for inner in sub_bodies(s):
-                yield from statements(inner)
+    """Every statement in `body`, the ones nested inside others included."""
+    return statements_in(body)
 
 
 def types_in(body):
     """Every variable a statement list declares, with its type name, at any depth."""
-    found = {}
-    for s in body:
-        if isinstance(s, list):
-            found.update(types_in(s))
-        elif isinstance(s, Decl):
-            found[s.name] = s.type
-        else:
-            for inner in sub_bodies(s):
-                found.update(types_in(inner))
-    return found
+    return {s.name: s.type for s in statements_in(body) if isinstance(s, Decl)}
 
 
 def root_of(arg):
