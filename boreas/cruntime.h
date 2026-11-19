@@ -92,6 +92,20 @@ static const char *rt_real_text(double x, char *out) {
 
 static void rt_write_int(int64_t v) { printf("%lld", (long long)v); }
 static void rt_write_real(double v) { char b[48]; fputs(rt_real_text(v, b), stdout); }
+/* a real32 is written as the shortest text that reads back as the same single-precision value, then as a real is
+   (100.0, 1e-05, 0.1): the digits are tried as the interpreter tries them, parsed as a double and rounded to single */
+static const char *rt_real32_text(float x, char *out) {
+    if (x != x || isinf(x)) return rt_real_text((double)x, out);
+    char b[48];
+    double d = 0.0;
+    for (int digits = 1; digits <= 9; digits++) {
+        snprintf(b, sizeof b, "%.*g", digits, (double)x);
+        d = strtod(b, NULL);
+        if ((float)d == x) break;
+    }
+    return rt_real_text(d, out);
+}
+static void rt_write_real32(float v) { char b[48]; fputs(rt_real32_text(v, b), stdout); }
 static void rt_write_bool(bool v) { fputs(v ? "true" : "false", stdout); }
 static void rt_write_str(const char *s) { fputs(s, stdout); }
 static void rt_write_sep(void) { fputc(' ', stdout); }
@@ -335,6 +349,7 @@ static inline int32_t rt_narrow32(int64_t v, int line, const char *what) {
 RT_DEFINE_ARRAY(int, int64_t)
 RT_DEFINE_ARRAY(int32, int32_t)
 RT_DEFINE_ARRAY(real, double)
+RT_DEFINE_ARRAY(real32, float)
 RT_DEFINE_ARRAY(logical, bool)
 
 /* a subscript: in range, or the interpreter's message ("in dimension 2" only for a matrix) */
@@ -416,6 +431,7 @@ static void rt_init_shape_error(const int64_t *init, int ri, const int64_t *shap
 RT_DEFINE_WRITE(int, int64_t, rt_write_int)
 RT_DEFINE_WRITE(int32, int32_t, rt_write_int)
 RT_DEFINE_WRITE(real, double, rt_write_real)
+RT_DEFINE_WRITE(real32, float, rt_write_real32)
 RT_DEFINE_WRITE(logical, bool, rt_write_bool)
 
 /* sum and product of whole numbers are worked out exactly and checked once at the end, as the interpreter does */
@@ -443,4 +459,73 @@ static void rt_dot_shapes(const int64_t *a, const int64_t *b, int line) {
 }
 static void rt_matmul_check(int64_t inner_a, int64_t inner_b, int line) {
     if (inner_a != inner_b) rt_fail(line, "matmul(): inner dimensions differ (%lld vs %lld)", (long long)inner_a, (long long)inner_b);
+}
+
+/* ---- real32: single precision, worked out as the interpreter does -------------------------------------------------- */
+
+/* the nearest single-precision value to a double; a finite number too large for real32 stops the program (unless
+   `use ieee`), and the message shows the double as Python does */
+static inline float rt_r32(double d, int line) {
+    float f = (float)d;
+#ifndef BOREAS_IEEE
+    if (isinf(f) && !isinf(d)) { char b[48]; rt_fail(line, "%s is too large for real32", rt_real_text(d, b)); }
+#else
+    (void)line;
+#endif
+    return f;
+}
+/* a library function of one real32 (sinf, expf, ...): no real answer, or too large, stops the program unless `use ieee` */
+static inline float rt_math1f(const char *name, float r, float x, int line) {
+#ifndef BOREAS_IEEE
+    char b[48];
+    if (r != r && x == x) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown((double)x, 0, b));
+    if (isinf(r) && isfinite(x)) rt_fail(line, "%s(%s) is too large for a real (a file that says `use ieee` gets Infinity instead)", name, rt_shown((double)x, 0, b));
+#else
+    (void)name; (void)x; (void)line;
+#endif
+    return r;
+}
+static inline float rt_logf(float x, float (*fn)(float), const char *name, int line) {
+#ifndef BOREAS_IEEE
+    char b[48];
+    if (x <= 0.0f) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown((double)x, 0, b));
+#else
+    (void)name; (void)line;
+#endif
+    return fn(x);
+}
+/* real32 ** whole number, as gfortran does it: repeated squaring with every product rounded to single */
+static float rt_spow_i(float a, int64_t b, int line) {
+    if (b == 0) return 1.0f;
+    uint64_t n = b < 0 ? 0 - (uint64_t)b : (uint64_t)b;
+    double x = a, y = (n % 2) ? (double)a : 1.0;
+    while (n >> 1) {
+        n >>= 1;
+        x = rt_r32(x * x, line);
+        if (n % 2) y = rt_r32(y * x, line);
+    }
+    if (b < 0) {
+        if (y == 0.0) {
+#ifdef BOREAS_IEEE
+            return INFINITY;
+#else
+            rt_fail(line, "division by zero");
+#endif
+        }
+        return rt_r32(1.0 / y, line);
+    }
+    return (float)y;
+}
+/* real32 ** real32: the C library's powf */
+static float rt_spow_f(float a, float b, int line) {
+    float r = powf(a, b);
+#ifndef BOREAS_IEEE
+    if (!(r == r && !isinf(r)) && isfinite(a) && isfinite(b)) {
+        char x[48], y[48];
+        rt_fail(line, "%s ** %s is %s", rt_real_text((double)a, x), rt_real_text((double)b, y), r != r ? "not a real number" : "too large");
+    }
+#else
+    (void)line;
+#endif
+    return r;
 }

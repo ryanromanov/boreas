@@ -1,0 +1,84 @@
+! The single-precision library functions on many literal arguments: they must run at run time, not be folded by the C compiler.
+program literals
+  real32 :: x
+  x = 0.722
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.637
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.116
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.816
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.881
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 0.206
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 0.049
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.514
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 0.785
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 0.711
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.987
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.416
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.511
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.434
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.921
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 0.46
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.908
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.605
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.574
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.226
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.018
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 0.201
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.277
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.777
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 0.911
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 0.103
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.598
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.424
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.159
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.638
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.145
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.764
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.191
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.405
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 1.339
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.807
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 2.638
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 0.301
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 0.417
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+  x = 0.659
+  println(x, sin(x), cos(x), tan(x), exp(x), log(x), log10(x), x ** 1.7, x ** x, x ** 3, sqrt(x))
+end program

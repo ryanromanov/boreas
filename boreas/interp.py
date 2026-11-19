@@ -517,7 +517,27 @@ def _plain_sum(values):
     total = 0
     for x in values:
         total = total + x
+        if type(x) is Real32:                  # single precision: every addition is rounded to single, as in Fortran
+            total = Real32(round32(total))
     return total
+
+
+def _plain_product(values):
+    """The product, multiplied one at a time from the left starting at 1 (every step rounded for real32 values)."""
+    total = 1
+    for x in values:
+        total = total * x
+        if type(x) is Real32:
+            total = Real32(round32(total))
+    return total
+
+
+def _times(x, y):
+    """x * y for dot_product and matmul: two real32 values give a rounded real32 product, as Fortran has it."""
+    r = x * y
+    if type(x) is Real32 and type(y) is Real32:
+        return Real32(round32(r))
+    return r
 
 
 def _matmul(a, b):
@@ -531,7 +551,7 @@ def _matmul(a, b):
     out = [0] * (n * m)
     for j in range(m):
         for i in range(n):
-            out[i + j * n] = _plain_sum(a.data[i + t * n] * b.data[t + j * k] for t in range(k))
+            out[i + j * n] = _plain_sum(_times(a.data[i + t * n], b.data[t + j * k]) for t in range(k))
     shape = (n, m) if a.rank == 2 and b.rank == 2 else (n,) if a.rank == 2 else (m,)
     return Array(shape, out)
 
@@ -570,7 +590,7 @@ def _dot_product(a, b):
     _need_array("dot_product", b, rank=(1,))
     if a.shape != b.shape:
         raise LangError(f"dot_product(): shapes differ ({fmt_shape(a.shape)} vs {fmt_shape(b.shape)})")
-    return _plain_sum((x.conjugate() if isinstance(x, complex) else x) * y for x, y in zip(a.data, b.data))
+    return _plain_sum(_times(x.conjugate() if isinstance(x, complex) else x, y) for x, y in zip(a.data, b.data))
 
 
 def _flatten(a):
@@ -1370,7 +1390,7 @@ BUILTINS = {
     "count": _count_true, "pack": _pack, "norm2": _norm2, "spread": _spread, "findloc": _findloc,
     "lbound": _bound("lbound", True), "ubound": _bound("ubound", False),
     "maxloc": _locate("maxloc", lambda x, best: x > best), "minloc": _locate("minloc", lambda x, best: x < best),
-    "product": _reduce("product", math.prod, numbers=True),
+    "product": _reduce("product", _plain_product, numbers=True),
     "huge": _huge, "epsilon": _epsilon, "tiny": _tiny,
 }
 # Elementwise functions: applied to every element when given an array.
@@ -2266,11 +2286,12 @@ class Interp:
         if not empty:
             return result
         t = self.static_type(e)
-        if t is None or t.kind != "real":
+        if t is None or t.kind not in ("real", "real32"):
             return result
+        make = Real32 if t.kind == "real32" else float
         if isinstance(result, Array):
-            return Array(result.shape, [float(x) for x in result.data])
-        return float(result)
+            return Array(result.shape, [make(x) for x in result.data])
+        return make(result)
 
     def static_type(self, node):
         """The type the checker worked out for `node`, or None (the checker is run the first time this is asked)."""

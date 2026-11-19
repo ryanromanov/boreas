@@ -1,0 +1,11 @@
+! sum, product, dot_product and matmul of real32 values round to single at every step, as Fortran does.
+program singles
+  real32[8] :: a = [0.1, 0.2, 0.3, 0.4, 16777216.0, 1.0, 1.0, 1.0]
+  real32[4] :: b = [1.1, 2.2, 3.3, 4.4]
+  real32[2, 2] :: m = [0.1, 0.2; 0.3, 0.7]
+  real32[10] :: t = 0.1
+  real32[2] :: b2 = [0.5, 0.25]
+  println(sum(a), sum(b), sum(t), product(b), product(t), dot_product(b, b), dot_product(t, t))
+  println(matmul(m, m), matmul(m, b2))
+  println(sum(t * 3), sum(a) == a[1] + a[2] + a[3] + a[4] + a[5] + a[6] + a[7] + a[8])
+end program

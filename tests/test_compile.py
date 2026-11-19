@@ -47,6 +47,30 @@ class ProgramTests(unittest.TestCase):
                 same_as_interpreter(self, open(path).read(), release=True)
 
 
+# real32 mistakes: each one stops the program, and under `use ieee` gives the IEEE answer instead (both compared)
+REAL32_CASES = {
+    "overflow in +": "  real32 :: x = 3.0e38\n  println(x + x)",
+    "overflow in *": "  real32 :: x = 3.0e38\n  println(x * 10)",
+    "overflow in a whole power": "  real32 :: x = 1.0e20\n  println(x ** 2)",
+    "overflow in a long whole power": "  real32 :: x = 100.0\n  println(x ** 40)",
+    "overflow in a real power": "  real32 :: x = 100.0\n  real32 :: y = 30.0\n  println(x ** y)",
+    "a negative base to a fractional power": "  real32 :: x = -8.0\n  real32 :: y = 0.5\n  println(x ** y)",
+    "zero to a negative power": "  real32 :: x = 0.0\n  println(x ** -2)",
+    "a real stored in a real32": "  real :: r = 1.0e39\n  real32 :: x = r\n  println(x)",
+    "a real assigned to a real32": "  real :: r = 1.0e39\n  real32 :: x\n  x = r\n  println(x)",
+    "a literal too large for real32": "  real32 :: x = 1.0\n  println(x + 1.0e39)",
+    "division by zero": "  real32 :: x = 1.0\n  real32 :: z = 0.0\n  println(x / z)",
+    "sqrt of a negative": "  real32 :: x = -4.0\n  println(sqrt(x))",
+    "sqrt of a negative element": "  real32[3] :: x = [1.0, -4.0, 9.0]\n  println(sqrt(x))",
+    "log of zero": "  real32 :: x = 0.0\n  println(log(x))",
+    "log of a negative array": "  real32[2] :: x = [2.0, -1.0]\n  println(log10(x))",
+    "exp overflow": "  real32 :: x = 100.0\n  println(exp(x))",
+    "real32 of a large real": "  real :: r = 1.0e39\n  println(real32(r))",
+    "a sum too large": "  real32[2] :: x = 3.0e38\n  println(sum(x))",
+    "a dot_product too large": "  real32[2] :: x = 1.0e20\n  println(dot_product(x, x))",
+    "mod by zero": "  real32 :: x = 5.0\n  real32 :: z = 0.0\n  println(mod(x, z))",
+}
+
 FAILING = {
     "dot_product shapes": "  real[3] :: a = 1.0\n  real[2] :: b = 1.0\n  println(dot_product(a, b))",
     "matmul inner dimensions": "  real[2, 3] :: a = 1.0\n  real[2, 3] :: b = 1.0\n  println(matmul(a, b))",
@@ -99,6 +123,15 @@ FAILING = {
 
 @unittest.skipUnless(HAVE_CC, "needs a C compiler")
 class ErrorTests(unittest.TestCase):
+    def test_real32_errors_and_ieee_answers_are_the_interpreters(self):
+        for name, body in REAL32_CASES.items():
+            with self.subTest(name):
+                done = same_as_interpreter(self, prog(body))
+                self.assertEqual(done.returncode, 1, name)
+                self.assertIn("error: line", done.stderr)
+            with self.subTest(name + " (use ieee)"):
+                same_as_interpreter(self, "use ieee\n" + prog(body))
+
     def test_every_error_is_the_interpreters(self):
         for name, body in FAILING.items():
             with self.subTest(name):
@@ -195,7 +228,8 @@ class RefusalTests(unittest.TestCase):
         self.refused(prog("  int[2, 2, 2, 2] :: a\n  println(1)"), "the declaration of 'a'")
         self.refused(prog("  int[3] :: a = [1, 2, 3]\n  println(a[1:2])"), "part of an array")
         self.refused(prog("  real[3] :: a = [1.0, 2.0, 3.0]\n  int[3] :: b = [1, 2, 3]\n  println(matmul(a, b))"), "matmul()")
-        self.refused(prog("  real32 :: x = 1.0\n  println(x)"), "the declaration of 'x' (real32)")
+        self.refused(prog("  real32 :: x = 1.0\n  println(floor(x))"), "the function 'floor'")
+        self.refused(prog("  real32 :: x = 1.0\n  int :: n = 2\n  println(n ** x)"), "a real32 power whose base is not a real32")
         self.refused(prog("  string :: s = \"a\"\n  println(s)"), "the declaration of 's' (string)")
         self.refused("record p\n  real :: x = 0.0\nend record\nprogram t\nend program\n", "records")
         self.refused("module m\n  public int :: k = 1\nend module\nprogram t\nend program\n", "modules")

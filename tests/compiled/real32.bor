@@ -1,0 +1,36 @@
+! real32: single precision, worked out as the interpreter does (in double, rounded to single once), printed as the
+! shortest text that reads back.
+function hyp(real32 :: a, real32 :: b) -> real32
+  return sqrt(a * a + b * b)
+end function
+
+subroutine scale(inout real32[] :: v, real32 :: f)
+  int :: i
+  do i = 1, size(v)
+    @v[i] = v[i] * f
+  end do
+end subroutine
+
+program singles
+  real32 :: x = 0.1
+  real32 :: y = 100.0
+  real32 :: z = 1.0e5
+  real :: d = 0.1
+  real32 :: from_real = d
+  int :: big = 16777217
+  real32[4] :: v = [1.5, 2.5, 100.0, 0.1]
+  real32[2, 2] :: m = [1.0, 2.0; 3.0, 4.5]
+  real32[2] :: w = [1.0, 2.0]
+  real32 :: h = 0.5
+  println(x, y, z, d, from_real, x == d, x == 0.1, x + d, x * 3)
+  println(x + y, x - y, x * y, y / 3, z * z, -x, abs(-y))
+  println(big + h, h + big, big * x, big - h, big / h, big < h, real32(big), real32(d), real(x))
+  println(sqrt(y), sin(x), cos(x), tan(x), exp(x), log(y), log10(y), hyp(3.0, 4.0))
+  println(x ** 2, y ** 3, y ** -1, y ** 0, y ** 0.5, 2.0 ** x, x ** x)
+  println(v, v * 2, v + 1, v / 3, v * v, sqrt(v), sin(v), v ** 2)
+  println(sum(v), product(v), maxval(v), minval(v), dot_product(v, v), matmul(m, m), matmul(m, w))
+  println(max(x, y), min(x, 3), max(x, 1), min(1, x, 2.0), mod(y, 7), mod(y, 7.0), int(y), int(-x))
+  println(x < y, x >= d, y /= 100, 100 == y)
+  call scale(@v, 2.0)
+  println(v, from_real * 1000000.0)
+end program
