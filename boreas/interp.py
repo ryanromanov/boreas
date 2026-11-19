@@ -73,6 +73,10 @@ def _is_real32(v):
     return type(v) is Real32 or (type(v) is Array and bool(v.data) and type(v.data[0]) is Real32)
 
 
+def _is_int32(v):
+    return type(v) is Int32 or (type(v) is Array and bool(v.data) and type(v.data[0]) is Int32)
+
+
 def _is_literal(e):
     return type(e) is Num or (type(e) is Unary and type(e.operand) is Num)
 
@@ -325,15 +329,15 @@ def collection_equal(a, b):
             b = adapt_literal(collection_type(a), b, "comparison")
     if isinstance(a, MapValue) and isinstance(b, MapValue):
         if (a.keytype, a.valtype) != (b.keytype, b.valtype):
-            raise LangError(f"cannot compare a {type_of(a)} with a {type_of(b)}: their types differ")
+            raise LangError(f"cannot compare {article_for(type_of(a))} with {article_for(type_of(b))}: their types differ")
         if a.data.keys() != b.data.keys():
             return False
         return all(value_equal(x, b.data[k]) for k, x in a.data.items())
     if isinstance(a, SetValue) and isinstance(b, SetValue):
         if a.elemtype != b.elemtype:
-            raise LangError(f"cannot compare a {type_of(a)} with a {type_of(b)}: their types differ")
+            raise LangError(f"cannot compare {article_for(type_of(a))} with {article_for(type_of(b))}: their types differ")
         return a.data.keys() == b.data.keys()
-    raise LangError(f"cannot compare a {type_of(a)} with a {type_of(b)}")
+    raise LangError(f"cannot compare {article_for(type_of(a))} with {article_for(type_of(b))}")
 
 
 def value_equal(x, y):
@@ -399,7 +403,7 @@ class Array:
     the first subscript varies fastest. Subscripts are 1-based."""
 
     def __init__(self, shape, data):
-        self.shape = tuple(shape)
+        self.shape = tuple(int(n) for n in shape)           # plain ints, even when the extents came from int32 values
         self.data = data
 
     @property
@@ -591,7 +595,7 @@ def _merge(a, b, mask):
 def _along(name, a, dim, in_line):
     """Where `in_line(values)` (a position from 1, or 0 for none) puts its answer in `a`. A plain array gives
     one integer. A matrix gives its subscripts as an array (no `dim`), or one position per line along `dim`."""
-    if dim is None or (type(dim) is int and dim == 0):       # 0: the whole array, so `back` can be given without a dim
+    if dim is None or (isinstance(dim, int) and not isinstance(dim, bool) and dim == 0):       # 0: the whole array, so `back` can be given without a dim
         k = in_line(a.data)
         if a.rank == 1:
             return k
@@ -953,7 +957,7 @@ def _to_int(kind):
     def convert(x):
         if isinstance(x, complex) or isinstance(x, (str, bool)):
             raise TypeError(f"needs a number, got {type_of(x)}")
-        return make_int(kind, math.trunc(x), f"{kind}()" if kind != "integer" else "int()")
+        return make_int(kind, math.trunc(x), f"{kind}()")
     return convert
 
 
@@ -1326,7 +1330,7 @@ def _to_number(typ):
 
 BUILTINS = {
     "has": _has, "get": _get, "keys": _keys, "values": _values,
-    "split": _split, "fields": _fields, "field": _field, "to_integer": _to_number("integer"), "to_real": _to_number("real"), "to_logical": _to_number("logical"),
+    "split": _split, "fields": _fields, "field": _field, "to_integer": _to_number("int"), "to_real": _to_number("real"), "to_logical": _to_number("logical"),
     "trim": _trim, "len_trim": lambda s: len(_trim(s)), "index": _index, "scan": _scan, "verify": _verify,
     "adjustl": _adjustl, "adjustr": _adjustr, "upper": lambda s: _need_string("upper", s).upper(),
     "lower": lambda s: _need_string("lower", s).lower(), "replace": _replace, "join": _join,
@@ -1352,8 +1356,8 @@ BUILTINS = {
 }
 # Elementwise functions: applied to every element when given an array.
 ELEMENTAL = {
-    "abs": abs, "real": _real, "int": _to_int("integer"), "atan": _atan,
-    "int8": _to_int("int8"), "int16": _to_int("int16"), "int32": _to_int("integer"), "int64": _to_int("int64"),
+    "abs": abs, "real": _real, "int": _to_int("int"), "atan": _atan,
+    "int8": _to_int("int8"), "int16": _to_int("int16"), "int32": _to_int("int32"), "int64": _to_int("int"),
     "real32": _to_real32, "real64": _real, "atan2": math.atan2,
     "hypot": math.hypot, "gamma": math.gamma, "log_gamma": math.lgamma, "erf": math.erf, "erfc": math.erfc,
     "floor": _whole("floor", math.floor), "ceiling": _whole("ceiling", math.ceil),
@@ -1400,8 +1404,8 @@ KEEPS_KIND = {"sqrt", "abs", "sin", "cos", "tan", "asin", "acos", "atan", "atan2
 # ordinary locals, "const" for constants, else "in" / "out" / "inout".
 # An allocatable array's slot has a fifth entry, its rank.
 TYPE, VALUE, IS_ARRAY, INTENT, RANK = range(5)
-DEFAULTS = {"integer": 0, "real": 0.0, "logical": False, "string": "", "complex": 0j, "file": UNOPENED,
-            "int8": Int8(0), "int16": Int16(0), "int64": Int64(0), "real32": Real32(0.0)}
+DEFAULTS = {"int": 0, "real": 0.0, "logical": False, "string": "", "complex": 0j, "file": UNOPENED,
+            "int8": Int8(0), "int16": Int16(0), "int32": Int32(0), "real32": Real32(0.0)}
 
 # A reference to something assignable is (slot, subs, name). `subs` is None for
 # the whole variable, else one entry per dimension: an int or an inclusive (lo, hi).
@@ -2253,7 +2257,7 @@ class Interp:
         inner = dict(env)
         out = []
         for i in range(lo, hi + 1 if step > 0 else hi - 1, step):
-            inner[g.var] = ["integer", i, False, None]
+            inner[g.var] = ["int", i, False, None]
             out.extend(self.literal_values(g.body, inner))
         return out
 
@@ -2537,11 +2541,16 @@ class Interp:
 
     def adapt_literals(self, e, left, right):
         """A real literal next to a real32 value is a real32 (as in Fortran, where `x * 2.0` is single
-        precision when x is), instead of promoting the whole expression to a double."""
+        precision when x is), instead of promoting the whole expression to a double. In the same way a whole-number
+        literal next to an int32 is an int32, so `i + 1` and `seed *% 1103515245` stay 32 bits wide."""
         if type(right) is float and _is_literal(e.right) and _is_real32(left):
             right = SINGLE_LITERALS.get(right) or single_literal(right)
         elif type(left) is float and _is_literal(e.left) and _is_real32(right):
             left = SINGLE_LITERALS.get(left) or single_literal(left)
+        elif type(right) is int and _is_literal(e.right) and _is_int32(left) and LO32 <= right <= HI32:
+            right = Int32(right)                  # a whole-number literal next to an int32 is an int32 (as in Fortran)
+        elif type(left) is int and _is_literal(e.left) and _is_int32(right) and LO32 <= left <= HI32:
+            left = Int32(left)
         return left, right
 
     def negate(self, x):
@@ -2715,7 +2724,7 @@ class Interp:
         if typ not in INT_RANGE and typ not in ("string", "logical"):
             raise LangError(f"line {line}: select case needs an integer, string or logical value, got {typ}")
         if typ in INT_RANGE:
-            typ = "integer"                           # any integer width matches the integer case values
+            typ = "int"                               # any integer width matches the integer case values
         entries, default = [], None                   # entries: (lo, hi, is_point, group)
         for n, values in enumerate(groups):
             if values is None:
@@ -2726,7 +2735,7 @@ class Interp:
                 lo = self.case_value(item if point else item.lo, env, line) if point or item.lo is not None else None
                 hi = lo if point else self.case_value(item.hi, env, line) if item.hi is not None else None
                 for x in (lo, hi):
-                    if x is not None and typ != ("integer" if type_of(x) in INT_RANGE else type_of(x)):
+                    if x is not None and typ != ("int" if type_of(x) in INT_RANGE else type_of(x)):
                         raise LangError(f"line {line}: case value {show_value(x)} is {type_of(x)}, "
                                         f"but the select value is {typ}")
                 if not point and typ == "logical":
@@ -2745,7 +2754,7 @@ class Interp:
         v = self.eval(e.arms[n].value, env)
         t, kinds = type_of(v), arm_types(e.arms)      # kinds: arms whose type is known without evaluating
         if kinds - {t}:
-            if kinds <= {"integer", "real"} and t in ("integer", "real"):
+            if kinds <= {"int", "real"} and t in ("int", "real"):
                 return float(v)                       # integer arms widen to real next to a real arm
             raise LangError(f"line {e.line}: the arms of a select expression have different types "
                             f"({' and '.join(sorted(kinds | {t}))})")
@@ -2765,10 +2774,19 @@ class Interp:
                 f = FAST_INT.get(op)
                 if f is not None:
                     r = f(a, b)
-                    if type(r) is int and not LO32 <= r <= HI32:
-                        raise LangError(f"integer overflow: {a} {op} {b} does not fit in 32 bits "
-                                        f"(use int64, or {op}% to wrap)")
+                    if type(r) is int and not LO64 <= r <= HI64:
+                        raise LangError(f"integer overflow: {a} {op} {b} does not fit in 64 bits "
+                                        f"(use {op}% to wrap)")
                     return r
+            elif ta is Int32:                          # two int32 values: check each result against 32 bits
+                f = FAST_INT.get(op)
+                if f is not None:
+                    r = f(a, b)
+                    if type(r) is not int:
+                        return r                       # a comparison
+                    if not LO32 <= r <= HI32:
+                        raise LangError(f"{a} {op} {b}: {r} does not fit in int32 (32 bits)")
+                    return Int32(r)
             elif ta is float:
                 f = FAST_FLOAT.get(op)
                 if f is not None:
@@ -2907,6 +2925,9 @@ class Interp:
                 raise LangError(f"line {e.line}: '{e.name}' is a subroutine; use 'call {e.name}(...)'")
             return self.call_function(f, args, e.line, e)
         if e.name in BUILTINS or e.name in ELEMENTAL:
+            if any(_is_int32(a) for a in args):       # as in a binary operation: a literal next to an int32 is an int32
+                args = [Int32(a) if type(a) is int and _is_literal(n) and LO32 <= a <= HI32 else a
+                        for a, n in zip(args, e.args)]
             return self.call_builtin(e.name, args, e.line)
         raise LangError(f"line {e.line}: unknown function or array '{e.name}'"
                         + name_hint(e.name, [*env, *self.scope.funcs, *self.scope.records, *BUILTINS, *ELEMENTAL]))
@@ -3000,8 +3021,8 @@ class Interp:
             if t is int:
                 if ints is not None:
                     return make_int(ints, x, f"{name}()")
-                if not LO32 <= x <= HI32:
-                    raise LangError(f"{name}(): integer overflow ({x} does not fit in 32 bits)")
+                if not LO64 <= x <= HI64:
+                    raise LangError(f"{name}(): integer overflow ({x} does not fit in 64 bits)")
             elif t is float and single:
                 return Real32(round32(x))
             return x

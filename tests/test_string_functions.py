@@ -52,7 +52,7 @@ class FunctionTests(unittest.TestCase):
     def test_mistakes(self):
         fails(self, '  println(replace("abc", "", "x"))', "must not be empty")
         fails(self, '  println(join([1, 2], ","))', "needs an array of strings")
-        fails(self, "  println(upper(3))", "needs a string, got integer")
+        fails(self, "  println(upper(3))", "needs a string, got int")
         fails(self, '  println(contains("a"))', "takes 2 arguments, got 1")
 
 
@@ -88,7 +88,7 @@ end program
 
 class NegateTests(unittest.TestCase):
     def test_the_message_is_not_garbled(self):
-        fails(self, "  integer :: i = -2147483647 - 1\n  println(-i)", "negating -2147483648")
+        fails(self, "  int32 :: i = -2147483647 - 1\n  println(-i)", "negating -2147483648")
 
 
 if __name__ == "__main__":

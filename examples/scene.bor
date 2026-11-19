@@ -36,7 +36,7 @@ end record
 
 record scene
   figure[3] :: items
-  integer :: count = 0
+  int :: count = 0
 end record
 
 subroutine add(inout scene :: s, figure :: f)
@@ -47,7 +47,7 @@ end subroutine
 program demo
   scene :: sc
   real :: total = 0.0
-  integer :: i
+  int :: i
 
   call add(@sc, circle(r = 2.0))
   call add(@sc, rect(w = 3.0, h = 4.0))

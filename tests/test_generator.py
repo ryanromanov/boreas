@@ -13,7 +13,7 @@ def show(body, decls=""):
     return run_bor("program t\n" + decls + body + "\nend program\n")
 
 
-X = "  integer[3] :: x = [1, 2, 3]\n"
+X = "  int[3] :: x = [1, 2, 3]\n"
 
 
 class GeneratorTests(unittest.TestCase):
@@ -39,10 +39,10 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(show("  println([(10 * q + p do p = 1, 2) do q = 1, 2])"), ["[11, 12, 21, 22]"])
 
     def test_bounds_can_be_expressions(self):
-        self.assertEqual(show("  integer :: n = 3\n  println([i + n do i = n - 1, 2 * n - 3])"), ["[5, 6]"])
+        self.assertEqual(show("  int :: n = 3\n  println([i + n do i = n - 1, 2 * n - 3])"), ["[5, 6]"])
 
     def test_the_variable_is_local_and_needs_no_declaration(self):
-        self.assertEqual(show("  println([i do i = 1, 3], i)", "  integer :: i = 99\n"), ["[1, 2, 3] 99"])
+        self.assertEqual(show("  println([i do i = 1, 3], i)", "  int :: i = 99\n"), ["[1, 2, 3] 99"])
         self.assertEqual(show("  println([j do j = 1, 2])"), ["[1, 2]"])
 
     def test_the_variable_is_not_visible_afterwards(self):
@@ -59,7 +59,7 @@ class GeneratorTests(unittest.TestCase):
 
     def test_only_inside_an_array_literal(self):
         with self.assertRaises(LangError) as cm:
-            parse("program t\n  integer[3] :: y\n  y = (i do i = 1, 3)\nend program\n")
+            parse("program t\n  int[3] :: y\n  y = (i do i = 1, 3)\nend program\n")
         self.assertIn("belongs in an array literal", str(cm.exception))
 
     def test_several_items_need_parentheses(self):
@@ -71,7 +71,7 @@ class GeneratorTests(unittest.TestCase):
         for src in ["[i * i do i = 1, 4]", "[x, (0.0 do i = 1, n)]", "[(x[k], y[k] do k = 1, n, 2)]",
                     "[(a[p, q] do p = 1, 2) do q = 1, 2]"]:
             with self.subTest(src):
-                text = "program t\n  integer[4] :: v\n  v = " + src + "\nend program\n"
+                text = "program t\n  int[4] :: v\n  v = " + src + "\nend program\n"
                 again = to_source(parse(text), [])
                 self.assertIn(src, again)
                 self.assertEqual(to_source(parse(again), []), again)

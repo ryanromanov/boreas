@@ -21,7 +21,7 @@ class CshiftTests(unittest.TestCase):
                          ["[1, 2, 3, 4, 5] [3, 4, 5, 1, 2]"])
 
     def test_matrix_dimensions(self):
-        m = "  integer[2, 3] :: m = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n"      # rows [1 3 5] [2 4 6]
+        m = "  int[2, 3] :: m = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n"      # rows [1 3 5] [2 4 6]
         self.assertEqual(show(m + "  println(cshift(m, 1))"), ["[[2, 4, 6], [1, 3, 5]]"])
         self.assertEqual(show(m + "  println(cshift(m, 1, 2))"), ["[[3, 5, 1], [4, 6, 2]]"])
 
@@ -30,7 +30,7 @@ class CshiftTests(unittest.TestCase):
         self.assertEqual(show("  println(cshift([1.5, 2.5], 1))"), ["[2.5, 1.5]"])
 
     def test_does_not_change_its_argument(self):
-        self.assertEqual(show("  integer[3] :: a = [1, 2, 3]\n  integer[3] :: b\n  b = cshift(a, 1)\n  println(a, b)"),
+        self.assertEqual(show("  int[3] :: a = [1, 2, 3]\n  int[3] :: b\n  b = cshift(a, 1)\n  println(a, b)"),
                          ["[1, 2, 3] [2, 3, 1]"])
 
     def test_errors(self):

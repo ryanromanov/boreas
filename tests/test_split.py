@@ -46,7 +46,7 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(run('  println(field(" 1.5  2.0 ", 2), field("a,b", 2, ","), field("a b", 3) ?? "none")'),
                          ["2.0 b none"])
         self.assertEqual(run("  string? :: s\n  println(field(s, 1) ?? \"none\")"), ["none"])
-        fails(self, '  println(field("a", 0))', "positive integer")
+        fails(self, '  println(field("a", 0))', "positive int")
 
     def test_errors(self):
         fails(self, P + '  p = split("a", "")', "separator")
@@ -85,7 +85,7 @@ class ToNumberTests(unittest.TestCase):
 
 
 class AllocateOnAssignmentTests(unittest.TestCase):
-    D = "  allocatable integer[] :: a\n"
+    D = "  allocatable int[] :: a\n"
 
     def test_assignment_allocates(self):
         self.assertEqual(run(self.D + "  a = [1, 2, 3]\n  println(size(a), a)"), ["3 [1, 2, 3]"])
@@ -95,7 +95,7 @@ class AllocateOnAssignmentTests(unittest.TestCase):
 
     def test_elements_take_the_array_type(self):
         self.assertEqual(run("  allocatable real[] :: v\n  v = [1, 2]\n  println(v)"), ["[1.0, 2.0]"])
-        fails(self, self.D + "  a = [1.5, 2.5]", "integer")
+        fails(self, self.D + "  a = [1.5, 2.5]", "int")
 
     def test_a_scalar_still_needs_an_allocated_array(self):
         fails(self, self.D + "  a = 1", "not allocated")
@@ -105,15 +105,15 @@ class AllocateOnAssignmentTests(unittest.TestCase):
         fails(self, self.D + "  a = reshape([1, 2, 3, 4], [2, 2])", "1 dimension")
 
     def test_two_dimensions(self):
-        body = "  allocatable integer[,] :: m\n  m = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n  println(shape(m))"
+        body = "  allocatable int[,] :: m\n  m = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n  println(shape(m))"
         self.assertEqual(run(body), ["[2, 3]"])
 
     def test_the_copy_is_independent(self):
-        body = self.D + "  integer[2] :: b = [1, 2]\n  a = b\n  b[1] = 9\n  println(a)"
+        body = self.D + "  int[2] :: b = [1, 2]\n  a = b\n  b[1] = 9\n  println(a)"
         self.assertEqual(run(body), ["[1, 2]"])
 
     def test_a_module_variable_needs_update(self):
-        mod = "module m\n  public allocatable integer[] :: data\n  public subroutine load()\n    {}\n  end subroutine\nend module\n"
+        mod = "module m\n  public allocatable int[] :: data\n  public subroutine load()\n    {}\n  end subroutine\nend module\n"
         prog = "use m: data, load\ncall load()\nprintln(data)"
         self.assertEqual(run(prog, mod.format("@data = [1, 2]")), ["[1, 2]"])
         fails(self, prog, "@data", mod.format("data = [1, 2]"))

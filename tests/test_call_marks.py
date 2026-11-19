@@ -11,18 +11,18 @@ from boreas.names import undeclared_names
 from boreas.interp import Interp
 from add_call_marks import migrate
 
-SUBS = '''subroutine swap(inout integer :: a, inout integer :: b)
-  integer :: t
+SUBS = '''subroutine swap(inout int :: a, inout int :: b)
+  int :: t
   t = a
   @a = b
   @b = t
 end subroutine
-subroutine fill(out integer :: a, integer :: v)
+subroutine fill(out int :: a, int :: v)
   @a = v
 end subroutine
 record counter
-  integer :: n = 0
-  subroutine grow(inout self, integer :: by)
+  int :: n = 0
+  subroutine grow(inout self, int :: by)
     @self.n = self.n + by
   end subroutine
   subroutine show(self)
@@ -44,20 +44,20 @@ def fails(case, body, message):
 
 class CallMarkTests(unittest.TestCase):
     def test_marked_arguments_work(self):
-        self.assertEqual(run("  integer :: x = 1\n  integer :: y = 2\n  call swap(@x, @y)\n  println(x, y)\n"), ["2 1"])
-        self.assertEqual(run("  integer :: x\n  call fill(@x, 7)\n  println(x)\n"), ["7"])
+        self.assertEqual(run("  int :: x = 1\n  int :: y = 2\n  call swap(@x, @y)\n  println(x, y)\n"), ["2 1"])
+        self.assertEqual(run("  int :: x\n  call fill(@x, 7)\n  println(x)\n"), ["7"])
 
     def test_an_unmarked_changed_argument_is_an_error(self):
-        fails(self, "  integer :: x = 1\n  integer :: y = 2\n  call swap(@x, y)\n",
+        fails(self, "  int :: x = 1\n  int :: y = 2\n  call swap(@x, y)\n",
               "'y' is changed by 'swap' (its inout parameter 'b'), so mark it: @y")
-        fails(self, "  integer :: x\n  call fill(x, 7)\n", "'x' is changed by 'fill' (its out parameter 'a'), so mark it: @x")
+        fails(self, "  int :: x\n  call fill(x, 7)\n", "'x' is changed by 'fill' (its out parameter 'a'), so mark it: @x")
 
     def test_a_mark_on_an_in_parameter_is_an_error(self):
-        fails(self, "  integer :: x\n  integer :: v = 1\n  call fill(@x, @v)\n",
+        fails(self, "  int :: x\n  int :: v = 1\n  call fill(@x, @v)\n",
               "'@v' marks an argument the call changes, but 'v' of 'fill' is an 'in' parameter: remove the '@'")
 
     def test_elements_fields_and_entries(self):
-        body = ("  integer[3] :: a = [1, 2, 3]\n  call swap(@a[1], @a[3])\n  println(a)\n")
+        body = ("  int[3] :: a = [1, 2, 3]\n  call swap(@a[1], @a[3])\n  println(a)\n")
         self.assertEqual(run(body), ["[3, 2, 1]"])
 
     def test_a_records_function_marks_the_record(self):
@@ -71,22 +71,22 @@ class CallMarkTests(unittest.TestCase):
         fails(self, '  set[string] :: s\n  call add(@s, @"a")\n', "'@' marks what the call changes")
 
     def test_a_callback_is_checked_by_its_signature(self):
-        src = ("subroutine run(subroutine(inout integer) :: f, inout integer :: n)\n  call f(@n)\nend subroutine\n"
-               "subroutine inc(inout integer :: k)\n  @k = k + 1\nend subroutine\n"
-               "program t\n  integer :: n = 1\n  call run(inc, @n)\n  println(n)\nend program\n")
+        src = ("subroutine run(subroutine(inout int) :: f, inout int :: n)\n  call f(@n)\nend subroutine\n"
+               "subroutine inc(inout int :: k)\n  @k = k + 1\nend subroutine\n"
+               "program t\n  int :: n = 1\n  call run(inc, @n)\n  println(n)\nend program\n")
         self.assertEqual(run_bor(src), ["2"])
 
     def test_a_mark_outside_a_call_statement(self):
-        fails(self, "  integer :: x = 1\n  println(abs(@x))\n", "'@' marks an argument of a call statement")
+        fails(self, "  int :: x = 1\n  println(abs(@x))\n", "'@' marks an argument of a call statement")
 
     def test_check_finds_them_without_running(self):
-        text = SUBS + "program t\n  integer :: x\n  call fill(x, 7)\nend program\n"
+        text = SUBS + "program t\n  int :: x\n  call fill(x, 7)\nend program\n"
         unit = parse(text)
         errors = undeclared_names(unit, Interp(unit, lambda s: None))
         self.assertTrue(any("'x' is changed by 'fill'" in e[2] for e in errors))
 
     def test_the_printer_keeps_the_marks(self):
-        src = SUBS + 'program t\n  integer :: x\n  counter :: c\n  call @c.grow(1)\n  call fill(@x, 7)\nend program\n'
+        src = SUBS + 'program t\n  int :: x\n  counter :: c\n  call @c.grow(1)\n  call fill(@x, 7)\nend program\n'
         again = to_source(parse(src))
         self.assertIn("call @c.grow(1)", again)
         self.assertIn("call fill(@x, 7)", again)
@@ -95,7 +95,7 @@ class CallMarkTests(unittest.TestCase):
 
 class MigrationTests(unittest.TestCase):
     def test_older_sources_get_their_marks(self):
-        old = SUBS + "program t\n  integer :: x = 1\n  integer :: y = 2\n  counter :: c\n  call swap(x, y)\n  call c.grow(2)\n  call fill(x, 7)\nend program\n"
+        old = SUBS + "program t\n  int :: x = 1\n  int :: y = 2\n  counter :: c\n  call swap(x, y)\n  call c.grow(2)\n  call fill(x, 7)\nend program\n"
         new, changes = migrate(old)
         self.assertIn("call swap(@x, @y)", new)
         self.assertIn("call @c.grow(2)", new)
@@ -104,13 +104,13 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(run_bor(new), [])
 
     def test_fill_marks_sets_the_ast(self):
-        unit = parse(SUBS + "program t\n  integer :: x\n  call fill(x, 7)\nend program\n")
+        unit = parse(SUBS + "program t\n  int :: x\n  call fill(x, 7)\nend program\n")
         self.assertEqual(len(fill_marks(unit)), 1)
         self.assertEqual(unit.program.body[-1].marks, [True, False])
 
 
     def test_the_migration_tool_handles_a_call_over_several_lines(self):
-        src = (SUBS + "program t\n  integer :: x\n  integer :: y\n  call swap(x, &\n       y)\nend program\n")
+        src = (SUBS + "program t\n  int :: x\n  int :: y\n  call swap(x, &\n       y)\nend program\n")
         new, changes = migrate(src)
         self.assertIn("call swap(@x, &\n       @y)", new)
         self.assertEqual(len(changes), 1)

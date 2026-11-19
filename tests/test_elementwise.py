@@ -32,7 +32,7 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(show(V + "  real[4] :: r = shrink(v, 2.0)\n  println(sum(r))"), ["6.0"])
 
     def test_integers_and_converted_results(self):
-        defs = "function twice(integer :: n) -> integer\n  return n * 2\nend function\n"
+        defs = "function twice(int :: n) -> int\n  return n * 2\nend function\n"
         self.assertEqual(show("  println(twice([1, 2, 3]))", defs), ["[2, 4, 6]"])
 
     def test_used_inside_another_expression(self):

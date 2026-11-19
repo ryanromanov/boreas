@@ -1,8 +1,8 @@
 """The static type checker, first part: it works out the type of every expression it can, without running the program.
 
 `infer(unit, interp)` returns a Checker whose `types` maps `id(node)` to a `Type` (types.py). Anything it cannot work
-out is UNKNOWN, and UNKNOWN never makes an error. A type that depends on a value (`floor(x)` is an `integer` or an
-`int64` depending on how big the answer is) is also UNKNOWN: those are recorded in `Checker.value_dependent`, because a
+out is UNKNOWN, and UNKNOWN never makes an error. A type that depends on a value (`floor(x)` is an `int32` or an
+`int` depending on how big the answer is) is also UNKNOWN: those are recorded in `Checker.value_dependent`, because a
 compiler needs them decided.
 
 The checker is checked against the interpreter, the way the compiler will be: set BOREAS_TYPE_ORACLE to a file name and
@@ -13,8 +13,8 @@ from . import types as T
 from .parser import (Apply, ArrayLit, Bool, Binary, Call, Case, Decl, Do, FieldAccess, Gen, IsType, MatrixLit, NamedArg,
                      Null, Num, SelectExpr, SelectType, Slice, Str, Unary, Var)
 from .tree import STATEMENTS, children, statements_in, walk
-from .types import (COMPLEX, INT64, INTEGER, LOGICAL, NULL, REAL, REAL32, STRING, UNKNOWN, Type, parse, promote)
-from .kinds import lit_int
+from .types import (COMPLEX, INT, INT32, LOGICAL, NULL, REAL, REAL32, STRING, UNKNOWN, Type, parse, promote)
+from .kinds import LO32, HI32
 
 TAKES_SCALAR = T.SCALAR_KINDS - {"file"}
 
@@ -76,8 +76,8 @@ def counting(args):
         return UNKNOWN
     a = args[0]
     if len(args) == 1:
-        return INTEGER
-    return Type("integer", a.rank - 1) if a.rank > 1 else INTEGER
+        return INT
+    return Type("int", a.rank - 1) if a.rank > 1 else INT
 
 
 def locating(takes_value):
@@ -90,8 +90,8 @@ def locating(takes_value):
         if a.rank < 0:
             return UNKNOWN
         if a.rank == 1:
-            return INTEGER
-        return Type("integer", a.rank - 1) if dim_given and a.rank > 1 else Type("integer", 1)
+            return INT
+        return Type("int", a.rank - 1) if dim_given and a.rank > 1 else Type("int", 1)
     return rule
 
 
@@ -167,11 +167,11 @@ def first_integer(args):
 
 
 def shape_rule(args):
-    return Type("integer", 1) if len(args) == 1 else UNKNOWN
+    return Type("int", 1) if len(args) == 1 else UNKNOWN
 
 
 def bounds(args):
-    return Type("integer", 1) if len(args) == 1 else INTEGER
+    return Type("int", 1) if len(args) == 1 else INT
 
 
 def epsilon_like(args):
@@ -188,8 +188,8 @@ BUILTIN_RULES.update({
     "sign": elemental(numeric_kind), "dim": elemental(numeric_kind),
     "aint": elemental(float_kind), "anint": elemental(float_kind),
     "real": conversion("real"), "real64": conversion("real"), "real32": conversion("real32"),
-    "int": conversion("integer"), "int32": conversion("integer"), "int8": conversion("int8"),
-    "int16": conversion("int16"), "int64": conversion("int64"),
+    "int": conversion("int"), "int32": conversion("int32"), "int8": conversion("int8"),
+    "int16": conversion("int16"), "int64": conversion("int"),
     "max": same_kind_or_unknown, "min": same_kind_or_unknown,
     "isnan": lambda args: Type("logical", rank_of(args)) if args and args[0].known else UNKNOWN,
     "isinf": lambda args: Type("logical", rank_of(args)) if args and args[0].known else UNKNOWN,
@@ -198,12 +198,12 @@ BUILTIN_RULES.update({
     "iand": bits, "ior": bits, "ieor": bits, "bitnot": first_integer, "ishft": first_integer, "shiftl": first_integer,
     "shiftr": first_integer, "shifta": first_integer, "ibset": first_integer, "ibclr": first_integer,
     "ibits": first_integer, "btest": lambda args: Type("logical", rank_of(args)) if args and args[0].known else UNKNOWN,
-    "popcnt": lambda args: Type("integer", rank_of(args)) if args and args[0].known else UNKNOWN,
-    "leadz": lambda args: Type("integer", rank_of(args)) if args and args[0].known else UNKNOWN,
-    "trailz": lambda args: Type("integer", rank_of(args)) if args and args[0].known else UNKNOWN,
-    "bit_size": fixed(INTEGER),
-    "size": fixed(INTEGER), "len": fixed(INTEGER), "len_trim": fixed(INTEGER), "index": fixed(INTEGER),
-    "scan": fixed(INTEGER), "verify": fixed(INTEGER), "iachar": fixed(INTEGER), "argument_count": fixed(INTEGER),
+    "popcnt": lambda args: Type("int", rank_of(args)) if args and args[0].known else UNKNOWN,
+    "leadz": lambda args: Type("int", rank_of(args)) if args and args[0].known else UNKNOWN,
+    "trailz": lambda args: Type("int", rank_of(args)) if args and args[0].known else UNKNOWN,
+    "bit_size": fixed(INT),
+    "size": fixed(INT), "len": fixed(INT), "len_trim": fixed(INT), "index": fixed(INT),
+    "scan": fixed(INT), "verify": fixed(INT), "iachar": fixed(INT), "argument_count": fixed(INT),
     "count": counting, "shape": shape_rule, "lbound": bounds, "ubound": bounds,
     "sum": reduction, "product": reduction, "maxval": reduction, "minval": reduction,
     "any": logical_reduction, "all": logical_reduction,
@@ -222,7 +222,7 @@ BUILTIN_RULES.update({
     "allocated": fixed(LOGICAL), "present": fixed(LOGICAL), "has": fixed(LOGICAL), "exists": fixed(LOGICAL),
     "split": vector_of("string"), "fields": vector_of("string"),
     "field": fixed(Type("string", 0, True)), "read_line": fixed(Type("string", 0, True)),
-    "to_integer": fixed(Type("integer", 0, True)), "to_real": fixed(Type("real", 0, True)),
+    "to_integer": fixed(Type("int", 0, True)), "to_real": fixed(Type("real", 0, True)),
     "to_logical": fixed(Type("logical", 0, True)),
     "random": fixed(REAL), "nan": fixed(REAL), "infinity": fixed(REAL),
     "huge": epsilon_like, "epsilon": epsilon_like, "tiny": epsilon_like,
@@ -326,7 +326,7 @@ class Checker:
             if isinstance(e.value, bool):
                 return LOGICAL
             if isinstance(e.value, int):
-                return INTEGER if lit_int(e.value) is e.value else INT64
+                return INT
             if isinstance(e.value, float):
                 return REAL
             return UNKNOWN
@@ -359,7 +359,7 @@ class Checker:
             return self.items_type([x for row in e.rows for x in row], 2, env, infer_items=False)
         if k is Gen:
             inner = dict(env)
-            inner[e.var] = INTEGER
+            inner[e.var] = INT
             self.expr([e.lo, e.hi, e.step], env)
             ts = self.expr(e.body, inner)
             return ts[0] if len(ts) == 1 else UNKNOWN
@@ -371,8 +371,8 @@ class Checker:
             ts = {self.types[id(arm.value)] for arm in e.arms if id(arm.value) in self.types}
             if len(ts) == 1 and next(iter(ts)).known:
                 return next(iter(ts))
-            if ts and all(t.known and t.kind in ("integer", "real") and t.rank == 0 for t in ts):
-                return REAL if any(t.kind == "real" for t in ts) else INTEGER
+            if ts and all(t.known and t.kind in ("int", "real") and t.rank == 0 for t in ts):
+                return REAL if any(t.kind == "real" for t in ts) else INT
             return UNKNOWN
         if k is IsType:
             self.expr(e.subject, env)
@@ -407,6 +407,10 @@ class Checker:
             rt = Type("real32", rt.rank)
         elif lt.kind == "real" and self.is_literal(e.left) and rt.kind == "real32":
             lt = Type("real32", lt.rank)
+        elif rt.kind == "int" and self.int32_literal(e.right) and lt.kind == "int32":
+            rt = Type("int32", rt.rank)                      # a whole-number literal next to an int32 is an int32
+        elif lt.kind == "int" and self.int32_literal(e.left) and rt.kind == "int32":
+            lt = Type("int32", lt.rank)
         if lt.kind == "null" or rt.kind == "null":
             return LOGICAL if op in ("==", "/=") else UNKNOWN
         rank = self.broadcast(lt, rt)
@@ -417,6 +421,13 @@ class Checker:
         if lt.is_number and rt.is_number:
             return Type(promote(lt.kind, rt.kind), rank)
         return UNKNOWN
+
+    @staticmethod
+    def int32_literal(e):
+        """Is `e` a whole-number literal (or its negative) that fits in 32 bits?"""
+        n = e.value if type(e) is Num else (-e.operand.value if type(e) is Unary and e.op == "-" and type(e.operand) is Num
+                                            else None)
+        return isinstance(n, int) and not isinstance(n, bool) and LO32 <= n <= HI32
 
     @staticmethod
     def is_literal(e):
@@ -460,6 +471,9 @@ class Checker:
             return UNKNOWN
         name = e.name
         scope = self.scope
+        if name not in env and any(a.kind == "int32" for a in args):     # as in a binary operation
+            args = [Type("int32", a.rank) if a.kind == "int" and self.int32_literal(n) else a
+                    for a, n in zip(args, arg_nodes)]
         if name in env:
             t = env[name]
             if t.kind == "proc":
@@ -472,7 +486,7 @@ class Checker:
         if name in scope.funcs:
             return self.call_result(scope.funcs[name], args)
         if name in VALUE_DEPENDENT:
-            self.value_dependent.append((e.line, f"{name}() gives an integer or an int64 depending on its value"))
+            self.value_dependent.append((e.line, f"{name}() gives an int or an int32 depending on its value"))
             return UNKNOWN
         rule = BUILTIN_RULES.get(name)
         if rule is not None and all(a.known for a in args):

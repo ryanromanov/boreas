@@ -4,12 +4,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 from test_fortran import run_bor
 from boreas.lexer import LangError
 
-SUBS = '''subroutine grow(inout map[string, integer] :: m)
+SUBS = '''subroutine grow(inout map[string, int] :: m)
   @m["z"] = 1
 end subroutine
-function total(map[string, integer] :: m) -> integer
-  integer :: t = 0
-  integer :: v
+function total(map[string, int] :: m) -> int
+  int :: t = 0
+  int :: v
   string :: k
   do k, v in m
     t = t + v
@@ -31,7 +31,7 @@ def fails(case, body, message, before=""):
 
 class ConstTests(unittest.TestCase):
     def test_a_const_collection_can_be_read(self):
-        out = run('  const map[string, integer] :: m = {"a": 1, "b": 2}\n  integer :: v\n  string :: k\n'
+        out = run('  const map[string, int] :: m = {"a": 1, "b": 2}\n  int :: v\n  string :: k\n'
                   '  println(m, m["a"], size(m), has(m, "a"), total(m), m == {"b": 2, "a": 1})\n'
                   '  do k, v in m\n    println(k, v)\n  end do\n')
         self.assertEqual(out, ["{a: 1, b: 2} 1 2 true 3 true", "a 1", "b 2"])
@@ -45,7 +45,7 @@ class ConstTests(unittest.TestCase):
                          ["{a, b} {a}"])
 
     def test_it_cannot_be_changed(self):
-        base = '  const map[string, integer] :: m = {"a": 1}\n  const set[string] :: s = {"a"}\n'
+        base = '  const map[string, int] :: m = {"a": 1}\n  const set[string] :: s = {"a"}\n'
         fails(self, base + '  m["a"] = 2\n', "'m' is a constant and cannot be assigned")
         fails(self, base + '  m = {}\n', "'m' is a constant and cannot be assigned")
         fails(self, base + '  call add(@s, "b")\n', "'s' is a constant and cannot be changed")
@@ -53,11 +53,11 @@ class ConstTests(unittest.TestCase):
         fails(self, base + '  call grow(@m)\n', "'m' is a constant and cannot be passed as inout")
 
     def test_it_needs_a_value_and_cannot_be_allocatable(self):
-        fails(self, '  const map[string, integer] :: m\n', "constant 'm' needs a value")
+        fails(self, '  const map[string, int] :: m\n', "constant 'm' needs a value")
         fails(self, '  allocatable set[string] :: s\n', "a set cannot be 'allocatable'")
 
     def test_a_module_can_share_one(self):
-        mod = ('module cfg\n  public const map[string, integer] :: limits = {"a": 1, "b": 2}\n'
+        mod = ('module cfg\n  public const map[string, int] :: limits = {"a": 1, "b": 2}\n'
                '  public const set[string] :: names = {"x", "y"}\nend module\n')
         body = '  use cfg: limits, names\n  println(limits, names, limits["b"])\n'
         self.assertEqual(run(body, mod), ["{a: 1, b: 2} {x, y} 2"])

@@ -7,10 +7,10 @@ import re
 from dataclasses import dataclass
 from .parser import ArrayOf, MapType, ProcType, ResultList, SetType
 
-NUMBERS = ("int8", "int16", "integer", "int64", "real32", "real", "complex")
-INTEGERS = ("int8", "int16", "integer", "int64")
+NUMBERS = ("int8", "int16", "int32", "int", "real32", "real", "complex")
+INTEGERS = ("int8", "int16", "int32", "int")
 REALS = ("real32", "real")
-ALIASES = {"int32": "integer", "real64": "real"}
+ALIASES = {"int64": "int", "real64": "real"}
 SCALAR_KINDS = set(NUMBERS) | {"logical", "string", "file"}
 
 
@@ -53,7 +53,7 @@ class Type:
 
 
 UNKNOWN = Type("unknown")
-INTEGER, INT64, REAL, REAL32 = Type("integer"), Type("int64"), Type("real"), Type("real32")
+INT, INT32, REAL, REAL32 = Type("int"), Type("int32"), Type("real"), Type("real32")
 LOGICAL, STRING, COMPLEX, NULL = Type("logical"), Type("string"), Type("complex"), Type("null")
 
 

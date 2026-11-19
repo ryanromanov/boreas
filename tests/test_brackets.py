@@ -26,7 +26,7 @@ end program""")
 
     def test_allocatable_and_allocate(self):
         out = run_bor("""program t
-  allocatable integer[,] :: g
+  allocatable int[,] :: g
   allocatable real[] :: v
   allocate g[2, 2]
   g[1, 2] = 5
@@ -37,7 +37,7 @@ end program""")
 
     def test_record_array_fields(self):
         out = run_bor("""record team
-  integer[3] :: tags
+  int[3] :: tags
 end record
 program t
   team :: tm
@@ -53,13 +53,13 @@ end function
 function total(real[] :: v) -> real
   return sum(v)
 end function
-subroutine zero(inout integer[] :: v)
+subroutine zero(inout int[] :: v)
   @v = 0
 end subroutine
 """
         out = run_bor(funcs + """program t
   real[2, 2] :: a = reshape([1.0, 2.0, 3.0, 4.0], [2, 2])
-  integer[2] :: z = [5, 6]
+  int[2] :: z = [5, 6]
   call zero(@z)
   println(trace(a), total(a[:, 1]), z)
 end program""")
@@ -107,12 +107,12 @@ end program""")
 
     def test_prints_back_in_brackets(self):
         src = """record team
-  integer[3] :: tags
+  int[3] :: tags
 end record
 
 program t
   real[2, 2] :: a
-  allocatable integer[,] :: g
+  allocatable int[,] :: g
   team :: tm
   allocate g[2, 2]
   a[1, 2] = tm.tags[1] + g[1, 1]
@@ -129,9 +129,9 @@ class OldSyntaxIsAnErrorTests(unittest.TestCase):
 
     def test_declarations_and_allocate(self):
         for body, hint in [("real :: v(3)", "write 'real[size] :: v'"),
-                           ("allocatable integer :: g(:)", "write 'allocatable integer[] :: g'"),
-                           ("allocatable integer :: g", "needs its rank"),
-                           ("allocatable integer[] :: g\n  allocate g(2)", "write 'allocate g[...]'")]:
+                           ("allocatable int :: g(:)", "write 'allocatable int[] :: g'"),
+                           ("allocatable int :: g", "needs its rank"),
+                           ("allocatable int[] :: g\n  allocate g(2)", "write 'allocate g[...]'")]:
             with self.subTest(body=body):
                 self.fails(f"program t\n  {body}\nend program", hint)
 
@@ -139,7 +139,7 @@ class OldSyntaxIsAnErrorTests(unittest.TestCase):
         self.fails("program t\n  real[2] :: a = [1.0, 2.0]\n  println(a(2))\nend program",
                    "index with brackets: write a[...], not a(...)")
         self.fails('program t\n  string :: s = "hello"\n  println(s(2:3))\nend program', "write s[...]")
-        self.fails("record team\n  integer[3] :: tags\nend record\nprogram t\n  team :: tm\n  println(tm.tags(2))\nend program",
+        self.fails("record team\n  int[3] :: tags\nend record\nprogram t\n  team :: tm\n  println(tm.tags(2))\nend program",
                    "write tags[...]")
 
     def test_check_finds_it_without_running(self):
@@ -193,7 +193,7 @@ end program
         text, findings = converted(self.SRC)
         self.assertEqual(todos(findings), [])
         for expected in ("function trace(real32[,] :: a) -> real32", "function first(real32[] :: v) -> real32",
-                         "integer[3] :: table", "integer[2] :: v", "t = t + a[i, i]", "x = v[1]", "q.v[2] = table[3]",
+                         "int32[3] :: table", "int32[2] :: v", "t = t + a[i, i]", "x = v[1]", "q.v[2] = table[3]",
                          "s[2:3]", "sqrt(a[1, 1])", "first(a[:, 2])", "trace(a)"):
             self.assertIn(expected, text)
         got = run_bor(text)
@@ -203,13 +203,13 @@ end program
 
 class EditorTests(unittest.TestCase):
     SRC = """record team
-  integer[3] :: tags
+  int[3] :: tags
 end record
 function trace(real[,] :: m) -> real
   return m[1, 1]
 end function
 program t
-  allocatable integer[,] :: grid
+  allocatable int[,] :: grid
   real[2] :: v
   team :: tm
   println(tm.tags[1])
@@ -222,7 +222,7 @@ end program
         return hover(self.SRC, row, lines[row].index(f":: {name}") + 3)["contents"]["value"]
 
     def test_hover_shows_the_declaration(self):
-        self.assertIn("allocatable integer[,] :: grid", self.hover_on("grid"))
+        self.assertIn("allocatable int[,] :: grid", self.hover_on("grid"))
         self.assertIn("real[2] :: v", self.hover_on("v"))
         self.assertIn("real[,] :: m", self.hover_on("m"))
 

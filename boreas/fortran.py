@@ -24,7 +24,7 @@ from .fformat import FormatError, parse_format, render, substitute
 # Words the Boreas parser treats specially; Fortran has no reserved words,
 # so a Fortran variable with one of these names is renamed.
 RESERVED = {"left", "right", "fixed", "scientific", "general", "tf", "text", "split", "fields", "field", "to_integer", "to_real", "to_logical", "exists", "open", "try_open", "read_line",     # built-ins the converter writes itself
-            "close", "file", "const", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer",
+            "close", "file", "const", "use", "module", "public", "private", "and", "or", "not", "true", "false", "in", "out", "inout", "string", "integer", "int",
             "real", "logical", "program", "function", "subroutine", "end", "if", "then",
             "else", "do", "while", "print", "println", "write", "writeln", "read", "stop", "call", "return", "exit", "cycle",
             "select", "case", "default", "fallthrough", "break",
@@ -230,7 +230,7 @@ def is_case_line(toks):
 
 # Kind numbers (bytes) of the names in iso_fortran_env.
 ISO_KINDS = {"int8": 1, "int16": 2, "int32": 4, "int64": 8, "real32": 4, "real64": 8, "real128": 16}
-INT_KINDS = {1: "int8", 2: "int16", 4: "integer", 8: "int64"}
+INT_KINDS = {1: "int8", 2: "int16", 4: "int32", 8: "int"}      # Fortran's default integer is 32 bits: int32
 REAL_KINDS = {4: "real32", 8: "real"}
 # Fortran lets an intrinsic's arguments be passed by name; Boreas built-ins are positional, so the converter
 # puts them in this order. (Looking into keyword arguments for Boreas parameters is on the list: see D52.)
@@ -244,6 +244,8 @@ INTRINSIC_PARAMS = {"cshift": ["array", "shift", "dim"], "merge": ["tsource", "f
                     "index": ["string", "substring", "back"], "scan": ["string", "set", "back"],
                     "verify": ["string", "set", "back"], "lbound": ["array", "dim"], "ubound": ["array", "dim"]}
 UNSET = object()          # "not given", for an argument that may be None
+BIT_FUNCTIONS = {"iand", "ior", "ieor", "bitnot", "ishft", "shiftl", "shiftr", "shifta", "btest", "ibset", "ibclr", "ibits",
+                 "popcnt", "leadz", "trailz", "bit_size", "huge"}
 KIND_ARGUMENT = {"real", "int", "cmplx", "dble", "dcmplx", "float", "sngl", "nint", "floor", "ceiling"}
 
 
@@ -384,7 +386,7 @@ class ReadMarker:
 
 
 def implicit_type(name):
-    return "integer" if name[0] in "ijklmn" else "real32"
+    return "int32" if name[0] in "ijklmn" else "real32"
 
 
 class FParser:
@@ -769,6 +771,9 @@ class FParser:
     def convert_intrinsic(self, name, args):
         """Kind arguments of the conversion functions, and the kind of a bare real literal that
         epsilon/huge/tiny look at."""
+        if name in BIT_FUNCTIONS and args:             # a bare literal is a default (32-bit) integer in Fortran
+            width = 2 if name in ("iand", "ior", "ieor") else 1
+            args = [Apply("int32", [a], self.line) if self.is_int_literal(a) else a for a in args[:width]] + list(args[width:])
         kind_args = [a for a in args if isinstance(a, NamedArg) and a.name == "kind"]
         args = [a for a in args if not (isinstance(a, NamedArg) and a.name == "kind")]
         if name == "reshape" and len(args) == 3 and isinstance(args[2], NamedArg):
@@ -787,7 +792,7 @@ class FParser:
                 elif name == "int":
                     if n not in INT_KINDS:
                         raise Unsupported(f"int() of kind {n}")
-                    name = {"int8": "int8", "int16": "int16", "integer": "int", "int64": "int64"}[INT_KINDS[n]]
+                    name = INT_KINDS[n]
                 elif name == "real":
                     if n not in REAL_KINDS:
                         raise Unsupported(f"real() of kind {n}")
@@ -796,7 +801,14 @@ class FParser:
                     self.note(self.line, "cmplx(): kind argument dropped (Boreas complex numbers are double precision)")
             elif name == "real" and not self.is_complex_expr(args[0] if args else None):
                 name = "real32"                              # real(x) is a default (single) real, unless x is complex
+            elif name == "int":
+                name = "int32"                               # int(x) is a default (32-bit) integer
         return name, args
+
+    @staticmethod
+    def is_int_literal(e):
+        return (isinstance(e, Num) and isinstance(e.value, int) and not isinstance(e.value, bool)) or \
+            (isinstance(e, Unary) and e.op == "-" and isinstance(e.operand, Num) and isinstance(e.operand.value, int))
 
     def reshape_with_order(self, args):
         """reshape(source, shape, order=[2, 1]) fills along the rows: the transpose of a reshape to the reversed
@@ -1639,7 +1651,7 @@ class FParser:
         """The Boreas type for a Fortran type word and kind number (None: the default kind)."""
         if word == "integer":
             if number is None:
-                return "integer"
+                return "int32"
             if number not in INT_KINDS:
                 raise Unsupported(f"integer(kind={number}) is not supported")
             return INT_KINDS[number]
@@ -1774,7 +1786,7 @@ class FParser:
                             dims.append(hi)
                 if attrs.get("parameter") and init is None:
                     raise Unsupported(f"constant '{name}' has no value here (implied-shape or set elsewhere)")
-                if attrs.get("parameter") and typ == "integer" and dims is None:
+                if attrs.get("parameter") and typ in ("int32", "int") and dims is None:
                     number = self.kind_number(init)
                     if number is not None:                     # a kind constant: dp = kind(1.0d0), i8 = 8, ...
                         self.kind_names[name] = number
@@ -2319,7 +2331,7 @@ class FParser:
             return self.read_whole_line(it, scope, targets, status, source)
         return self.read_values(it, scope, targets, status, source)
 
-    READ_CONVERSIONS = {"integer": "to_integer", "real": "to_real", "real32": "to_real", "logical": "to_logical", "string": None}
+    READ_CONVERSIONS = {"int32": "to_integer", "int": "to_integer", "real": "to_real", "real32": "to_real", "logical": "to_logical", "string": None}
 
     def read_target_type(self, scope, target):
         """The Boreas type of a scalar read target, or raise Unsupported for the ones the converter does not map."""
@@ -2399,7 +2411,7 @@ class FParser:
     def can_drop_status(self, r, name, markers):
         scope = r.scope
         info = scope.decls.get(name)
-        if info is None or info.type != "integer" or info.dims is not None or info.shape_dropped or info.parameter \
+        if info is None or info.type not in ("int32", "int") or info.dims is not None or info.shape_dropped or info.parameter \
                 or info.allocatable or name in scope.dummies or name in scope.saved:
             return False
         if any(name == n for group, _ in scope.equivs for n, _ in group) \
@@ -3239,7 +3251,7 @@ class FParser:
             s = s.host
         return None
 
-    INT_ORDER = ("int8", "int16", "integer", "int64")
+    INT_ORDER = ("int8", "int16", "int32", "int")
     REAL_ORDER = ("real32", "real")
 
     def static_type(self, e):
@@ -3247,7 +3259,7 @@ class FParser:
         generic call needs: literals, declared variables and array elements, conversions and arithmetic."""
         if isinstance(e, Num):
             if isinstance(e.value, int):
-                return ("integer", 0)
+                return ("int32", 0)
             return ("real" if id(e) in self.double_literals else "real32", 0)
         if isinstance(e, Str):
             return ("string", 0)
@@ -3261,7 +3273,7 @@ class FParser:
             if info is not None and self.rank_of(info) > 0:
                 return (info.type, sum(isinstance(a, Slice) for a in e.args))
             if e.name in ("index", "len", "len_trim", "size", "count", "scan", "verify") and info is None:
-                return ("integer", 0)
+                return ("int32", 0)
             if e.name in INT_KINDS.values() or e.name in ("real32", "real") and len(e.args) == 1:
                 inner = self.static_type(e.args[0])
                 return None if inner is None else (e.name, inner[1])
@@ -4231,7 +4243,7 @@ class FParser:
         pending = Structurer(lambda base: self.unique(base, s, r.body), self.todo)
         r.body = pending.run(r.body)
         for name in pending.new_vars:
-            s.decls[name] = Info("integer", None, False, None, None, False, r.line)
+            s.decls[name] = Info("int32", None, False, None, None, False, r.line)
 
     def finalize(self):
         self.oo_prepare()

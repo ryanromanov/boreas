@@ -11,7 +11,7 @@ def show(body):
     return run_bor("program t\n" + body + "\nend program\n")
 
 
-A = "  integer[5] :: a = [3, 9, 1, 9, 1]\n  integer[2, 2] :: m = reshape([1, 5, 5, 2], [2, 2])\n"
+A = "  int[5] :: a = [3, 9, 1, 9, 1]\n  int[2, 2] :: m = reshape([1, 5, 5, 2], [2, 2])\n"
 
 
 class BackTests(unittest.TestCase):

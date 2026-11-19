@@ -9,7 +9,7 @@ from boreas.parser import parse
 from boreas.printer import to_source
 from boreas.verify import same_output
 
-A = "  integer[10] :: a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n"
+A = "  int[10] :: a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]\n"
 
 
 def show(body):
@@ -44,13 +44,13 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(show(A + "  println(a[2:4:1])"), ["[2, 3, 4]"])
 
     def test_each_dimension_has_its_own_step(self):
-        m = "  integer[3, 4] :: m = reshape([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [3, 4])\n"
+        m = "  int[3, 4] :: m = reshape([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [3, 4])\n"
         self.assertEqual(show(m + "  println(m[::2, ::2])"), ["[[1, 7], [3, 9]]"])
         self.assertEqual(show(m + "  println(m[:, 4:1:-2])"), ["[[10, 4], [11, 5], [12, 6]]"])
         self.assertEqual(show(m + "  println(m[2, ::2])"), ["[2, 8]"])
 
     def test_the_bounds_are_expressions(self):
-        self.assertEqual(show(A + "  integer :: k = 3\n  println(a[k:2 * k + 1:k - 1])"), ["[3, 5, 7]"])
+        self.assertEqual(show(A + "  int :: k = 3\n  println(a[k:2 * k + 1:k - 1])"), ["[3, 5, 7]"])
 
 
 class WriteTests(unittest.TestCase):
@@ -65,12 +65,12 @@ class WriteTests(unittest.TestCase):
             show(A + "  a[1:9:2] = [1, 2, 3]")
 
     def test_two_interleaved_sections_are_not_aliased(self):
-        defs = "subroutine swap(inout integer[] :: x, inout integer[] :: y)\n  integer[5] :: t\n  t = x\n  @x = y\n  @y = t\nend subroutine\n"
+        defs = "subroutine swap(inout int[] :: x, inout int[] :: y)\n  int[5] :: t\n  t = x\n  @x = y\n  @y = t\nend subroutine\n"
         out = run_bor(defs + "program t\n" + A + "  call swap(@a[1:9:2], @a[2:10:2])\n  println(a)\nend program\n")
         self.assertEqual(out, ["[2, 1, 4, 3, 6, 5, 8, 7, 10, 9]"])
 
     def test_overlapping_sections_are_still_aliased(self):
-        defs = "subroutine swap(inout integer[] :: x, inout integer[] :: y)\n  integer[5] :: t\n  t = x\n  @x = y\n  @y = t\nend subroutine\n"
+        defs = "subroutine swap(inout int[] :: x, inout int[] :: y)\n  int[5] :: t\n  t = x\n  @x = y\n  @y = t\nend subroutine\n"
         with self.assertRaisesRegex(LangError, "must not alias"):
             run_bor(defs + "program t\n" + A + "  call swap(@a[1:9:2], @a[1:5:1])\nend program\n")
 
@@ -92,9 +92,9 @@ class ErrorTests(unittest.TestCase):
 
     def test_a_missing_step_is_a_parse_error(self):
         with self.assertRaisesRegex(LangError, "step goes after the second"):
-            parse("program t\n  integer[3] :: a\n  println(a[1:3:])\nend program\n")
+            parse("program t\n  int[3] :: a\n  println(a[1:3:])\nend program\n")
         with self.assertRaisesRegex(LangError, "step goes after the second"):
-            parse("program t\n  integer[3] :: a\n  println(a[1::])\nend program\n")
+            parse("program t\n  int[3] :: a\n  println(a[1::])\nend program\n")
 
     def test_a_string_has_no_step(self):
         with self.assertRaisesRegex(LangError, "a substring has no step"):
@@ -103,14 +103,14 @@ class ErrorTests(unittest.TestCase):
 
 class ToolingTests(unittest.TestCase):
     def test_printing_and_reparsing_is_stable(self):
-        src = "program t\n  integer[10] :: a\n  println(a[1:9:2], a[::2], a[2::3], a[:5:2], a[10:1:-1], a[3:1:-1])\nend program\n"
+        src = "program t\n  int[10] :: a\n  println(a[1:9:2], a[::2], a[2::3], a[:5:2], a[10:1:-1], a[3:1:-1])\nend program\n"
         once = to_source(parse(src))
         for text in ("a[1:9:2]", "a[::2]", "a[2::3]", "a[:5:2]", "a[10:1:-1]", "a[3:1:-1]"):
             self.assertIn(text, once)
         self.assertEqual(to_source(parse(once)), once)
 
     def test_check_looks_inside_the_step(self):
-        errors = check_errors("program t\n  integer[10] :: a\n  println(a[1:9:nope])\nend program\n")
+        errors = check_errors("program t\n  int[10] :: a\n  println(a[1:9:nope])\nend program\n")
         self.assertTrue(any("nope" in e[2] for e in errors), errors)
 
 

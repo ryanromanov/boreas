@@ -37,7 +37,7 @@ class ComplexValueTests(unittest.TestCase):
 
     def test_complex_does_not_narrow(self):
         fails(self, "  complex :: z\n  real :: r\n  r = z", "cannot assign complex to real")
-        fails(self, "  complex :: z\n  integer :: n\n  n = z", "cannot assign complex to integer")
+        fails(self, "  complex :: z\n  int :: n\n  n = z", "cannot assign complex to int")
 
     def test_arithmetic_matches_python(self):
         z, w = complex(3, 4), complex(1, -2)
@@ -63,7 +63,7 @@ class ComplexValueTests(unittest.TestCase):
         self.assertEqual(one("cmplx(1, 2) == cmplx(3, 4)"), "false")
 
     def test_comparing_mismatched_types_is_an_error_not_a_crash(self):
-        fails(self, '  println("a" < 1)', "cannot compare string with integer")
+        fails(self, '  println("a" < 1)', "cannot compare string with int")
 
     def test_division_by_zero_complex(self):
         with self.assertRaises((LangError, ZeroDivisionError)):

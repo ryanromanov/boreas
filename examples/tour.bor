@@ -11,10 +11,10 @@ end record
 ! optional documentation) and the caller passes a bare procedure name.
 
 function integrate(function(real :: x) -> real :: f, real :: a, real :: b) -> real
-  integer :: steps = 1000
+  int :: steps = 1000
   real :: h = (b - a) / steps
   real :: total = 0.0
-  integer :: i
+  int :: i
   do i = 0, steps - 1
     total = total + f(a + (i + 0.5) * h) * h
   end do
@@ -30,7 +30,7 @@ function half(real :: x) -> real
 end function
 
 subroutine each(subroutine(string, real) :: show, string[] :: names, real[] :: values)
-  integer :: i
+  int :: i
   do i = 1, size(values)
     call show(names[i], values[i])
   end do
@@ -58,10 +58,10 @@ program tour
 
   ! Split a line into pieces; null marks a piece that is not a number.
   string :: line = "  12  7  oops  30 "
-  integer :: total = 0
-  integer :: bad = 0
-  integer :: k
-  integer? :: n
+  int :: total = 0
+  int :: bad = 0
+  int :: k
+  int? :: n
   do k = 1, size(fields(line))
     n = to_integer(field(line, k))
     if present(n) then

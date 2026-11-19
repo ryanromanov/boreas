@@ -10,7 +10,7 @@ def show(body):
     return run_bor("program t\n" + body + "\nend program\n")
 
 
-X = "  integer[3] :: x = [1, 2, 3]\n"
+X = "  int[3] :: x = [1, 2, 3]\n"
 
 
 class SpliceTests(unittest.TestCase):
@@ -19,19 +19,19 @@ class SpliceTests(unittest.TestCase):
                          ["[1, 2, 3, 4] [0, 1, 2, 3] [1, 2, 3, 9, 1, 2, 3] [1, 2, 3, 1, 2, 3]"])
 
     def test_an_empty_array_adds_nothing(self):
-        self.assertEqual(show(X + "  allocatable integer[] :: e\n  allocate e[0]\n  println([e, x], [x, e], size([e, e]))"),
+        self.assertEqual(show(X + "  allocatable int[] :: e\n  allocate e[0]\n  println([e, x], [x, e], size([e, e]))"),
                          ["[1, 2, 3] [1, 2, 3] 0"])
 
     def test_sections_and_function_results_splice(self):
         self.assertEqual(show(X + "  println([x[2:3], 0], [reshape([7, 8], [2]), x[1]])"), ["[2, 3, 0] [7, 8, 1]"])
 
     def test_the_result_is_a_new_array(self):
-        self.assertEqual(show(X + "  integer[4] :: y\n  y = [x, 4]\n  y[1] = 99\n  println(x, y)"),
+        self.assertEqual(show(X + "  int[4] :: y\n  y = [x, 4]\n  y[1] = 99\n  println(x, y)"),
                          ["[1, 2, 3] [99, 2, 3, 4]"])
 
     def test_a_matrix_is_an_error(self):
         with self.assertRaises(LangError) as cm:
-            show("  integer[2, 2] :: m = reshape([1, 2, 3, 4], [2, 2])\n  println([m, 5])")
+            show("  int[2, 2] :: m = reshape([1, 2, 3, 4], [2, 2])\n  println([m, 5])")
         self.assertIn("one-dimensional arrays", str(cm.exception))
 
 

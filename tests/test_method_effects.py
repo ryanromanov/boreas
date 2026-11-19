@@ -5,10 +5,10 @@ from test_fortran import run_bor
 from boreas.lexer import LangError
 
 MOD = '''module box
-  public integer :: hits
+  public int :: hits
   public record tally
-    integer :: n = 0
-    subroutine grow(inout self, integer :: by)
+    int :: n = 0
+    subroutine grow(inout self, int :: by)
       @self.n = self.n + by
     end subroutine
     subroutine count(inout self)
@@ -39,19 +39,19 @@ class MethodEffectTests(unittest.TestCase):
         self.assertIn(message, str(cm.exception))
 
     def test_a_function_cannot_grow_a_module_record(self):
-        self.refused("  public function f() -> integer\n    call @total.grow(1)\n    return 1\n  end function",
+        self.refused("  public function f() -> int\n    call @total.grow(1)\n    return 1\n  end function",
                      "cannot change the module variable 'total'")
 
     def test_a_function_cannot_call_a_method_that_changes_a_module_variable(self):
-        self.refused("  public function f() -> integer\n    tally :: t\n    call @t.count()\n    return 1\n  end function",
+        self.refused("  public function f() -> int\n    tally :: t\n    call @t.count()\n    return 1\n  end function",
                      "cannot call 'count', which changes the module variable 'hits'")
 
     def test_a_function_can_use_a_local_record(self):
-        self.assertEqual(run("  public function f() -> integer\n    tally :: t\n    call @t.grow(2)\n    call t.show()\n    return t.n\n  end function"),
+        self.assertEqual(run("  public function f() -> int\n    tally :: t\n    call @t.grow(2)\n    call t.show()\n    return t.n\n  end function"),
                          ["2", "2"])
 
     def test_a_subroutine_can_grow_a_module_record(self):
-        src = MOD.replace("  println(f())", "  call @total.grow(3)\n  call total.show()") % "  public function f() -> integer\n    return 1\n  end function"
+        src = MOD.replace("  println(f())", "  call @total.grow(3)\n  call total.show()") % "  public function f() -> int\n    return 1\n  end function"
         self.assertEqual(run_bor(src), ["3"])
 
 

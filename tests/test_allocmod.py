@@ -9,15 +9,15 @@ from boreas.printer import to_source
 from boreas.verify import same_output
 
 STORE = """module store
-  public allocatable integer[] :: data
-  public subroutine setup(integer :: k)
-    integer :: i
+  public allocatable int[] :: data
+  public subroutine setup(int :: k)
+    int :: i
     allocate @data[k]
     do i = 1, k
       @data[i] = i * i
     end do
   end subroutine
-  public function total() -> integer
+  public function total() -> int
     return sum(data)
   end function
   public subroutine teardown()
@@ -56,7 +56,7 @@ class AllocatableModuleVariableTests(unittest.TestCase):
 
     def test_update_on_a_local_array_is_an_error(self):
         with self.assertRaisesRegex(LangError, "'@' is for module variables, but 'a' is a local array"):
-            parse("program p\nallocatable integer[] :: a\nallocate @a[3]\nend program p")
+            parse("program p\nallocatable int[] :: a\nallocate @a[3]\nend program p")
 
     def test_a_function_cannot_allocate_a_module_variable(self):
         src = STORE.replace("return sum(data)", "allocate @data[1]\n    return 0")
@@ -69,12 +69,12 @@ class AllocatableModuleVariableTests(unittest.TestCase):
         own = STORE.replace("deallocate @data", "allocate @data[1, 1]")
         with self.assertRaisesRegex(LangError, "1 dimension.*2 extent"):
             parse(own + "program p\nend program p")
-        src = ("module m\n  public integer :: n\n  public subroutine s()\n    allocate @n[2]\n  end subroutine\n"
+        src = ("module m\n  public int :: n\n  public subroutine s()\n    allocate @n[2]\n  end subroutine\n"
                "end module\nprogram p\nend program p")
         with self.assertRaisesRegex(LangError, "not allocatable"):
             parse(src)
         with self.assertRaisesRegex(LangError, "not an allocatable array"):          # an import: found when it runs
-            run("module m\n  public integer :: n\nend module\nprogram p\n  use m: n\n  allocate @n[2]\nend program p")
+            run("module m\n  public int :: n\nend module\nprogram p\n  use m: n\n  allocate @n[2]\nend program p")
 
     def test_use_before_allocate_and_double_allocate_are_errors(self):
         with self.assertRaisesRegex(LangError, "not allocated"):
@@ -86,7 +86,7 @@ class AllocatableModuleVariableTests(unittest.TestCase):
 
     def test_prints_back_as_source(self):
         text = to_source(parse(program("allocate @data[2]")))
-        self.assertIn("public allocatable integer[] :: data", text)
+        self.assertIn("public allocatable int[] :: data", text)
         self.assertIn("allocate @data[2]", text)
         self.assertIn("deallocate @data", text)
         parse(text)

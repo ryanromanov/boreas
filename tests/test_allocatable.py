@@ -11,40 +11,40 @@ from boreas.printer import to_source
 
 class ParseTests(unittest.TestCase):
     def test_declaration_ranks(self):
-        unit = parse("program t\nallocatable integer[] :: a\nallocatable real[,] :: m\nallocatable real[] :: v\nend program t")
+        unit = parse("program t\nallocatable int[] :: a\nallocatable real[,] :: m\nallocatable real[] :: v\nend program t")
         a, m, v = unit.program.body[:3]
         self.assertTrue(a.allocatable and len(a.dims) == 1)
         self.assertTrue(m.allocatable and len(m.dims) == 2)
         self.assertEqual(len(v.dims), 1)
 
     def test_statements_parse(self):
-        unit = parse("program t\nallocatable integer[,] :: a\nallocate a[2, 3]\ndeallocate a\nend program t")
+        unit = parse("program t\nallocatable int[,] :: a\nallocate a[2, 3]\ndeallocate a\nend program t")
         _, al, de = unit.program.body
         self.assertEqual((al.name, len(al.dims)), ("a", 2))
         self.assertIsInstance(de, Deallocate)
 
     def test_plain_colon_dims_stay_errors(self):
         with self.assertRaises(LangError):
-            parse("program t\ninteger[:] :: a\nend program t")
+            parse("program t\nint[:] :: a\nend program t")
 
     def test_allocatable_declaration_errors(self):
-        for body, msg in [("allocatable integer[3] :: a", "no sizes"),
-                          ("allocatable integer :: a", "needs its rank"),
-                          ("allocatable integer[] :: a = [1]", "initializer"),
-                          ("const allocatable integer[] :: a", "cannot be 'const'"),
-                          ("allocatable const integer[] :: a", "cannot be 'const'"),
-                          ("allocatable integer[1:] :: a", "no sizes")]:
+        for body, msg in [("allocatable int[3] :: a", "no sizes"),
+                          ("allocatable int :: a", "needs its rank"),
+                          ("allocatable int[] :: a = [1]", "initializer"),
+                          ("const allocatable int[] :: a", "cannot be 'const'"),
+                          ("allocatable const int[] :: a", "cannot be 'const'"),
+                          ("allocatable int[1:] :: a", "no sizes")]:
             with self.subTest(body=body), self.assertRaisesRegex(LangError, msg):
                 parse(f"program t\n{body}\nend program t")
 
     def test_allocate_target_errors_at_parse_time(self):
         cases = [
-            ("integer[3] :: a\nallocate a[3]", "not allocatable"),
-            ("integer :: x\nallocate x[3]", "not allocatable"),
-            ("const integer[2] :: c = 1\nallocate c[2]", "a constant"),
+            ("int[3] :: a\nallocate a[3]", "not allocatable"),
+            ("int :: x\nallocate x[3]", "not allocatable"),
+            ("const int[2] :: c = 1\nallocate c[2]", "a constant"),
             ("allocate q[3]", "not declared"),
-            ("allocatable integer[,] :: a\nallocate a[3]", "2 dimension"),
-            ("integer[3] :: a\ndeallocate a", "not allocatable"),
+            ("allocatable int[,] :: a\nallocate a[3]", "2 dimension"),
+            ("int[3] :: a\ndeallocate a", "not allocatable"),
         ]
         for body, msg in cases:
             with self.subTest(body=body), self.assertRaisesRegex(LangError, msg):
@@ -53,21 +53,21 @@ class ParseTests(unittest.TestCase):
     def test_parameter_cannot_be_allocated(self):
         for intent in ("", "inout "):
             with self.subTest(intent=intent), self.assertRaisesRegex(LangError, "is a parameter"):
-                parse(f"subroutine s({intent}integer[] :: v)\nallocate v[3]\nend subroutine\nprogram t\nend program t")
+                parse(f"subroutine s({intent}int[] :: v)\nallocate v[3]\nend subroutine\nprogram t\nend program t")
         with self.assertRaisesRegex(LangError, "is a parameter"):
-            parse("subroutine s(integer[] :: v)\ndeallocate v\nend subroutine\nprogram t\nend program t")
+            parse("subroutine s(int[] :: v)\ndeallocate v\nend subroutine\nprogram t\nend program t")
 
     def test_checks_descend_into_blocks(self):
         with self.assertRaisesRegex(LangError, "not allocatable"):
-            parse("program t\ninteger[2] :: a\nif true then\ndo while false\nallocate a[2]\nend do\nend if\nend program t")
+            parse("program t\nint[2] :: a\nif true then\ndo while false\nallocate a[2]\nend do\nend if\nend program t")
 
     def test_names_are_not_reserved_in_expressions(self):
-        self.assertEqual(run("integer :: allocate = 3\nprintln(allocate + 1)"), ["4"])
+        self.assertEqual(run("int :: allocate = 3\nprintln(allocate + 1)"), ["4"])
 
 
 class RunTests(unittest.TestCase):
     def test_allocate_use_deallocate(self):
-        out = run("""allocatable integer[] :: a
+        out = run("""allocatable int[] :: a
 println(allocated(a))
 allocate a[3]
 println(allocated(a), size(a), a)
@@ -89,17 +89,17 @@ println(r, b, '[' + s[1] + ']')""".replace("'", '"'))
         self.assertEqual(out, ["[0.0] [false] []"])
 
     def test_extents_are_expressions(self):
-        out = run("integer :: n = 2\nallocatable integer[] :: a\nallocate a[n * 3 - 1]\nprintln(size(a))")
+        out = run("int :: n = 2\nallocatable int[] :: a\nallocate a[n * 3 - 1]\nprintln(size(a))")
         self.assertEqual(out, ["5"])
 
     def test_zero_size(self):
-        out = run("allocatable integer[] :: a\nallocate a[0]\nprintln(allocated(a), size(a), sum(a))\ndeallocate a")
+        out = run("allocatable int[] :: a\nallocate a[0]\nprintln(allocated(a), size(a), sum(a))\ndeallocate a")
         self.assertEqual(out, ["true 0 0"])
 
     def test_two_dimensional_and_shape(self):
-        out = run("""allocatable integer[,] :: m
-integer :: i
-integer :: j
+        out = run("""allocatable int32[,] :: m
+int :: i
+int :: j
 allocate m[2, 3]
 do j = 1, 3
   do i = 1, 2
@@ -113,8 +113,8 @@ println(transpose(m))""")
                                "[[11, 21], [12, 22], [13, 23]]"])
 
     def test_slices_of_allocated_arrays(self):
-        out = run("""allocatable integer[] :: a
-allocatable integer[,] :: m
+        out = run("""allocatable int[] :: a
+allocatable int32[,] :: m
 allocate a[5]
 a[2:4] = [7, 8, 9]
 println(a[2:], a[:2], a[3])
@@ -125,7 +125,7 @@ println(m)""")
         self.assertEqual(out, ["[7, 8, 9, 0] [0, 7] 8", "[[5, 5], [2, 0]]"])
 
     def test_deallocate_and_reallocate_different_size(self):
-        out = run("""allocatable integer[] :: a
+        out = run("""allocatable int[] :: a
 allocate a[2]
 a = 9
 deallocate a
@@ -134,8 +134,8 @@ println(a)""")
         self.assertEqual(out, ["[0, 0, 0, 0]"])
 
     def test_allocated_in_a_condition_and_loop(self):
-        out = run("""allocatable integer[] :: a
-integer :: i
+        out = run("""allocatable int[] :: a
+int :: i
 do i = 1, 3
   if not allocated(a) then
     allocate a[i]
@@ -145,21 +145,21 @@ println(size(a))""")
         self.assertEqual(out, ["1"])
 
     def test_pass_to_procedures(self):
-        funcs = """subroutine fill(inout integer[] :: v)
-  integer :: i
+        funcs = """subroutine fill(inout int[] :: v)
+  int :: i
   do i = 1, size(v)
     @v[i] = i * i
   end do
 end subroutine
-function total(integer[] :: v) -> integer
+function total(int[] :: v) -> int
   return sum(v)
 end function"""
-        out = run("allocatable integer[] :: a\nallocate a[4]\ncall fill(@a)\nprintln(a, total(a), total(a[2:3]))", funcs)
+        out = run("allocatable int[] :: a\nallocate a[4]\ncall fill(@a)\nprintln(a, total(a), total(a[2:3]))", funcs)
         self.assertEqual(out, ["[1, 4, 9, 16] 30 13"])
 
     def test_locals_in_procedures_are_per_call(self):
-        funcs = """function build(integer :: n) -> integer
-  allocatable integer[] :: t
+        funcs = """function build(int :: n) -> int
+  allocatable int[] :: t
   allocate t[n]
   t = n
   return sum(t)
@@ -167,36 +167,36 @@ end function"""
         self.assertEqual(run("println(build(3), build(4))", funcs), ["9 16"])
 
     def test_leftover_allocation_is_freed_silently(self):
-        funcs = "subroutine s()\n  allocatable integer[] :: t\n  allocate t[2]\nend subroutine"
+        funcs = "subroutine s()\n  allocatable int[] :: t\n  allocate t[2]\nend subroutine"
         self.assertEqual(run("call s()\ncall s()\nprintln(1)", funcs), ["1"])
 
     def test_allocated_inside_a_procedure_sees_its_own_locals(self):
         funcs = """function f() -> logical
-  allocatable integer[] :: t
+  allocatable int[] :: t
   allocate t[1]
   return allocated(t)
 end function"""
-        self.assertEqual(run("allocatable integer[] :: t\nprintln(f(), allocated(t))", funcs), ["true false"])
+        self.assertEqual(run("allocatable int[] :: t\nprintln(f(), allocated(t))", funcs), ["true false"])
 
     def test_user_function_named_allocated_wins(self):
-        funcs = "function allocated(integer :: x) -> integer\n  return x + 1\nend function"
+        funcs = "function allocated(int :: x) -> int\n  return x + 1\nend function"
         self.assertEqual(run("println(allocated(1))", funcs), ["2"])
 
 
 class RuntimeErrorTests(unittest.TestCase):
-    DECL = "allocatable integer[] :: a\n"
+    DECL = "allocatable int[] :: a\n"
 
     def fails(self, body, msg, funcs=""):
         with self.assertRaisesRegex(LangError, msg):
             run(self.DECL + body, funcs)
 
     def test_every_use_of_an_unallocated_array(self):
-        funcs = ("subroutine bump(inout integer :: v)\n  @v[1] = 1\nend subroutine\n"
-                 "function first(integer :: v) -> integer\n  return v[1]\nend function")
+        funcs = ("subroutine bump(inout int :: v)\n  @v[1] = 1\nend subroutine\n"
+                 "function first(int :: v) -> int\n  return v[1]\nend function")
         cases = [
             "println(a)", "println(a[1])", "println(a[1:2])", "a[1] = 1", "a[1:2] = 1", "a = 1",
-            "integer[3] :: b\nb = a", "println(size(a))", "println(shape(a))", "println(sum(a))", "println(a + 1)",
-            "call bump(@a)", "println(first(a))", "integer :: n\nn = size(a, 1)",
+            "int[3] :: b\nb = a", "println(size(a))", "println(shape(a))", "println(sum(a))", "println(a + 1)",
+            "call bump(@a)", "println(first(a))", "int :: n\nn = size(a, 1)",
         ]
         for body in cases:
             with self.subTest(body=body):
@@ -218,7 +218,7 @@ class RuntimeErrorTests(unittest.TestCase):
         self.fails("allocate a[true]", "non-negative integers")
 
     def test_extent_of_an_undeclared_value_is_the_default_zero(self):
-        self.fails("integer :: n\nallocate a[n]\nprintln(a[1])", "out of bounds")
+        self.fails("int :: n\nallocate a[n]\nprintln(a[1])", "out of bounds")
 
     def test_bounds_after_allocation(self):
         self.fails("allocate a[2]\nprintln(a[3])", "out of bounds")
@@ -227,10 +227,10 @@ class RuntimeErrorTests(unittest.TestCase):
         self.assertEqual(run(self.DECL + "allocate a[2]\na = [1, 2, 3]\nprintln(size(a), a)"), ["3 [1, 2, 3]"])
 
     def test_a_fixed_array_still_needs_the_same_shape(self):
-        self.fails("integer[2] :: b\nb = [1, 2, 3]", "shape mismatch")
+        self.fails("int[2] :: b\nb = [1, 2, 3]", "shape mismatch")
 
     def test_allocated_needs_an_allocatable_name(self):
-        self.fails("integer[2] :: b\nprintln(allocated(b))", "not an allocatable")
+        self.fails("int[2] :: b\nprintln(allocated(b))", "not an allocatable")
         self.fails("println(allocated(a[1]))", "needs the name")
         self.fails("println(allocated(3))", "needs the name")
         self.fails("println(allocated(zzz))", "not declared")
@@ -242,31 +242,31 @@ class RuntimeErrorTests(unittest.TestCase):
     def test_callee_cannot_allocate_callers_array(self):
         # the callee's parameter is not allocatable, so this is rejected when the file is parsed
         with self.assertRaisesRegex(LangError, "is a parameter"):
-            run(self.DECL + "call s(a)", "subroutine s(inout integer :: v)\n  allocate v[3]\nend subroutine")
+            run(self.DECL + "call s(a)", "subroutine s(inout int :: v)\n  allocate v[3]\nend subroutine")
 
     def test_update_rules_still_apply(self):
-        funcs = "subroutine s(inout integer :: v)\n  v[1] = 1\nend subroutine"
+        funcs = "subroutine s(inout int :: v)\n  v[1] = 1\nend subroutine"
         with self.assertRaisesRegex(LangError, "@"):
             run(self.DECL + "allocate a[2]\ncall s(a)", funcs)
         with self.assertRaisesRegex(LangError, "'@' is for out and inout"):
-            parse("program t\nallocatable integer[] :: a\nallocate a[2]\n@a[1] = 1\nend program t")
+            parse("program t\nallocatable int[] :: a\nallocate a[2]\n@a[1] = 1\nend program t")
 
     def test_in_parameter_receiving_allocatable_is_read_only(self):
-        funcs = "subroutine s(integer[] :: v)\n  v[1] = 1\nend subroutine"
+        funcs = "subroutine s(int[] :: v)\n  v[1] = 1\nend subroutine"
         with self.assertRaisesRegex(LangError, "'in' parameter"):
             run(self.DECL + "allocate a[2]\ncall s(a)", funcs)
 
 
 class PrinterTests(unittest.TestCase):
-    SRC = """subroutine fill(inout integer :: v)
+    SRC = """subroutine fill(inout int :: v)
   @v = 1
 end subroutine
 
 program t
-  allocatable integer[] :: a
-  allocatable integer[,] :: b
+  allocatable int[] :: a
+  allocatable int[,] :: b
   allocatable real[] :: r
-  integer :: n
+  int :: n
   n = 3
   allocate a[n + 1]
   allocate b[n, 2 * n]
@@ -281,9 +281,9 @@ end program t
     def test_round_trip_is_stable(self):
         once = to_source(parse(self.SRC))
         self.assertEqual(to_source(parse(once)), once)
-        self.assertIn("  allocatable integer[] :: a\n  allocatable integer[,] :: b\n", once)
+        self.assertIn("  allocatable int[] :: a\n  allocatable int[,] :: b\n", once)
         self.assertIn("  allocatable real[] :: r\n", once)
-        self.assertIn("  integer :: n\n", once)           # plain declarations are not merged with these
+        self.assertIn("  int :: n\n", once)           # plain declarations are not merged with these
         self.assertIn("  allocate b[n, 2 * n]\n", once)
         self.assertIn("    deallocate a\n", once)
 
@@ -300,7 +300,7 @@ class ConvertTests(unittest.TestCase):
                                   "  real, allocatable :: x(:), y(:, :, :)")
         self.assertEqual(todos(findings), [])
         self.assertIn("allocatable real32[] :: a", text)
-        self.assertIn("allocatable integer[,] :: m", text)
+        self.assertIn("allocatable int32[,] :: m", text)
         self.assertIn("allocatable real32[] :: x", text)
         self.assertIn("allocatable real32[,,] :: y", text)
 
@@ -379,7 +379,7 @@ end program p
 """
         text, findings = convert(src)
         self.assertEqual(todos(findings), [])
-        self.assertIn("function make(integer :: n) -> integer[]", text)
+        self.assertIn("function make(int32 :: n) -> int32[]", text)
 
     def test_allocatable_scalars_components_and_pointers_stay_todos(self):
         for decl in ("integer, allocatable :: s", "integer, pointer :: p(:)", "integer, allocatable :: w(3)"):
@@ -423,7 +423,7 @@ program p
 end program p
 """
         text, _ = convert(src)
-        self.assertIn("inout integer :: n", text)           # n is read (by allocate) before it is written
+        self.assertIn("inout int32 :: n", text)           # n is read (by allocate) before it is written
 
 
 class FixtureTests(unittest.TestCase):

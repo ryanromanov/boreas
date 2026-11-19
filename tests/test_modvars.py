@@ -6,18 +6,18 @@ from boreas.parser import parse
 from boreas.printer import to_source
 
 RNG = ("module rng\n"
-       "  public integer :: seed = 7\n"
-       "  integer :: calls\n"
-       "  public subroutine reseed(integer :: s)\n"
+       "  public int :: seed = 7\n"
+       "  int :: calls\n"
+       "  public subroutine reseed(int :: s)\n"
        "    @seed = s\n"
        "    @calls = 0\n"
        "  end subroutine\n"
-       "  public subroutine next(out integer :: k)\n"
+       "  public subroutine next(out int :: k)\n"
        "    @seed = mod(seed * 3, 11) + 1\n"
        "    @calls = calls + 1\n"
        "    @k = seed\n"
        "  end subroutine\n"
-       "  public function count() -> integer\n"
+       "  public function count() -> int\n"
        "    return calls\n"
        "  end function\n"
        "end module\n")
@@ -37,7 +37,7 @@ def fails(test, body, message, extra=RNG):
 
 class ModuleVariableTests(unittest.TestCase):
     def test_state_lives_between_calls(self):
-        body = "  use rng: next, count\n  integer :: k\n  call next(@k)\n  call next(@k)\n  println(k, count())"
+        body = "  use rng: next, count\n  int :: k\n  call next(@k)\n  call next(@k)\n  println(k, count())"
         self.assertEqual(run(body), ["1 2"])
 
     def test_initial_value_and_reading_an_import(self):
@@ -53,38 +53,38 @@ class ModuleVariableTests(unittest.TestCase):
     def test_writing_needs_update(self):
         fails(self, "  use rng: seed\n  seed = 1", "must be used exactly")
         fails(self, "", "other code sees this write",
-              "module m\n  integer :: n\n  subroutine s()\n    n = 1\n  end subroutine\nend module\n")
+              "module m\n  int :: n\n  subroutine s()\n    n = 1\n  end subroutine\nend module\n")
 
     def test_update_on_a_local_is_still_wrong(self):
-        fails(self, "  integer :: k\n  @k = 1", "'@' is for out and inout parameters and module variables")
+        fails(self, "  int :: k\n  @k = 1", "'@' is for out and inout parameters and module variables")
 
     def test_private_variable_cannot_be_imported(self):
         fails(self, "  use rng: calls\n  println(calls)", "private to module")
 
     def test_a_function_cannot_change_a_module_variable(self):
         fails(self, "", "a function cannot change the module variable",
-              "module m\n  integer :: n\n  function f() -> integer\n    @n = 1\n    return n\n  end function\nend module\n")
+              "module m\n  int :: n\n  function f() -> int\n    @n = 1\n    return n\n  end function\nend module\n")
 
     def test_arrays_and_records(self):
-        src = ("module bank\n  record acct\n    integer :: total\n  end record\n"
-               "  public integer[3] :: slots\n  public acct :: main\n"
-               "  public subroutine put(integer :: i)\n    @slots[i] = i * 10\n"
+        src = ("module bank\n  record acct\n    int :: total\n  end record\n"
+               "  public int[3] :: slots\n  public acct :: main\n"
+               "  public subroutine put(int :: i)\n    @slots[i] = i * 10\n"
                "    @main.total = main.total + i\n  end subroutine\nend module\n")
         self.assertEqual(run("  use bank: slots, main, put\n  call put(2)\n  call put(3)\n  println(slots, main.total)", src),
                          ["[0, 20, 30] 5"])
 
     def test_a_local_cannot_reuse_the_name(self):
-        fails(self, "  use rng: seed\n  integer :: seed", "already")
+        fails(self, "  use rng: seed\n  int :: seed", "already")
 
     def test_constants_stay_constant(self):
-        src = "module m\n  public const integer :: k = 3\nend module\n"
+        src = "module m\n  public const int :: k = 3\nend module\n"
         fails(self, "  use m: k\n  k = 4", "constant", src)
         fails(self, "  use m: k\n  @k = 4", "must be used exactly", src)
 
     def test_round_trip(self):
         src = to_source(parse(RNG + "program t\n  use rng: seed\n  @seed = 1\nend program\n"))
         self.assertEqual(to_source(parse(src)), src)
-        self.assertIn("public integer :: seed = 7", src)
+        self.assertIn("public int :: seed = 7", src)
 
 
 if __name__ == "__main__":

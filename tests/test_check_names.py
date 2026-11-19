@@ -15,7 +15,7 @@ def found(src):
 
 class UndeclaredTests(unittest.TestCase):
     def test_reports_every_undeclared_name_in_source_order(self):
-        src = program("integer :: x", "x = y + 1", "z = x", "println(y)")
+        src = program("int :: x", "x = y + 1", "z = x", "println(y)")
         self.assertEqual(found(src), [(3, 7, "'y' is not declared"), (4, 3, "'z' is not declared"),
                                       (5, 11, "'y' is not declared")])
 
@@ -30,7 +30,7 @@ class UndeclaredTests(unittest.TestCase):
                 self.assertEqual(length, len(name))
 
     def test_select_subject_case_value_and_arm(self):
-        src = program("integer :: x = 1", "integer :: r", "select case x", "case k", "  println(1)", "end select",
+        src = program("int :: x = 1", "int :: r", "select case x", "case k", "  println(1)", "end select",
                       "r = select case x", "  case m -> n", "  case default -> 0", "end select")
         names = [msg.split("'")[1] for _, _, msg in found(src)]
         self.assertEqual(names, ["k", "m", "n"])
@@ -40,12 +40,12 @@ class UndeclaredTests(unittest.TestCase):
                          [(2, 11, "unknown function or array 'nope'"), (3, 8, "unknown subroutine 'gone'")])
 
     def test_names_inside_procedures_and_modules(self):
-        src = ("function f() -> integer\n  return a\nend function\n"
+        src = ("function f() -> int\n  return a\nend function\n"
                "module m\n  subroutine s()\n    b = 1\n  end subroutine\nend module\n" + program())
         self.assertEqual(found(src), [(2, 10, "'a' is not declared"), (6, 5, "'b' is not declared")])
 
     def test_module_initializer_has_its_line(self):
-        src = "module m\n  const integer :: a = b\nend module\n" + program()
+        src = "module m\n  const int :: a = b\nend module\n" + program()
         ((line, _, msg, _),) = check_errors(src)
         self.assertEqual(line, 2)
         self.assertIn("'b' is not declared", msg)
@@ -56,40 +56,40 @@ class KnownNameTests(unittest.TestCase):
         self.assertEqual(check_errors(src), [])
 
     def test_locals_and_loop_variables(self):
-        self.assert_clean(program("integer :: i", "do i = 1, 3", "  println(i)", "end do"))
+        self.assert_clean(program("int :: i", "do i = 1, 3", "  println(i)", "end do"))
 
     def test_parameters_and_optional_parameters(self):
-        self.assert_clean("function f(integer :: a, integer? :: b) -> integer\n"
+        self.assert_clean("function f(int :: a, int? :: b) -> int\n"
                           "  if present(b) then\n    return a + b\n  end if\n  return a\nend function\n" + program())
 
     def test_procedures_and_builtins(self):
-        self.assert_clean("subroutine s()\nend subroutine\nfunction f() -> integer\n  return 1\nend function\n"
+        self.assert_clean("subroutine s()\nend subroutine\nfunction f() -> int\n  return 1\nend function\n"
                           + program("call s()", "println(f())", "println(abs(-1))"))
 
     def test_module_names_and_imports(self):
-        self.assert_clean("module m\n  public const integer :: a = 1\n  integer :: hidden = 2\n"
-                          "  public function g() -> integer\n    return hidden + a\n  end function\nend module\n"
+        self.assert_clean("module m\n  public const int :: a = 1\n  int :: hidden = 2\n"
+                          "  public function g() -> int\n    return hidden + a\n  end function\nend module\n"
                           + "program t\n  use m: a, g\n  println(a + g())\nend program\n")
 
     def test_private_module_name_is_not_visible_elsewhere(self):
-        src = ("module m\n  public const integer :: a = 1\n  const integer :: secret = 2\nend module\n"
+        src = ("module m\n  public const int :: a = 1\n  const int :: secret = 2\nend module\n"
                "program t\n  use m: a\n  println(secret)\nend program\n")
         self.assertEqual(found(src), [(7, 11, "'secret' is not declared")])
 
     def test_record_fields_and_named_arguments(self):
-        self.assert_clean("record r\n  integer :: x\nend record\n"
+        self.assert_clean("record r\n  int :: x\nend record\n"
                           + program("r :: p", "p = r(x = 1)", "println(p.x)"))
 
     def test_named_argument_value_is_checked(self):
-        src = "record r\n  integer :: x\nend record\n" + program("r :: p", "p = r(x = v)")
+        src = "record r\n  int :: x\nend record\n" + program("r :: p", "p = r(x = v)")
         self.assertEqual(found(src), [(6, 13, "'v' is not declared")])
 
     def test_declaration_after_use_or_in_a_branch_counts(self):
-        self.assert_clean(program("logical :: c = true", "if c then", "  integer :: x", "end if", "x = 1"))
-        self.assert_clean(program("x = 1", "integer :: x"))
+        self.assert_clean(program("logical :: c = true", "if c then", "  int :: x", "end if", "x = 1"))
+        self.assert_clean(program("x = 1", "int :: x"))
 
     def test_names_are_case_insensitive(self):
-        self.assert_clean(program("integer :: Total", "TOTAL = 1"))
+        self.assert_clean(program("int :: Total", "TOTAL = 1"))
 
     def test_names_in_comments_and_strings_are_ignored(self):
         self.assert_clean(program('println("y") ! y'))
@@ -104,7 +104,7 @@ class ParseErrorTests(unittest.TestCase):
 
 class DiagnosticsTests(unittest.TestCase):
     def test_one_diagnostic_per_name_covering_only_the_name(self):
-        first, second = diagnostics(program("integer :: x", "x = yy + zzz"))
+        first, second = diagnostics(program("int :: x", "x = yy + zzz"))
         self.assertEqual(first["range"], {"start": {"line": 2, "character": 6}, "end": {"line": 2, "character": 8}})
         self.assertEqual(second["range"], {"start": {"line": 2, "character": 11}, "end": {"line": 2, "character": 14}})
         self.assertEqual(first["message"], "'yy' is not declared")

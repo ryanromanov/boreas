@@ -32,7 +32,7 @@ class OutputTests(unittest.TestCase):
 
     def test_write_needs_a_file(self):
         with self.assertRaises(LangError):
-            run("  write(1)\n  integer :: n")
+            run("  write(1)\n  int :: n")
 
     def test_old_statement_forms_are_gone(self):
         for src in ('print "a"', 'write "a"', 'print to f, "a"', 'println "a"'):

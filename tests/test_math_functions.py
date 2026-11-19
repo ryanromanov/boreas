@@ -18,7 +18,7 @@ def fails(case, body, message):
     case.assertIn(message, str(cm.exception))
 
 
-M = "  integer[2, 3] :: m = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n"
+M = "  int[2, 3] :: m = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n"
 
 
 class PiTests(unittest.TestCase):
@@ -58,16 +58,20 @@ class BitTests(unittest.TestCase):
         self.assertEqual(show("  println(iand(12, 10), ior(12, 10), ieor(12, 10), bitnot(5), bitnot(0))"), ["8 14 6 -6 -1"])
 
     def test_shifts(self):
-        self.assertEqual(show("  println(ishft(1, 4), ishft(16, -2), ishft(-1, -28), ishft(1, 31))"), ["16 4 15 -2147483648"])
-        self.assertEqual(show("  println(shiftl(1, 3), shiftr(-8, 1), shifta(-8, 1))"), ["8 2147483644 -4"])
+        self.assertEqual(show("  println(ishft(1, 4), ishft(16, -2), ishft(-1, -28), ishft(1, 31))"),
+                         ["16 4 68719476735 2147483648"])
+        self.assertEqual(show("  println(ishft(int32(1), 4), ishft(int32(16), -2), ishft(int32(-1), -28), ishft(int32(1), 31))"),
+                         ["16 4 15 -2147483648"])
+        self.assertEqual(show("  println(shiftl(int32(1), 3), shiftr(int32(-8), 1), shifta(int32(-8), 1))"), ["8 2147483644 -4"])
 
     def test_single_bits_and_counts(self):
         self.assertEqual(show("  println(btest(5, 0), btest(5, 1), ibset(0, 3), ibclr(15, 0), ibits(173, 2, 3))"),
                          ["true false 8 14 3"])
-        self.assertEqual(show("  println(popcnt(255), popcnt(-1), leadz(1), trailz(8), trailz(0))"), ["8 32 31 3 32"])
+        self.assertEqual(show("  println(popcnt(255), popcnt(-1), leadz(1), trailz(8), trailz(0))"), ["8 64 63 3 64"])
+        self.assertEqual(show("  println(popcnt(int32(-1)), leadz(int32(1)), trailz(int32(0)))"), ["32 31 32"])
 
     def test_widths(self):
-        self.assertEqual(show("  println(bit_size(1), bit_size(int64(1)), bit_size(int8(1)))"), ["32 64 8"])
+        self.assertEqual(show("  println(bit_size(1), bit_size(int32(1)), bit_size(int8(1)))"), ["64 32 8"])
         self.assertEqual(show("  println(ishft(int8(64), 1), bitnot(int8(0)), iand(int8(-1), int8(15)))"), ["-128 -1 15"])
         self.assertEqual(show("  println(shiftl(int64(1), 40), popcnt(int64(-1)))"), ["1099511627776 64"])
 
@@ -77,8 +81,10 @@ class BitTests(unittest.TestCase):
     def test_mistakes(self):
         fails(self, "  println(iand(1.0, 2))", "needs whole numbers")
         fails(self, "  println(iand(1))", "takes 2 arguments, got 1")
-        fails(self, "  println(btest(1, 40))", "bit position")
-        fails(self, "  println(ishft(1, 33))", "the shift must be")
+        fails(self, "  println(btest(1, 70))", "bit position")
+        fails(self, "  println(btest(int32(1), 40))", "bit position")
+        fails(self, "  println(ishft(1, 65))", "the shift must be")
+        fails(self, "  println(ishft(int32(1), 33))", "the shift must be")
         fails(self, "  println(popcnt(true))", "needs numbers")
 
 

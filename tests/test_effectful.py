@@ -63,7 +63,7 @@ class EffectfulFunctionTests(unittest.TestCase):
                "program p\n  integer :: k\n  k = 1\n  call twice(k)\n  print *, k\nend program\n")
         text, findings = convert(src)
         self.assertEqual(todos(findings), [])
-        self.assertIn("subroutine twice(inout integer :: m)", text)
+        self.assertIn("subroutine twice(inout int32 :: m)", text)
         self.assertEqual(run_bor(text), ["3"])
 
     def test_conditional_evaluation_is_a_todo(self):
@@ -82,7 +82,7 @@ class EffectfulFunctionTests(unittest.TestCase):
     def test_functions_that_do_not_modify_arguments_stay_functions(self):
         text, _ = convert("integer function twice(n)\n  integer, intent(in) :: n\n  twice = 2 * n\nend function\n"
                           "program p\n  print *, twice(4)\nend program\n")
-        self.assertIn("function twice(integer :: n) -> integer", text)
+        self.assertIn("function twice(int32 :: n) -> int32", text)
         self.assertEqual(run_bor(text), ["8"])
 
 

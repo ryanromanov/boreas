@@ -84,7 +84,7 @@ class VerifyTests(unittest.TestCase):
                                     "  n = n + 1\n  print *, n\nend program w\n")
             r = boreas("convert", "--verify", f)
             self.assertNotEqual(r.returncode, 0)
-            self.assertIn("overflow", r.stderr)
+            self.assertIn("does not fit in int32", r.stderr)
 
     def test_todo_makes_mismatch_expected(self):
         with tempfile.TemporaryDirectory() as tmp:

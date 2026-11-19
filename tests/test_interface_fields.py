@@ -8,7 +8,7 @@ SCENE = DEFS + """
 record scene
   figure[2] :: items
   figure :: highlight
-  integer :: count = 0
+  int :: count = 0
 end record
 """
 
@@ -36,7 +36,7 @@ class InterfaceFieldTests(unittest.TestCase):
         self.assertIn("assigned", str(cm.exception))
 
     def test_a_record_that_does_not_fit_is_refused(self):
-        defs = SCENE + "\nrecord blob\n  integer :: n = 1\nend record\n"
+        defs = SCENE + "\nrecord blob\n  int :: n = 1\nend record\n"
         with self.assertRaises(LangError) as cm:
             run("  scene :: sc\n  sc.highlight = blob()", defs)
         self.assertIn("figure", str(cm.exception))

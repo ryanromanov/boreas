@@ -16,7 +16,7 @@ def fails(case, body, message, defs=""):
     case.assertIn(message, str(cm.exception))
 
 
-DEEP = "function deep(integer :: n) -> integer\n  if n == 0 then\n    return 0\n  end if\n  return 1 + deep(n - 1)\nend function\n"
+DEEP = "function deep(int :: n) -> int\n  if n == 0 then\n    return 0\n  end if\n  return 1 + deep(n - 1)\nend function\n"
 
 
 class RecursionTests(unittest.TestCase):
@@ -27,7 +27,7 @@ class RecursionTests(unittest.TestCase):
         fails(self, "  println(deep(-1))", "nested more than", DEEP)
 
     def test_a_subroutine_too(self):
-        defs = "subroutine down(integer :: n)\n  call down(n + 1)\nend subroutine\n"
+        defs = "subroutine down(int :: n)\n  call down(n + 1)\nend subroutine\n"
         fails(self, "  call down(1)", "nested more than", defs)
 
 
@@ -54,8 +54,8 @@ class OverflowTests(unittest.TestCase):
         self.assertEqual(run_bor("use ieee\nprogram t\n  println(1.0e308 * 10.0)\nend program\n"), ["Infinity"])
 
     def test_floor_ceiling_and_nint_must_fit(self):
-        fails(self, "  integer :: n = floor(1.0e10)", "does not fit in integer")
-        fails(self, "  integer :: n = nint(3.0e9)", "does not fit in integer")
+        fails(self, "  int32 :: n = floor(1.0e10)", "does not fit in int32")
+        fails(self, "  int32 :: n = nint(3.0e9)", "does not fit in int32")
         fails(self, "  println(nint(1.0e20))", "does not fit in 64 bits")
         fails(self, "  println(floor(nan()))", "no whole number")
         self.assertEqual(show("  int64 :: n = floor(1.0e10)\n  println(n, floor(-2.5), ceiling(2.1), nint(2.5))"),
@@ -77,13 +77,13 @@ class WrongTypeTests(unittest.TestCase):
         self.assertEqual(show("  println(max([1, 5, 3], 2), min([1, 5, 3], [2, 2, 9]))"), ["[2, 5, 3] [1, 2, 3]"])
 
     def test_comparing_different_kinds_is_an_error(self):
-        fails(self, '  println("a" == 1)', "cannot compare string with integer")
-        fails(self, "  println(true == 1)", "cannot compare logical with integer")
+        fails(self, '  println("a" == 1)', "cannot compare string with int")
+        fails(self, "  println(true == 1)", "cannot compare logical with int")
         fails(self, "  println(true < false)", "not '<'")
         self.assertEqual(show("  println(1 == 1.0, true == true, \"a\" /= \"b\")"), ["true true true"])
 
     def test_the_maximum_of_nothing(self):
-        fails(self, "  integer[0] :: a\n  println(maxval(a))", "the array is empty")
+        fails(self, "  int[0] :: a\n  println(maxval(a))", "the array is empty")
 
 
 class ConverterTests(unittest.TestCase):

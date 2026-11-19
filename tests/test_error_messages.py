@@ -41,21 +41,21 @@ class WordingTests(unittest.TestCase):
 
 class LineTests(unittest.TestCase):
     def test_runtime_errors_name_their_line(self):
-        for body, line in (("  integer :: i = 2147483647\n  i = i + 1", 3),
-                           ("  integer :: a = 5\n  integer :: b = 0\n  println(a / b)", 4),
+        for body, line in (("  int32 :: i = 2147483647\n  i = i + 1", 3),
+                           ("  int :: a = 5\n  int :: b = 0\n  println(a / b)", 4),
                            ("  println(1 + \"a\")", 2),
-                           ("  integer[3] :: a = [1, 2, 3]\n  println(a + [1, 2])", 3),
+                           ("  int[3] :: a = [1, 2, 3]\n  println(a + [1, 2])", 3),
                            ("  println(undefined_name)", 2),
-                           ("  integer :: x = 1\n  if x == 1 then\n    println(1.0 / 0.0)\n  end if", 4),
-                           ("  integer :: x = 1\n  if 1 / (x - 1) == 1 then\n    println(1)\n  end if", 3)):
+                           ("  int :: x = 1\n  if x == 1 then\n    println(1.0 / 0.0)\n  end if", 4),
+                           ("  int :: x = 1\n  if 1 / (x - 1) == 1 then\n    println(1)\n  end if", 3)):
             self.assertTrue(message(body).startswith(f"line {line}:"), (body, message(body)))
 
     def test_an_error_inside_a_function_names_the_line_there(self):
-        defs = "function inv(integer :: n) -> integer\n  return 1 / n\nend function\n"
+        defs = "function inv(int :: n) -> int\n  return 1 / n\nend function\n"
         self.assertTrue(message("  println(inv(0))", defs).startswith("line 2:"), message("  println(inv(0))", defs))
 
     def test_a_line_is_added_only_once(self):
-        self.assertNotIn("line 3: line", message("  integer :: a = 1\n  println(a / 0)"))
+        self.assertNotIn("line 3: line", message("  int :: a = 1\n  println(a / 0)"))
 
 
 if __name__ == "__main__":

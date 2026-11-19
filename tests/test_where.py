@@ -30,16 +30,16 @@ class RunTests(unittest.TestCase):
         self.assertEqual(out, ["[-2.0, 9.0, 0.0, 9.0, -1.0] [0.0, 1.0, 0.0, 1.0, 0.0]"])
 
     def test_the_mask_is_computed_once(self):
-        out = show("  integer[3] :: n = [1, 2, 3]\n  where n > 1 then\n    n = 0\n    n = n + 5\n  end where\n  println(n)")
+        out = show("  int[3] :: n = [1, 2, 3]\n  where n > 1 then\n    n = 0\n    n = n + 5\n  end where\n  println(n)")
         self.assertEqual(out, ["[1, 5, 5]"])
 
     def test_a_matrix(self):
-        out = show("  integer[2, 2] :: m = reshape([1, 2, 3, 4], [2, 2])\n  where m > 2 then\n    m = 0\n"
+        out = show("  int[2, 2] :: m = reshape([1, 2, 3, 4], [2, 2])\n  where m > 2 then\n    m = 0\n"
                    "  end where\n  println(m)")
         self.assertEqual(out, ["[[1, 0], [2, 0]]"])
 
     def test_a_section_as_the_target(self):
-        out = show("  integer[6] :: v = [1, 2, 3, 4, 5, 6]\n  where v[1:3] > 1 then\n    v[1:3] = 0\n  end where\n  println(v)")
+        out = show("  int[6] :: v = [1, 2, 3, 4, 5, 6]\n  where v[1:3] > 1 then\n    v[1:3] = 0\n  end where\n  println(v)")
         self.assertEqual(out, ["[1, 0, 0, 4, 5, 6]"])
 
     def test_the_right_side_can_be_an_array(self):
@@ -47,7 +47,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(out, ["[0.0, 4.0, 0.0, 5.0, 0.0]"])
 
     def test_where_is_still_a_name(self):
-        self.assertEqual(show("  integer :: where = 4\n  where = where + 1\n  println(where)"), ["5"])
+        self.assertEqual(show("  int :: where = 4\n  where = where + 1\n  println(where)"), ["5"])
 
 
 class NestedTests(unittest.TestCase):

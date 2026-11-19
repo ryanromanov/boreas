@@ -26,7 +26,7 @@ class ReadTests(unittest.TestCase):
 
     def test_reads_values_by_type(self):
         body = ("  allocatable string[] :: p\n  p = fields(read_line() ?? \"\")\n"
-                "  integer :: n = to_integer(p[1])\n  real :: x = to_real(p[2])\n  logical :: b = to_logical(p[3])\n"
+                "  int :: n = to_integer(p[1])\n  real :: x = to_real(p[2])\n  logical :: b = to_logical(p[3])\n"
                 "  string :: s = p[4]\n  real32 :: y = real32(to_real(p[5]))\n  println(n, x, b, s, y)")
         self.assertEqual(run(body, "7 2.5d0 T hello 0.1\n")[0], ["7 2.5 true hello 0.1"])
 
@@ -35,16 +35,16 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(run(body, "two, 5\n")[0], ["2 two 5"])
 
     def test_bad_input_stops_the_program(self):
-        fails(self, "  integer :: n = to_integer(\"abc\")", "cannot assign null to integer")
+        fails(self, "  int :: n = to_integer(\"abc\")", "cannot assign null to int")
         fails(self, "  real :: x = to_real(\"1_0\")", "cannot assign null to real")
-        fails(self, "  integer :: n = to_integer(\"3.5\")", "cannot assign null to integer")
+        fails(self, "  int :: n = to_integer(\"3.5\")", "cannot assign null to int")
 
     def test_end_of_input_gives_null(self):
         self.assertEqual(run("  println(present(read_line()))", "")[0], ["false"])
         fails(self, "  allocatable string[] :: p\n  p = fields(read_line())", "needs a string", "")
 
     def test_the_old_read_statement_is_gone(self):
-        for src in ("integer :: n\nread n", "integer :: n\n@read n", "integer :: n\nread n status n"):
+        for src in ("int :: n\nread n", "int :: n\n@read n", "int :: n\nread n status n"):
             with self.assertRaises(LangError):
                 parse(f"program t\n{src}\nend program t\n")
 
@@ -80,8 +80,8 @@ class WriteAndStopTests(unittest.TestCase):
             expr(Str("it's \"odd\""))
 
     def test_round_trip_of_new_statements(self):
-        src = ("subroutine get(out integer :: n)\n  @n = 1\nend subroutine\n\n"
-               "program t\n  integer :: a\n  print(\"x\")\n  stop 2\nend program t\n")
+        src = ("subroutine get(out int32 :: n)\n  @n = 1\nend subroutine\n\n"
+               "program t\n  int :: a\n  print(\"x\")\n  stop 2\nend program t\n")
         self.assertEqual(to_source(parse(src)), src)
 
 
@@ -128,7 +128,7 @@ class ConvertTests(unittest.TestCase):
         text, findings = convert(self.RETRY)
         self.assertEqual(todos(findings), [])
         self.assertNotIn("ios", text.replace("ios_", ""))
-        self.assertIn("do while not present(ios_integer)", text)
+        self.assertIn("do while not present(ios_int32)", text)
         self.assertIn("if not present(ios_line) then", text)
         out, code = run_converted(text, "x\n\n4.5\n 12 \n")
         self.assertEqual(out, ["again", "again", "again", "12"])
@@ -144,9 +144,9 @@ class ConvertTests(unittest.TestCase):
                 self.assertIn("ios = -1", text)
 
     def test_comparisons_become_tests_of_the_optionals(self):
-        cases = {"ios == 0": "present(ios_integer)", "ios .lt. 0": "not present(ios_line)",
-                 "ios > 0": "present(ios_line) and not present(ios_integer)", "ios /= 0": "not present(ios_integer)",
-                 "ios <= 0": "not present(ios_line) or present(ios_integer)", "0 /= ios": "not present(ios_integer)",
+        cases = {"ios == 0": "present(ios_int32)", "ios .lt. 0": "not present(ios_line)",
+                 "ios > 0": "present(ios_line) and not present(ios_int32)", "ios /= 0": "not present(ios_int32)",
+                 "ios <= 0": "not present(ios_line) or present(ios_int32)", "0 /= ios": "not present(ios_int32)",
                  "ios >= 0": "present(ios_line)", "ios == -1": "not present(ios_line)"}
         for cond, want in cases.items():
             with self.subTest(cond=cond):
@@ -172,7 +172,7 @@ class ConvertTests(unittest.TestCase):
             "subroutine get(n)\n  integer :: n\n  read(*,*) n\nend subroutine\n"
             "program p\n  integer :: k\n  call get(k)\n  print *, k\nend program\n")
         self.assertEqual(todos(findings), [])
-        self.assertIn("subroutine get(out integer :: n)", text)
+        self.assertIn("subroutine get(out int32 :: n)", text)
         self.assertIn("@n = to_integer(read_parts[1])", text)
 
     def test_stop_forms(self):

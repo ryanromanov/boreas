@@ -101,7 +101,7 @@ class FixtureTests(unittest.TestCase):
         got = self.check("search.f90")
         self.assertEqual(got, ["found at 3", "still 3"])
         text, _ = convert(read(fixture("search.f90")))
-        self.assertIn("inout integer :: pos", text)
+        self.assertIn("inout int32 :: pos", text)
 
     def test_writes_to_out_arguments_are_marked_update(self):
         src = ("subroutine fill(n, t)\n  integer, intent(in) :: n\n  integer, intent(out) :: t\n"
@@ -161,7 +161,7 @@ class TranslationTests(unittest.TestCase):
     def test_parameter_becomes_const(self):
         text, findings = conv("integer, parameter :: n = 4, sq(2) = (/ 1, 4 /)\n  real, parameter :: half = 0.5\n"
                               "  integer :: k\n  k = n\n  print *, k, sq, half", "")
-        self.assertIn("  const integer :: n = 4\n  const integer[2] :: sq = [1, 4]", text)
+        self.assertIn("  const int32 :: n = 4\n  const int32[2] :: sq = [1, 4]", text)
         self.assertIn("const real32 :: half = 0.5", text)
         self.assertFalse(any("ordinary variables" in f[2] for f in findings))
         self.assertEqual(run_bor(text), ["4 [1, 4] 0.5"])
@@ -178,7 +178,7 @@ class TranslationTests(unittest.TestCase):
 
     def test_d_exponents_and_kinds(self):
         text, _ = conv("print *, 1.5d0, 2.0e3, 3.0_8, 4_8", "")
-        self.assertIn("println(1.5, 2000.0, 3.0, int64(4))", text)
+        self.assertIn("println(1.5, 2000.0, 3.0, int(4))", text)
 
     def test_continuation_comments_and_semicolons(self):
         text, _ = conv("integer :: a\ninteger :: b\n  a = 1; b = &\n    & 2   ! trailing\n  print *, a, &\n     b", "")
@@ -275,15 +275,15 @@ class TranslationTests(unittest.TestCase):
 
     def test_argument_assigned_unconditionally_is_out(self):
         src = "subroutine s(v)\n  integer v\n  v = 1\nend subroutine\nprogram p\n  integer :: k\n  call s(k)\nend program\n"
-        self.assertIn("out integer :: v", convert(src)[0])
+        self.assertIn("out int32 :: v", convert(src)[0])
 
     def test_argument_assigned_in_a_loop_or_read_is_inout(self):
         src = ("subroutine a(v, n)\n  integer v, n, i\n  do i = 1, n\n    v = i\n  end do\nend subroutine\n"
                "subroutine b(v)\n  integer v\n  v = v + 1\nend subroutine\n"
                "program p\n  integer :: k\n  k = 0\n  call a(k, 3)\n  call b(k)\nend program\n")
         text = convert(src)[0]
-        self.assertIn("subroutine a(inout integer :: v", text)
-        self.assertIn("subroutine b(inout integer :: v", text)
+        self.assertIn("subroutine a(inout int32 :: v", text)
+        self.assertIn("subroutine b(inout int32 :: v", text)
 
     def test_intent_propagates_through_calls(self):
         src = ("subroutine outer(x)\n  real x\n  call inner(x)\nend subroutine\n"
@@ -316,7 +316,7 @@ class TranslationTests(unittest.TestCase):
 
     def test_dble_and_kind_arguments(self):
         text, _ = conv("print *, dble(3), real(2, kind=8), int(2.7d0)", "")
-        self.assertIn("println(real64(3), real64(2), int(2.7))", text)
+        self.assertIn("println(real64(3), real64(2), int32(2.7))", text)
 
     def test_array_sections_and_constructors(self):
         text, _ = conv("integer :: v(5)\n  v = [1, 2, 3, 4, 5]\n  v(2:3) = 0\n  print *, v, v(:2), sum(v)", "")
@@ -342,7 +342,7 @@ class TranslationTests(unittest.TestCase):
               "program p\n  integer :: k\n  k = 1\n  print *, bad(k), k\nend program\n"
         text, findings = convert(src)
         self.assertEqual(todos(findings), [])
-        self.assertIn("subroutine bad(inout integer :: n, out integer :: bad_result)", text)
+        self.assertIn("subroutine bad(inout int32 :: n, out int32 :: bad_result)", text)
         self.assertIn("call bad(@k, @bad_value)", text)
         self.assertEqual(run_bor(text), ["2 2"])
 
@@ -363,7 +363,7 @@ class TranslationTests(unittest.TestCase):
                "  counter = 10\n  call bump()\n  print *, counter\nend program\n")
         text, findings = convert(src)
         self.assertEqual(todos(findings), [])
-        self.assertIn("public integer :: counter = 0", text)
+        self.assertIn("public int32 :: counter = 0", text)
         self.assertIn("@counter = counter + 1", text)
         self.assertIn("@counter = 10", text)
         self.assertEqual(run_bor(text), ["6 2", "11"])
@@ -375,7 +375,7 @@ class TranslationTests(unittest.TestCase):
                "program p\n  use m\n  integer :: a\n  a = roll() + roll()\n  print *, a, seed\nend program\n")
         text, findings = convert(src)
         self.assertEqual(todos(findings), [])
-        self.assertIn("subroutine roll(out integer :: roll_result)", text)
+        self.assertIn("subroutine roll(out int32 :: roll_result)", text)
         self.assertEqual(run_bor(text), ["5 3"])
 
     def test_unknown_module_and_private_names_are_todos(self):
@@ -406,7 +406,7 @@ class TranslationTests(unittest.TestCase):
 
     def test_declarations_with_several_names_are_split(self):
         text, _ = conv("print *, a + b + c", "  integer :: a = 1, b = 2\n  integer :: c = 3")
-        for line in ("  integer :: a = 1\n", "  integer :: b = 2\n", "  integer :: c = 3\n"):
+        for line in ("  int32 :: a = 1\n", "  int32 :: b = 2\n", "  int32 :: c = 3\n"):
             self.assertIn(line, text)
         self.assertEqual(run_bor(text), ["6"])
 

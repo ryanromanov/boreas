@@ -18,14 +18,14 @@ class CommonTests(unittest.TestCase):
     def test_block_becomes_a_module_of_variables(self):
         text, _ = convert(read(fixture("common.f")), "common.f")
         self.assertIn("module common_state", text)
-        self.assertIn("public integer :: seed = 7", text)
+        self.assertIn("public int32 :: seed = 7", text)
         self.assertIn("use common_state: seed, count, table", text)
         self.assertIn("@seed = seed + step", text)
         self.assertIn("module common_blank", text)
 
     def test_function_that_changes_common_becomes_a_subroutine(self):
         text, _ = convert(read(fixture("common.f")), "common.f")
-        self.assertIn("subroutine next(out integer :: next_result)", text)
+        self.assertIn("subroutine next(out int32 :: next_result)", text)
 
     def test_different_shapes_are_a_todo(self):
         src = ("subroutine a()\n  integer x, y\n  common /c/ x, y\n  x = 1\nend subroutine\n"

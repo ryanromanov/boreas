@@ -6,7 +6,7 @@ from test_fortran import GFORTRAN, run_bor, todos
 from boreas.lexer import LangError
 from boreas.verify import same_output
 
-V = "  integer[6] :: v = [3, -1, 4, 1, -5, 9]\n"
+V = "  int[6] :: v = [3, -1, 4, 1, -5, 9]\n"
 
 
 def show(body):
@@ -18,7 +18,7 @@ class CountTests(unittest.TestCase):
         self.assertEqual(show(V + "  println(count(v > 0), count(v > 100), count(v == v))"), ["4 0 6"])
 
     def test_works_on_a_matrix_and_an_empty_array(self):
-        self.assertEqual(show("  integer[2, 2] :: m = reshape([1, 2, 3, 4], [2, 2])\n  println(count(m > 1))"), ["3"])
+        self.assertEqual(show("  int[2, 2] :: m = reshape([1, 2, 3, 4], [2, 2])\n  println(count(m > 1))"), ["3"])
 
     def test_needs_logicals(self):
         with self.assertRaisesRegex(LangError, "count\\(\\) needs an array of logicals"):
@@ -68,7 +68,7 @@ class LocateTests(unittest.TestCase):
             show(V + "  println(maxloc(pack(v, v > 100)))")
 
 
-M = "  integer[2, 3] :: m = reshape([5, 1, 9, 2, 4, 8], [2, 3])\n"      # rows 5 9 4 / 1 2 8
+M = "  int[2, 3] :: m = reshape([5, 1, 9, 2, 4, 8], [2, 3])\n"      # rows 5 9 4 / 1 2 8
 
 
 class MatrixLocateTests(unittest.TestCase):
@@ -80,13 +80,13 @@ class MatrixLocateTests(unittest.TestCase):
                          ["[1, 1, 2]", "[2, 3]", "[3, 1]"])
 
     def test_the_first_of_a_tie_in_column_order(self):
-        self.assertEqual(show("  integer[2, 2] :: t = reshape([7, 7, 7, 7], [2, 2])\n  println(maxloc(t))"), ["[1, 1]"])
+        self.assertEqual(show("  int[2, 2] :: t = reshape([7, 7, 7, 7], [2, 2])\n  println(maxloc(t))"), ["[1, 1]"])
 
     def test_a_plain_array_still_gives_an_integer(self):
         self.assertEqual(show(V + "  println(maxloc(v, 1))"), ["6"])
 
     def test_three_dimensions(self):
-        out = show("  integer[2, 2, 2] :: c = reshape([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2])\n"
+        out = show("  int[2, 2, 2] :: c = reshape([1, 2, 3, 4, 5, 6, 7, 8], [2, 2, 2])\n"
                    "  println(maxloc(c))\n  println(shape(maxloc(c, 3)))\n  println(maxloc(c, 3))")
         self.assertEqual(out, ["[2, 2, 2]", "[2, 2]", "[[2, 2], [2, 2]]"])
 
@@ -119,7 +119,7 @@ class PackTests(unittest.TestCase):
         self.assertEqual(show(V + "  println(pack(v, v > 0))"), ["[3, 4, 1, 9]"])
 
     def test_a_matrix_is_read_down_the_columns(self):
-        self.assertEqual(show("  integer[2, 2] :: m = reshape([1, 2, 3, 4], [2, 2])\n  println(pack(m, m > 1))"), ["[2, 3, 4]"])
+        self.assertEqual(show("  int[2, 2] :: m = reshape([1, 2, 3, 4], [2, 2])\n  println(pack(m, m > 1))"), ["[2, 3, 4]"])
 
     def test_a_single_mask_and_an_empty_result(self):
         self.assertEqual(show(V + "  println(pack(v, true))"), ["[3, -1, 4, 1, -5, 9]"])
@@ -195,7 +195,7 @@ class FindlocTests(unittest.TestCase):
 
 
 class BoundsTests(unittest.TestCase):
-    M = "  integer[2, 3] :: m\n"
+    M = "  int[2, 3] :: m\n"
 
     def test_all_dimensions_or_one(self):
         self.assertEqual(show(self.M + "  println(lbound(m), ubound(m), ubound(m, 2), lbound(m, 1))"), ["[1, 1] [2, 3] 3 1"])

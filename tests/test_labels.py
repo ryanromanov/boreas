@@ -10,15 +10,15 @@ from test_fortran import GFORTRAN, check_syntax, fixture, read, run_bor, run_gfo
     assert_round_trips, conv
 
 
-def prog(body, decls="integer :: i\ninteger :: j\ninteger :: k\ninteger :: n"):
+def prog(body, decls="int :: i\nint :: j\nint :: k\nint :: n"):
     return f"program t\n  {decls}\n{body}\nend program t\n"
 
 
-def run(body, decls="integer :: i\ninteger :: j\ninteger :: k\ninteger :: n"):
+def run(body, decls="int :: i\nint :: j\nint :: k\nint :: n"):
     return run_bor(prog(body, decls))
 
 
-def fails(body, msg, decls="integer :: i\ninteger :: j\ninteger :: k\ninteger :: n"):
+def fails(body, msg, decls="int :: i\nint :: j\nint :: k\nint :: n"):
     with unittest.TestCase().assertRaises(LangError) as cm:
         parse(prog(body, decls))
     assert msg in str(cm.exception), str(cm.exception)
@@ -77,14 +77,14 @@ class ParseTests(unittest.TestCase):
       exit k
     end if
   end do k
-  println(k)""", "integer :: k"), ["2"])
+  println(k)""", "int :: k"), ["2"])
 
     def test_label_may_equal_a_procedure(self):
-        src = """function f(integer :: x) -> integer
+        src = """function f(int :: x) -> int
   return x
 end function
 program t
-  integer :: i
+  int :: i
   f: do i = 1, 2
     exit f
   end do f
@@ -95,12 +95,12 @@ end program t
 
     def test_slices_and_use_still_parse(self):
         src = """module m
-  public const integer :: pi2 = 6
+  public const int :: pi2 = 6
 end module m
 program t
   use m: pi2
-  integer[4] :: a
-  integer :: s
+  int[4] :: a
+  int :: s
   a = [1, 2, 3, 4]
   lo: do s = 1, 1
     println(a[2:3], pi2)
@@ -337,9 +337,9 @@ class RunTests(unittest.TestCase):
   println(i)"""), ["2"])
 
     def test_return_inside_labeled_loop(self):
-        src = """function first(integer :: t) -> integer
-  integer :: i
-  integer :: j
+        src = """function first(int :: t) -> int
+  int :: i
+  int :: j
   o: do i = 1, 5
     do j = 1, 5
       if i * j == t then
@@ -356,8 +356,8 @@ end program t
         self.assertEqual(run_bor(src), ["34 0"])
 
     def test_labels_in_called_procedure_are_independent(self):
-        src = """subroutine inner(out integer :: r)
-  integer :: i
+        src = """subroutine inner(out int :: r)
+  int :: i
   a: do i = 1, 10
     if i == 3 then
       @r = i
@@ -366,9 +366,9 @@ end program t
   end do a
 end subroutine
 program t
-  integer :: i
-  integer :: r
-  integer :: n
+  int :: i
+  int :: r
+  int :: n
   n = 0
   a: do i = 1, 3
     call inner(@r)
@@ -384,9 +384,9 @@ end program t
 
 
 class UpdateTests(unittest.TestCase):
-    SUB = """subroutine tally(inout integer :: total, integer :: n)
-  integer :: i
-  integer :: j
+    SUB = """subroutine tally(inout int :: total, int :: n)
+  int :: i
+  int :: j
   o: do i = 1, n
     do j = 1, n
       if j > i then
@@ -400,7 +400,7 @@ class UpdateTests(unittest.TestCase):
   end do o
 end subroutine
 program t
-  integer :: total
+  int :: total
   total = 0
   call tally(@total, 6)
   println(total)
@@ -421,7 +421,7 @@ end program t
 
     def test_loop_variable_cannot_be_a_parameter(self):
         with self.assertRaises(LangError):
-            parse(self.SUB.replace("integer :: i\ninteger :: j", "integer :: j").replace("o: do i = 1, n", "o: do n = 1, 3"))
+            parse(self.SUB.replace("int :: i\nint :: j", "int :: j").replace("o: do i = 1, n", "o: do n = 1, 3"))
 
 
 class PrinterTests(unittest.TestCase):

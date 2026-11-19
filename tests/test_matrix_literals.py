@@ -23,7 +23,7 @@ def fails(case, body, message):
 
 class LiteralTests(unittest.TestCase):
     def test_rows_in_reading_order(self):
-        self.assertEqual(show("  integer[2, 3] :: m = [1, 2, 3; 4, 5, 6]\n  println(m, m[1, 3], m[2, 1], shape(m))"),
+        self.assertEqual(show("  int[2, 3] :: m = [1, 2, 3; 4, 5, 6]\n  println(m, m[1, 3], m[2, 1], shape(m))"),
                          ["[[1, 2, 3], [4, 5, 6]] 3 4 [2, 3]"])
 
     def test_it_is_stored_by_columns(self):
@@ -38,20 +38,20 @@ class LiteralTests(unittest.TestCase):
         self.assertEqual(show("  real[2, 2] :: m = [1, 2.5; 3, 4]\n  println(m)"), ["[[1.0, 2.5], [3.0, 4.0]]"])
 
     def test_rows_can_sit_on_separate_lines(self):
-        body = "  integer[3, 3] :: m = [1, 0, 0;\n                        0, 1, 0;\n                        0, 0, 1]\n  println(matmul(m, m))"
+        body = "  int[3, 3] :: m = [1, 0, 0;\n                        0, 1, 0;\n                        0, 0, 1]\n  println(matmul(m, m))"
         self.assertEqual(show(body), ["[[1, 0, 0], [0, 1, 0], [0, 0, 1]]"])
 
     def test_it_works_wherever_an_array_does(self):
         self.assertEqual(show("  println(transpose([1, 2, 3; 4, 5, 6]), sum([1, 2; 3, 4], 1))"),
                          ["[[1, 4], [2, 5], [3, 6]] [4, 6]"])
-        self.assertEqual(show("  const integer[2, 2] :: k = [1, 2; 3, 4]\n  println(k[2, 1])"), ["3"])
+        self.assertEqual(show("  const int[2, 2] :: k = [1, 2; 3, 4]\n  println(k[2, 1])"), ["3"])
         self.assertEqual(show("  println([1, 2; 3, 4] * 2)"), ["[[2, 4], [6, 8]]"])
 
     def test_elements_can_be_expressions(self):
-        self.assertEqual(show("  integer :: n = 3\n  println([n, n + 1; n * 2, -n])"), ["[[3, 4], [6, -3]]"])
+        self.assertEqual(show("  int :: n = 3\n  println([n, n + 1; n * 2, -n])"), ["[[3, 4], [6, -3]]"])
 
     def test_listing_splicing_still_works(self):
-        self.assertEqual(show("  integer[2] :: x = [1, 2]\n  println([x, 3])"), ["[1, 2, 3]"])
+        self.assertEqual(show("  int[2] :: x = [1, 2]\n  println([x, 3])"), ["[1, 2, 3]"])
 
 
 class ErrorTests(unittest.TestCase):
@@ -67,24 +67,24 @@ class ErrorTests(unittest.TestCase):
         fails(self, "  println([(i do i = 1, 3); 1, 2, 3])", "generator")
 
     def test_the_declared_shape_is_checked(self):
-        fails(self, "  integer[3, 2] :: m = [1, 2, 3; 4, 5, 6]", "has shape (3, 2)")
+        fails(self, "  int[3, 2] :: m = [1, 2, 3; 4, 5, 6]", "has shape (3, 2)")
 
 
 class FlattenTests(unittest.TestCase):
     def test_flatten_gives_storage_order(self):
-        self.assertEqual(show("  integer[2, 3] :: m = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n  println(flatten(m), flatten([7, 8]))"),
+        self.assertEqual(show("  int[2, 3] :: m = reshape([1, 2, 3, 4, 5, 6], [2, 3])\n  println(flatten(m), flatten([7, 8]))"),
                          ["[1, 2, 3, 4, 5, 6] [7, 8]"])
 
     def test_it_needs_an_array(self):
         fails(self, "  println(flatten(3))", "needs an array")
 
     def test_a_program_can_define_its_own(self):
-        defs = "function flatten(integer :: x) -> integer\n  return x + 1\nend function\n"
+        defs = "function flatten(int :: x) -> int\n  return x + 1\nend function\n"
         self.assertEqual(show("  println(flatten(1))", defs), ["2"])
 
 
 class ToolTests(unittest.TestCase):
-    SRC = "program t\n  integer[2, 3] :: m = [1, 2, 3; 4, 5, 6]\n  println(m)\nend program\n"
+    SRC = "program t\n  int[2, 3] :: m = [1, 2, 3; 4, 5, 6]\n  println(m)\nend program\n"
 
     def test_printing_and_parsing_round_trip(self):
         once = to_source(parse(self.SRC))
@@ -100,7 +100,7 @@ class ToolTests(unittest.TestCase):
 
 
     def test_the_formatter_keeps_rows_on_their_own_lines(self):
-        src = "program t\n  integer[2, 2] :: m = [1, 2;\n                        3, 4]\n  println(m)\nend program\n"
+        src = "program t\n  int[2, 2] :: m = [1, 2;\n                        3, 4]\n  println(m)\nend program\n"
         self.assertEqual(format_source(src), src)
         loose = src.replace("                        3, 4]", "3, 4]")
         self.assertEqual(run_bor(format_source(loose)), ["[[1, 2], [3, 4]]"])
