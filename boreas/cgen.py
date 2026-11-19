@@ -115,10 +115,8 @@ class Compiler:
                 pt = self.param_type(typ)
                 if pt is None:
                     self.refuse(f"parameter '{name}' of '{f.name}' ({typ if isinstance(typ, str) else 'a procedure'})")
-                if intent == "out":
-                    self.refuse(f"out parameter '{name}' of '{f.name}'")
-                if intent == "inout" and f.ret is not None:
-                    self.refuse(f"inout parameter '{name}' of the function '{f.name}'")
+                if intent in ("out", "inout") and f.ret is not None:
+                    self.refuse(f"{intent} parameter '{name}' of the function '{f.name}'")
         for f in [*u.functions.values(), None]:
             self.check_body((f.body if f else u.program.body), f)
 
@@ -192,10 +190,10 @@ class Compiler:
         self.check_call_args(f, s.args, s)
         roots = [getattr(a, "name", None) for a in s.args]
         for (typ, pname, intent), root in zip(f.params, roots):
-            if intent == "inout" and root in fixed:
-                self.refuse(f"the constant or parameter '{root}' passed as inout", s)
-            if intent == "inout" and root is not None and roots.count(root) > 1:
-                self.refuse(f"'{root}' passed as inout and as another argument of the same call", s)
+            if intent in ("out", "inout") and root in fixed:
+                self.refuse(f"the constant or parameter '{root}' passed as {intent}", s)
+            if intent in ("out", "inout") and root is not None and roots.count(root) > 1:
+                self.refuse(f"'{root}' passed as {intent} and as another argument of the same call", s)
 
     def decl_type(self, d):
         if d.type not in KINDS:
@@ -363,6 +361,8 @@ class Compiler:
                 return V(Type("real"), "3.141592653589793")
             if e.name in self.allocs:
                 self.emit(f'rt_need_alloc({self.vars[e.name][1]}.data, "{e.name}", {self.line});')
+            if e.name in self.outs:
+                self.emit(f'if (!*set_{e.name}) rt_fail({self.line}, "\'{e.name}\' is used before it is assigned");')
             return V(self.vars[e.name][0], self.vars[e.name][1])
         if t is Unary:
             return self.unary(e)
@@ -522,12 +522,28 @@ class Compiler:
 
     # -- calls and built-in functions -----------------------------------------------------------------------------------
     def call_args(self, f, args):
-        """The C arguments of a call of `f`: values for `in`, addresses for an `inout` single value, arrays as they are."""
+        """The C arguments of a call of `f`: values for `in`, addresses for an `inout` or `out` single value (an `out` one
+        with a flag that the callee sets when it assigns it), arrays as they are. Also sets `self.after_call`: what to do
+        once the call has returned (the out parameters that were never assigned are an error then)."""
         out = []
+        self.after_call = []
         for a, (typ, pname, intent) in zip(args, f.params):
             pt = self.param_type(typ)
-            if intent == "inout" and pt.rank == 0:
-                out.append("&" + self.lvalue(a))
+            if intent in ("inout", "out") and pt.rank == 0:
+                if isinstance(a, Var) and a.name in self.outs and intent == "inout":     # an unassigned out parameter is read
+                    self.emit(f'if (!*set_{a.name}) rt_fail({self.line}, "\'{a.name}\' is used before it is assigned");')
+                ref = "&" + self.lvalue(a)
+                if intent == "out":
+                    self.n += 1
+                    flag = f"set{self.n}"
+                    self.emit(f"bool {flag} = false;")
+                    out.append(ref)
+                    out.append("&" + flag)
+                    self.after_call.append(f'if (!{flag}) rt_fail({self.line}, "out parameter \'{pname}\' was never assigned in {f.name}");')
+                    if isinstance(a, Var) and a.name in self.outs:                       # now assigned in this function too
+                        self.after_call.append(f"*set_{a.name} = true;")
+                else:
+                    out.append(ref)
             elif pt.rank == 0:
                 out.append(self.scalar(a, pt.kind, f"argument '{pname}'"))
             else:
@@ -798,6 +814,8 @@ class Compiler:
         name = self.vars[target.name][1]
         if t.rank == 0:
             self.emit(f"{name} = {self.scalar(s.value, t.kind, f'line {line}')};")
+            if target.name in self.outs:
+                self.emit(f"*set_{target.name} = true;")
             return
         v = self.value(s.value)
         if target.name in self.allocs:
@@ -981,18 +999,24 @@ class Compiler:
         if len(s.args) != len(f.params):
             raise NotCompiled(f"a call of '{s.name}' with optional or missing arguments", s.line)
         args = self.call_args(f, s.args)
+        after = self.after_call
         self.emit(f'rt_call_in({s.line}, "{s.name}");')
         self.emit(f"{f_name(s.name)}({', '.join(args)});")
         self.emit("rt_call_out();")
+        for text in after:
+            self.emit(text)
 
     # -- whole functions -------------------------------------------------------------------------------------------
     def declare_vars(self, params, body):
         self.vars = {}
+        self.outs = set()                                   # out parameters that are single values (they start unassigned)
         self.allocs = self.allocs_of(body, None)
         for typ, name, intent in params:
             t = self.param_type(typ)
             access = c_name(name) if (intent == "in" or t.rank > 0) else f"(*{c_name(name)})"
             self.vars[name] = (t, access)
+            if intent == "out" and t.rank == 0:
+                self.outs.add(name)
         seen = set()
         for d in statements_in(body):
             if isinstance(d, Decl) and d.name not in seen:
@@ -1007,6 +1031,8 @@ class Compiler:
                 out.append(f"rt_{t.kind}_arr {c_name(name)}")
             elif intent == "inout":
                 out.append(f"{CSCALAR[t.kind]} *{c_name(name)}")
+            elif intent == "out":
+                out.append(f"{CSCALAR[t.kind]} *{c_name(name)}, bool *set_{name}")
             else:
                 out.append(f"{CSCALAR[t.kind]} {c_name(name)}")
         return ", ".join(out) or "void"

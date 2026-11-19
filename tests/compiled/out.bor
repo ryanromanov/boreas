@@ -1,0 +1,58 @@
+! out parameters: they start unassigned, must be assigned before they are read, and must be assigned by the time the
+! subroutine returns.
+subroutine divide(int :: a, int :: b, out int :: q, out int :: r)
+  @q = a / b
+  @r = a - q * b
+end subroutine
+
+subroutine stats(real[] :: v, out real :: lo, out real :: hi, out int :: n)
+  int :: i
+  @lo = v[1]
+  @hi = v[1]
+  @n = size(v)
+  do i = 2, size(v)
+    if v[i] < lo then
+      @lo = v[i]
+    end if
+    if v[i] > hi then
+      @hi = v[i]
+    end if
+  end do
+end subroutine
+
+subroutine relay(out int :: k, out real32 :: x)
+  call set(@k)
+  @x = k * 0.5
+  @k = k + 1
+end subroutine
+
+subroutine set(out int :: j)
+  @j = 41
+end subroutine
+
+subroutine reset(out int[] :: v, out logical :: done)
+  @v[1] = v[2] + v[3]
+  @done = v[1] > 3
+end subroutine
+
+program outs
+  int :: q
+  int :: r
+  int :: n
+  int32 :: k
+  real :: lo
+  real :: hi
+  real32 :: x
+  logical :: done
+  int[3] :: v = [1, 2, 3]
+  call divide(17, 5, @q, @r)
+  println(q, r)
+  call stats([3.5, -1.0, 9.25, 4.0], @lo, @hi, @n)
+  println(lo, hi, n)
+  call relay(@r, @x)
+  println(r, x)
+  call reset(@v, @done)
+  println(v, done)
+  call divide(1, 1, @v[2], @q)
+  println(v, q)
+end program

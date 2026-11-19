@@ -71,6 +71,15 @@ REAL32_CASES = {
     "mod by zero": "  real32 :: x = 5.0\n  real32 :: z = 0.0\n  println(mod(x, z))",
 }
 
+OUT_DEFS = {
+    "an out parameter read before it is assigned": "subroutine s(out int :: k)\n  println(k)\n  @k = 5\nend subroutine\n",
+    "an out parameter never assigned": "subroutine s(out int :: k, int :: c)\n  if c > 0 then\n    @k = 5\n  end if\nend subroutine\n",
+    "an out parameter used to start a value": "subroutine s(out int :: k)\n  int :: a = k\n  @k = 5\nend subroutine\n",
+    "an unassigned out parameter passed as inout": "subroutine s(out int :: k)\n  call u(@k)\n  @k = 5\nend subroutine\nsubroutine u(inout int :: j)\n  @j = j + 1\nend subroutine\n",
+    "an out parameter handed on to a callee that does not assign it": "subroutine s(out int :: k)\n  @k = 1\n  call u(@k)\nend subroutine\nsubroutine u(out int :: j)\n  println(1)\nend subroutine\n",
+    "an out array given the wrong shape": "subroutine s(out int[] :: v)\n  @v = [7, 8, 9]\nend subroutine\n",
+}
+
 FAILING = {
     "unallocated: print": "  allocatable int[] :: a\n  println(a)",
     "unallocated: size": "  allocatable int[] :: a\n  println(size(a))",
@@ -147,6 +156,14 @@ class ErrorTests(unittest.TestCase):
                 self.assertIn("error: line", done.stderr)
             with self.subTest(name + " (use ieee)"):
                 same_as_interpreter(self, "use ieee\n" + prog(body))
+
+    def test_out_parameter_mistakes_are_the_interpreters(self):
+        for name, defs in OUT_DEFS.items():
+            with self.subTest(name):
+                arg, decl = ("a", "  int[2] :: a = [1, 2]") if "array" in name else ("n", "  int :: n = 3")
+                done = same_as_interpreter(self, prog(f"{decl}\n  call s(@{arg}{', 0' if 'never' in name else ''})", defs))
+                self.assertEqual(done.returncode, 1, name)
+                self.assertIn("error: line", done.stderr)
 
     def test_every_error_is_the_interpreters(self):
         for name, body in FAILING.items():
@@ -252,7 +269,8 @@ class RefusalTests(unittest.TestCase):
         self.refused(prog("  int :: n = 1\n  println(floor(2.5), n)"), "the function 'floor'")
         self.refused(prog("  const int :: i = 1\n  do i = 1, 2\n  end do"), "constant or parameter")
         self.refused("function f(int :: n) -> int\n  n = 2\n  return n\nend function\nprogram t\nend program\n", "constant or parameter")
-        self.refused("subroutine s(out int :: k)\n  @k = 1\nend subroutine\nprogram t\nend program\n", "out parameter")
+        self.refused(prog("  int :: n = 1\n  call s(@n, @n)", "subroutine s(out int :: k, out int :: j)\n  @k = 1\n  @j = 2\nend subroutine\n"),
+                     "passed as out and as another argument")
 
     def test_calls_that_the_interpreter_rejects_are_refused(self):
         defs = "subroutine s(inout real[] :: x, real[] :: y)\n  @x[1] = 9.0\nend subroutine\n"
