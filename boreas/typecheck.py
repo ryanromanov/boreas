@@ -111,14 +111,24 @@ def conversion(kind):
     return elemental(lambda args: kind)
 
 
-def same_kind_or_unknown(args):
-    """max and min give back the argument that wins, so mixed kinds give a result that depends on the values."""
-    if not args or not all(a.known for a in args):
+def widest(args):
+    """max and min: the widest kind of the arguments (mixed numbers widen, so `max(3, 2.5)` is 2.5 and `max(3, 2.0)` 3.0)."""
+    if len(args) < 2 or not all(a.known for a in args):
         return UNKNOWN
-    kinds = {a.kind for a in args}
-    if len(kinds) != 1 or args[0].kind not in T.NUMBERS + ("string",):
+    if all(a.kind == "string" for a in args):
+        return Type("string", rank_of(args))
+    if not all(a.is_number and a.kind != "complex" for a in args):
         return UNKNOWN
-    return Type(args[0].kind, rank_of(args))
+    return Type(numeric_kind(args), rank_of(args))
+
+
+def whole_number(args):
+    """floor, ceiling, nint: an int for a real, an int32 for a real32 (a whole number stays as it is)."""
+    if len(args) != 1 or not args[0].known or not args[0].is_number or args[0].kind == "complex":
+        return UNKNOWN
+    a = args[0]
+    kind = {"real": "int", "real32": "int32"}.get(a.kind, a.kind)
+    return Type(kind, a.rank)
 
 
 def matmul(args):
@@ -190,7 +200,7 @@ BUILTIN_RULES.update({
     "real": conversion("real"), "real64": conversion("real"), "real32": conversion("real32"),
     "int": conversion("int"), "int32": conversion("int32"), "int8": conversion("int8"),
     "int16": conversion("int16"), "int64": conversion("int"),
-    "max": same_kind_or_unknown, "min": same_kind_or_unknown,
+    "max": widest, "min": widest, "floor": whole_number, "ceiling": whole_number, "nint": whole_number,
     "isnan": lambda args: Type("logical", rank_of(args)) if args and args[0].known else UNKNOWN,
     "isinf": lambda args: Type("logical", rank_of(args)) if args and args[0].known else UNKNOWN,
     "cmplx": elemental(lambda args: "complex"), "conjg": elemental(lambda args: "complex"),
@@ -228,8 +238,7 @@ BUILTIN_RULES.update({
     "huge": epsilon_like, "epsilon": epsilon_like, "tiny": epsilon_like,
     "open": fixed(Type("file")), "try_open": fixed(Type("file", 0, True)),
 })
-# Functions whose type depends on the value they compute: not typed until the language decides.
-VALUE_DEPENDENT = {"floor", "ceiling", "nint"}
+VALUE_DEPENDENT = set()          # functions whose type depends on a value: there are none now (see D77)
 
 
 class Checker:
@@ -397,8 +406,9 @@ class Checker:
         if op == "??":
             if lt.known and rt.known and lt.kind == rt.kind and lt.rank == rt.rank:
                 return Type(lt.kind, lt.rank, rt.optional, lt.name)
-            if lt.known and rt.known:                    # `x ?? 0.5` with a real32 x: which kind depends on the value
-                self.value_dependent.append((getattr(e, "line", 0), "?? with two different kinds"))
+            if lt.known and rt.known and lt.is_number and rt.is_number and lt.rank == rt.rank == 0 \
+                    and "complex" not in (lt.kind, rt.kind):
+                return Type(lt.kind, 0, rt.optional)     # the fallback takes the kind of x: `real32? ?? 0.5` is a real32
             return UNKNOWN
         if not (lt.known and rt.known):
             return UNKNOWN
@@ -437,11 +447,28 @@ class Checker:
         ts = [self.types[id(x)] if id(x) in self.types else (self.expr(x, env) if infer_items else UNKNOWN) for x in items]
         if not ts or not all(t.known for t in ts):
             return UNKNOWN
+        ts = self.adapt_literals(items, ts)
         kinds = {(t.kind, t.name) for t in ts}
         if len(kinds) == 1 and all(t.rank in (0, 1) for t in ts):
             kind, name = next(iter(kinds))
             return Type(kind, rank, False, name)
-        return UNKNOWN                       # mixed kinds: the context (what it is stored in) decides
+        if all(t.is_number and t.kind != "complex" and t.rank in (0, 1) for t in ts):
+            kind = ts[0].kind                # numbers of different kinds are all the widest of them
+            for t in ts[1:]:
+                kind = promote(kind, t.kind)
+            return Type(kind, rank)
+        return UNKNOWN
+
+    def adapt_literals(self, items, ts):
+        """In an array literal, a whole-number literal next to an int32 is an int32 and a real literal next to a real32
+        is a real32 (as in a binary operation)."""
+        if len(items) != len(ts):
+            return ts
+        if any(t.kind == "int32" for t in ts):
+            ts = [Type("int32", t.rank) if t.kind == "int" and self.int32_literal(x) else t for x, t in zip(items, ts)]
+        if any(t.kind == "real32" for t in ts):
+            ts = [Type("real32", t.rank) if t.kind == "real" and self.is_literal(x) else t for x, t in zip(items, ts)]
+        return ts
 
     def array_literal(self, items, rank, env):
         for x in items:
@@ -473,6 +500,9 @@ class Checker:
         scope = self.scope
         if name not in env and any(a.kind == "int32" for a in args):     # as in a binary operation
             args = [Type("int32", a.rank) if a.kind == "int" and self.int32_literal(n) else a
+                    for a, n in zip(args, arg_nodes)]
+        if name not in env and any(a.kind == "real32" for a in args):
+            args = [Type("real32", a.rank) if a.kind == "real" and self.is_literal(n) else a
                     for a, n in zip(args, arg_nodes)]
         if name in env:
             t = env[name]

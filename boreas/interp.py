@@ -749,22 +749,32 @@ def _extreme(name, pick):
                       "complex" if isinstance(x, complex) else "number" for x in xs}
         if kinds_seen - {"number", "text"} or len(kinds_seen) > 1:
             raise TypeError("needs all numbers or all strings, got " + ", ".join(sorted(type_of(x) for x in xs)))
-        return pick(xs)
+        winner = pick(xs)
+        if "text" in kinds_seen:
+            return winner
+        kind = type_of(xs[0])
+        for x in xs[1:]:
+            kind = result_kind(kind, type_of(x))
+        return tag(kind, winner, f"{name}()")             # the answer has the widest kind of the arguments
     return extreme
 
 
 def _whole(name, fn):
-    """floor, ceiling, nint: a real to a whole number. It is an int64 when it does not fit in 32 bits, so
-    assigning it to an `integer` says so."""
+    """floor, ceiling, nint: a real to a whole number of the matching width: an `int` for a `real`, an `int32` for a
+    `real32` (and a whole number stays as it is)."""
     def whole(x):
         if isinstance(x, complex):
             raise TypeError("needs a real number, got complex")
+        if isinstance(x, int):
+            return x
         if x - x != 0:
             raise ValueError("a NaN or an infinite value has no whole number")
         n = int(fn(x))
+        if type(x) is Real32:
+            return make_int("int32", n, f"{name}()")
         if not -2 ** 63 <= n < 2 ** 63:
             raise ValueError(f"{n} does not fit in 64 bits")
-        return lit_int(n)
+        return n
     return whole
 
 
@@ -2215,12 +2225,16 @@ class Interp:
         values = [self.eval(x, env) for x in e.values]
         return MapValue(None, None, dict(zip(keys, values)), True)
 
-    def literal_values(self, items, env):
-        """The values of an array literal's items: a one-dimensional array or a generator is spliced in."""
+    def literal_values(self, items, env, flags=None):
+        """The values of an array literal's items: a one-dimensional array or a generator is spliced in. `flags`,
+        when given, gets one entry per value: is it a literal written in the source (not spliced in)?"""
         out = []
         for x in items:
             if isinstance(x, Gen):
-                out.extend(self.generate(x, env))
+                got = self.generate(x, env)
+                out.extend(got)
+                if flags is not None:
+                    flags.extend([False] * len(got))
                 continue
             v = self.eval(x, env)
             if isinstance(v, Array):
@@ -2228,9 +2242,49 @@ class Interp:
                     raise LangError("array literals hold scalars and one-dimensional arrays; "
                                     "use reshape() to build a matrix")
                 out.extend(v.data)
+                if flags is not None:
+                    flags.extend([False] * len(v.data))
             else:
                 out.append(v)
+                if flags is not None:
+                    flags.append(_is_literal(x))
         return out
+
+    def static_type(self, node):
+        """The type the checker worked out for `node`, or None (the checker is run the first time this is asked)."""
+        if getattr(self, "_types", None) is None:
+            try:
+                from .typecheck import infer
+                self._types = infer(self.unit, self).types
+            except Exception:
+                self._types = {}
+        t = self._types.get(id(node))
+        return t if t is not None and t.known else None
+
+    def fallback(self, e, value):
+        """The right side of `x ?? y` once x is null: a number takes the kind of x's type (`real32? ?? 0.5` is a real32)."""
+        t = self.static_type(e.left)
+        if t is not None and t.rank == 0 and t.kind in NUMERIC and type_of(value) in NUMERIC and type_of(value) != t.kind:
+            return coerce(t.kind, value, "the fallback of ??")
+        return value
+
+    def unify_literal(self, values, flags):
+        """The values of an array or matrix literal as one kind: a literal next to an int32 or a real32 takes that
+        kind, and numbers of different kinds are all the widest of them ([1, 2.5] is [1.0, 2.5])."""
+        if not values or any(type_of(v) not in NUMERIC for v in values):
+            return values
+        if any(type(v) is Int32 for v in values):
+            values = [Int32(v) if type(v) is int and lit and LO32 <= v <= HI32 else v for v, lit in zip(values, flags)]
+        if any(type(v) is Real32 for v in values):
+            values = [SINGLE_LITERALS.get(v) or single_literal(v) if type(v) is float and lit else v
+                      for v, lit in zip(values, flags)]
+        kinds_seen = {type_of(v) for v in values}
+        if len(kinds_seen) > 1:
+            kind = None
+            for k in kinds_seen:
+                kind = k if kind is None else result_kind(kind, k)
+            values = [tag(kind, v, "an array literal") if type_of(v) != kind else v for v in values]
+        return values
 
     def matrix_literal(self, e, env):
         """`[1, 2, 3; 4, 5, 6]`: the rows in reading order, stored by columns like every matrix."""
@@ -2242,6 +2296,7 @@ class Interp:
                     raise LangError(f"line {e.line}: a matrix literal holds single values, but row {n}, "
                                     f"item {m} is an array; use reshape() or build the rows separately")
                 flat.append(v)
+        flat = self.unify_literal(flat, [_is_literal(x) for row in e.rows for x in row])
         rows, cols = len(e.rows), len(e.rows[0])
         return Array((rows, cols), [flat[i * cols + j] for j in range(cols) for i in range(rows)])
 
@@ -2504,7 +2559,8 @@ class Interp:
                 raise LangError(f"'{e.name}' is used before it is assigned")
             return v
         if k is ArrayLit:
-            items = self.literal_values(e.items, env)
+            flags = []
+            items = self.unify_literal(self.literal_values(e.items, env, flags), flags)
             return Array((len(items),), items)
         if k is MatrixLit:
             return self.matrix_literal(e, env)
@@ -2529,7 +2585,9 @@ class Interp:
         if k is Binary:
             if e.op == "??":                          # the right side is only evaluated when needed
                 left = self.eval(e.left, env)
-                return self.eval(e.right, env) if left is NULL else left
+                if left is not NULL:
+                    return left
+                return self.fallback(e, self.eval(e.right, env))
             left, right = self.eval(e.left, env), self.eval(e.right, env)
             if type(left) is not type(right):
                 left, right = self.adapt_literals(e, left, right)
@@ -2927,6 +2985,9 @@ class Interp:
         if e.name in BUILTINS or e.name in ELEMENTAL:
             if any(_is_int32(a) for a in args):       # as in a binary operation: a literal next to an int32 is an int32
                 args = [Int32(a) if type(a) is int and _is_literal(n) and LO32 <= a <= HI32 else a
+                        for a, n in zip(args, e.args)]
+            if any(_is_real32(a) for a in args):      # ... and a real literal next to a real32 is a real32
+                args = [SINGLE_LITERALS.get(a) or single_literal(a) if type(a) is float and _is_literal(n) else a
                         for a, n in zip(args, e.args)]
             return self.call_builtin(e.name, args, e.line)
         raise LangError(f"line {e.line}: unknown function or array '{e.name}'"
