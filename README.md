@@ -935,6 +935,30 @@ passing a module variable to an `out` or `inout` parameter, and calling a subrou
 subroutines: both are refused when the program loads.
 A module variable can be `allocatable`; see Allocatable arrays above.
 
+## Compiling to a native program (so far)
+
+    boreas build prog.bor -o prog          compile with the system C compiler (cc, clang or gcc)
+    boreas emit-c prog.bor                 print the C it writes
+
+The compiler handles the numeric core of the language so far: `int` and `real` and `logical` values, `if`, `do`,
+`do while`, `exit`, `cycle`, `stop`, `return`, `print` and `println`, and functions and subroutines whose parameters are
+single values passed `in`. A program that uses anything else (arrays, records, strings, modules, `out` and `inout`
+parameters, `int32` and `real32`, ...) is refused as a whole, with a message that names the construct and its line
+("not supported by the compiler yet: the declaration of 'a' (an array) (line 3)"): run it with the interpreter instead,
+or wait for the next slice. Nothing is ever compiled halfway.
+
+A compiled program prints exactly what the interpreter prints, and fails the way it fails: the same message on stderr
+(with the same line number, also inside a function) and the same exit code. Numbers print the same, digit for digit;
+operands and arguments are evaluated left to right, and `and` / `or` evaluate both sides, as in the interpreter.
+Whole-number overflow, division by zero, a domain error such as `sqrt(-1.0)`, and calls nested more than 10000 deep are
+all still errors. A loop of two million steps with a square root in it takes about 0.07 seconds compiled and about
+28 seconds in the interpreter.
+
+`--release` leaves out the whole-number overflow checks and the call depth check (the answers then wrap around, as in
+Fortran), and the program is a little faster; everything else is unchanged. `--keep` also writes `prog.c`. The
+tests compare the compiler with the interpreter on every program in `tests/compiled/`, and `python3
+tools/compile_oracle.py` does the same for every program the test suite runs.
+
 ## Checking a file
 
     boreas check FILE.bor [--json]

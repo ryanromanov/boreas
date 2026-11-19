@@ -1,0 +1,270 @@
+/* The runtime of programs compiled by `boreas build`: checked arithmetic, number printing that matches the interpreter
+   digit for digit, and the error report. Included once at the top of every generated file. Compile with
+   -O2 -std=c11 -ffp-contract=off (never -ffast-math), and -fwrapv; -DBOREAS_RELEASE drops the integer checks,
+   -DBOREAS_IEEE is `use ieee` (real arithmetic never stops the program). */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <math.h>
+
+typedef __int128 rt_i128;
+
+static void rt_fail(int line, const char *fmt, ...) __attribute__((noreturn, format(printf, 2, 3)));
+static void rt_fail(int line, const char *fmt, ...) {
+    fflush(stdout);
+    fprintf(stderr, "error: line %d: ", line);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    exit(1);
+}
+
+/* ---- numbers as text ---------------------------------------------------------------------------------------- */
+
+/* a 128-bit integer, for the numbers an overflow message has to show */
+static const char *rt_i128_text(rt_i128 v, char *buf) {
+    char tmp[64];
+    int n = 0;
+    bool neg = v < 0;
+    unsigned __int128 u = neg ? -(unsigned __int128)v : (unsigned __int128)v;
+    if (u == 0) tmp[n++] = '0';
+    while (u > 0) { tmp[n++] = (char)('0' + (int)(u % 10)); u /= 10; }
+    int k = 0;
+    if (neg) buf[k++] = '-';
+    while (n > 0) buf[k++] = tmp[--n];
+    buf[k] = 0;
+    return buf;
+}
+
+/* Python's repr of a float: the shortest digits that read back exactly, scientific form when the exponent is
+   below -4 or at least 16 (1e-05, 1e+16), a whole number keeps its .0; NaN and Infinity as the interpreter writes them */
+static const char *rt_real_text(double x, char *out) {
+    if (x != x) { strcpy(out, "NaN"); return out; }
+    if (isinf(x)) { strcpy(out, x > 0 ? "Infinity" : "-Infinity"); return out; }
+    char sci[40];
+    int digits = 1;
+    for (; digits <= 17; digits++) {
+        snprintf(sci, sizeof sci, "%.*e", digits - 1, x);
+        if (strtod(sci, NULL) == x) break;
+    }
+    if (digits > 17) { digits = 17; snprintf(sci, sizeof sci, "%.16e", x); }
+    /* sci is [-]d[.ddd]e[+-]XX */
+    char mant[24];
+    int m = 0, neg = 0;
+    const char *p = sci;
+    if (*p == '-') { neg = 1; p++; }
+    while (*p && *p != 'e') { if (*p != '.') mant[m++] = *p; p++; }
+    mant[m] = 0;
+    int exp10 = atoi(p + 1);
+    while (m > 1 && mant[m - 1] == '0') mant[--m] = 0;      /* trailing zeros are not digits */
+    int decpt = exp10 + 1;                                   /* digits before the point */
+    char *o = out;
+    if (neg) *o++ = '-';
+    if (decpt > -4 && decpt <= 16) {                         /* plain notation */
+        if (decpt <= 0) {
+            *o++ = '0'; *o++ = '.';
+            for (int i = 0; i < -decpt; i++) *o++ = '0';
+            for (int i = 0; i < m; i++) *o++ = mant[i];
+        } else if (decpt >= m) {
+            for (int i = 0; i < m; i++) *o++ = mant[i];
+            for (int i = m; i < decpt; i++) *o++ = '0';
+            *o++ = '.'; *o++ = '0';
+        } else {
+            for (int i = 0; i < decpt; i++) *o++ = mant[i];
+            *o++ = '.';
+            for (int i = decpt; i < m; i++) *o++ = mant[i];
+        }
+        *o = 0;
+    } else {                                                 /* scientific notation */
+        *o++ = mant[0];
+        if (m > 1) { *o++ = '.'; for (int i = 1; i < m; i++) *o++ = mant[i]; }
+        sprintf(o, "e%c%02d", exp10 < 0 ? '-' : '+', abs(exp10));
+    }
+    return out;
+}
+
+/* ---- printing ------------------------------------------------------------------------------------------------ */
+
+static void rt_write_int(int64_t v) { printf("%lld", (long long)v); }
+static void rt_write_real(double v) { char b[48]; fputs(rt_real_text(v, b), stdout); }
+static void rt_write_bool(bool v) { fputs(v ? "true" : "false", stdout); }
+static void rt_write_str(const char *s) { fputs(s, stdout); }
+static void rt_write_sep(void) { fputc(' ', stdout); }
+static void rt_write_nl(void) { fputc('\n', stdout); }
+static void rt_stop(int code) { fflush(stdout); exit(code); }
+
+/* ---- 64-bit integers: checked unless -DBOREAS_RELEASE -------------------------------------------------------- */
+
+static inline void rt_overflow(int line, int64_t a, char op, int64_t b) {
+    rt_fail(line, "integer overflow: %lld %c %lld does not fit in 64 bits (use %c%% to wrap)", (long long)a, op, (long long)b, op);
+}
+#ifndef BOREAS_RELEASE
+static inline int64_t rt_add(int64_t a, int64_t b, int line) { int64_t r; if (__builtin_add_overflow(a, b, &r)) rt_overflow(line, a, '+', b); return r; }
+static inline int64_t rt_sub(int64_t a, int64_t b, int line) { int64_t r; if (__builtin_sub_overflow(a, b, &r)) rt_overflow(line, a, '-', b); return r; }
+static inline int64_t rt_mul(int64_t a, int64_t b, int line) { int64_t r; if (__builtin_mul_overflow(a, b, &r)) rt_overflow(line, a, '*', b); return r; }
+static inline int64_t rt_neg(int64_t a, int line) {
+    if (a == INT64_MIN) { char b[48]; rt_fail(line, "negating %lld: %s does not fit in int (64 bits)", (long long)a, rt_i128_text(-(rt_i128)a, b)); }
+    return -a;
+}
+#else
+static inline int64_t rt_add(int64_t a, int64_t b, int line) { (void)line; return (int64_t)((uint64_t)a + (uint64_t)b); }
+static inline int64_t rt_sub(int64_t a, int64_t b, int line) { (void)line; return (int64_t)((uint64_t)a - (uint64_t)b); }
+static inline int64_t rt_mul(int64_t a, int64_t b, int line) { (void)line; return (int64_t)((uint64_t)a * (uint64_t)b); }
+static inline int64_t rt_neg(int64_t a, int line) { (void)line; return (int64_t)(0 - (uint64_t)a); }
+#endif
+static inline int64_t rt_div(int64_t a, int64_t b, int line) {      /* truncates toward zero, like Fortran */
+    if (b == 0) rt_fail(line, "integer division by zero");
+    if (a == INT64_MIN && b == -1) {
+#ifndef BOREAS_RELEASE
+        rt_overflow(line, a, '/', b);
+#else
+        return a;
+#endif
+    }
+    return a / b;
+}
+static inline int64_t rt_mod(int64_t a, int64_t b, int line) {      /* mod(a, b): the sign of a */
+    if (b == 0) rt_fail(line, "mod(%lld, 0): division by zero", (long long)a);
+    if (b == -1) return 0;
+    return a % b;
+}
+static int64_t rt_ipow(int64_t a, int64_t b, int line) {
+    if (b < 0) {
+        if (a == 0) rt_fail(line, "zero cannot be raised to a negative integer power");
+        if (a == 1) return 1;
+        if (a == -1) return (b % 2 == 0) ? 1 : -1;
+        return 0;
+    }
+    if (a == 0) return b == 0 ? 1 : 0;
+    if (a == 1) return 1;
+    if (a == -1) return (b % 2 == 0) ? 1 : -1;
+    rt_i128 result = 1;
+    bool big = false;
+    for (int64_t i = 0; i < b && !big; i++) {          /* |a| >= 2: gives up after about 100 steps */
+        result *= a;
+        if (result > ((rt_i128)1 << 100) || result < -((rt_i128)1 << 100)) big = true;
+    }
+    if (big || result > INT64_MAX || result < INT64_MIN) {
+#ifndef BOREAS_RELEASE
+        char t[64];
+        if (big) rt_fail(line, "%lld ** %lld: the result is too large for an int (64 bits)", (long long)a, (long long)b);
+        rt_fail(line, "%lld ** %lld: %s does not fit in int (64 bits)", (long long)a, (long long)b, rt_i128_text(result, t));
+#else
+        (void)line;
+#endif
+    }
+    return (int64_t)result;
+}
+
+/* ---- reals: an operation that turns finite numbers into Infinity stops the program unless `use ieee` ------------ */
+
+/* the numbers in a message: an int argument is shown as an int (sqrt(-4)), a real as Python shows it (sqrt(-4.0)) */
+static const char *rt_shown(double x, int was_int, char *buf) {
+    if (was_int) snprintf(buf, 48, "%lld", (long long)x);
+    else rt_real_text(x, buf);
+    return buf;
+}
+#ifdef BOREAS_IEEE
+static inline double rt_fadd(double a, double b, int flags, int line) { (void)flags; (void)line; return a + b; }
+static inline double rt_fsub(double a, double b, int flags, int line) { (void)flags; (void)line; return a - b; }
+static inline double rt_fmul(double a, double b, int flags, int line) { (void)flags; (void)line; return a * b; }
+static inline double rt_fdiv(double a, double b, int flags, int line) { (void)flags; (void)line; return a / b; }
+static inline double rt_fpow(double a, double b, int flags, int line) { (void)flags; (void)line; return pow(a, b); }
+#else
+/* flags: bit 0 set when the left operand was a whole number, bit 1 when the right one was (the message shows it so) */
+static inline double rt_checked(double r, double a, char op, double b, int flags, int line) {
+    if (isinf(r) && isfinite(a) && isfinite(b)) {
+        char x[48], y[48];
+        rt_fail(line, "%s %c %s is too large for a real (use 'use ieee' to get Infinity)", rt_shown(a, flags & 1, x), op, rt_shown(b, flags & 2, y));
+    }
+    return r;
+}
+static inline double rt_fadd(double a, double b, int flags, int line) { return rt_checked(a + b, a, '+', b, flags, line); }
+static inline double rt_fsub(double a, double b, int flags, int line) { return rt_checked(a - b, a, '-', b, flags, line); }
+static inline double rt_fmul(double a, double b, int flags, int line) { return rt_checked(a * b, a, '*', b, flags, line); }
+static inline double rt_fdiv(double a, double b, int flags, int line) {
+    if (b == 0.0) rt_fail(line, "division by zero");
+    return rt_checked(a / b, a, '/', b, flags, line);
+}
+static inline double rt_fpow(double a, double b, int flags, int line) {
+    char x[48], y[48];
+    if (a == 0.0 && b < 0.0) rt_fail(line, "division by zero");
+    if (a < 0.0 && b != floor(b) && isfinite(b))
+        rt_fail(line, "(%s) ** %s is not a real number (a negative number to a fractional power); for a complex root write cmplx(a, 0.0) ** b",
+                rt_shown(a, flags & 1, x), rt_shown(b, flags & 2, y));
+    double r = pow(a, b);
+    if (isinf(r) && isfinite(a) && isfinite(b)) rt_fail(line, "%s ** %s is too large", rt_shown(a, flags & 1, x), rt_shown(b, flags & 2, y));
+    return r;
+}
+#endif
+
+/* a library function of one real: no real answer, or too large, stops the program unless `use ieee` */
+static inline double rt_math1(const char *name, double r, double x, int was_int, int line) {
+#ifndef BOREAS_IEEE
+    char b[48];
+    if (r != r && x == x) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown(x, was_int, b));
+    if (isinf(r) && isfinite(x)) rt_fail(line, "%s(%s) is too large for a real (a file that says `use ieee` gets Infinity instead)", name, rt_shown(x, was_int, b));
+#else
+    (void)name; (void)x; (void)was_int; (void)line;
+#endif
+    return r;
+}
+static inline double rt_sqrt(double x, int was_int, int line) {
+#ifndef BOREAS_IEEE
+    char b[48];
+    if (x < 0.0) rt_fail(line, "sqrt(%s) has no real answer (a file that says `use ieee` gets NaN instead)", rt_shown(x, was_int, b));
+#else
+    (void)was_int; (void)line;
+#endif
+    return sqrt(x);
+}
+static inline double rt_log(double x, double (*fn)(double), const char *name, int was_int, int line) {
+#ifndef BOREAS_IEEE
+    char b[48];
+    if (x <= 0.0) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown(x, was_int, b));
+#else
+    (void)name; (void)was_int; (void)line;
+#endif
+    return fn(x);
+}
+static inline double rt_exp(double x, int was_int, int line) { return rt_math1("exp", exp(x), x, was_int, line); }
+static inline double rt_fmod(double a, double b, int a_int, int b_int, int line) {
+#ifdef BOREAS_IEEE
+    (void)a_int; (void)b_int; (void)line;
+#else
+    if (b == 0.0) { char x[48], y[48]; rt_fail(line, "mod(%s, %s): division by zero", rt_shown(a, a_int, x), rt_shown(b, b_int, y)); }
+#endif
+    return fmod(a, b);
+}
+static inline int64_t rt_abs(int64_t a, int line) {
+    if (a == INT64_MIN) { char b[48]; rt_fail(line, "abs(): integer overflow (%s does not fit in 64 bits)", rt_i128_text(-(rt_i128)a, b)); }
+    return a < 0 ? -a : a;
+}
+static inline int64_t rt_trunc_int(double x, int line) {
+    if (x != x || isinf(x)) rt_fail(line, "int(): cannot convert float %s to integer", x != x ? "NaN" : (x > 0 ? "infinity" : "-infinity"));
+    double t = trunc(x);
+    if (t >= 9223372036854775808.0 || t < -9223372036854775808.0) {
+        char b[400];
+        snprintf(b, sizeof b, "%.0f", t);
+        rt_fail(line, "int(): %s does not fit in int (64 bits)", b);
+    }
+    return (int64_t)t;
+}
+static inline void rt_check_step(int64_t step, int line) { if (step == 0) rt_fail(line, "do step cannot be zero"); }
+
+/* a call is one more level of nesting: the interpreter stops at 10000, so does a checked program (not a release one) */
+#ifndef BOREAS_RELEASE
+static int rt_depth = 0;
+static inline void rt_call_in(int line, const char *name) {
+    if (++rt_depth > 10000) rt_fail(line, "'%s' is nested more than 10000 calls deep: a recursive call that never stops?", name);
+}
+static inline void rt_call_out(void) { rt_depth--; }
+#else
+static inline void rt_call_in(int line, const char *name) { (void)line; (void)name; }
+static inline void rt_call_out(void) {}
+#endif
