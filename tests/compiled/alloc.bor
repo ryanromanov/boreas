@@ -1,0 +1,71 @@
+! Allocatable arrays: allocate, deallocate, allocated(), resizing by assignment, and passing them on.
+function total(int[] :: v) -> int
+  allocatable int[] :: scratch
+  int :: i
+  int :: s = 0
+  allocate scratch[size(v)]
+  do i = 1, size(v)
+    scratch[i] = v[i] * 2
+  end do
+  do i = 1, size(scratch)
+    s = s + scratch[i]
+  end do
+  return s
+end function
+
+subroutine fill(inout real[,] :: m)
+  int :: i
+  int :: j
+  do j = 1, size(m, 2)
+    do i = 1, size(m, 1)
+      @m[i, j] = real(10 * i + j)
+    end do
+  end do
+end subroutine
+
+program alloc
+  allocatable int[] :: a
+  allocatable int[] :: b
+  allocatable real[,] :: grid
+  allocatable int32[] :: small
+  allocatable real32[] :: single
+  allocatable int[,,] :: cube
+  int :: n
+  println(allocated(a), allocated(grid))
+  allocate a[4]
+  a[2] = 7
+  println(allocated(a), a, size(a), total(a))
+  a = [1, 2, 3]
+  b = a * 2 + 1
+  a = a + b
+  println(a, b, size(a))
+  a = a
+  a = 9
+  println(a)
+  deallocate a
+  println(allocated(a))
+  allocatable int[] :: tmp
+  do n = 1, 3
+    allocate tmp[n]
+    tmp = n
+    println(tmp)
+    deallocate tmp
+  end do
+  allocate grid[2, 3]
+  call fill(@grid)
+  println(grid, grid * 0.5, sum(grid), maxval(grid))
+  grid = [1.5, 2.5; 3.5, 4.5]
+  println(grid, size(grid, 1))
+  allocate small[2]
+  small = [7, 8]
+  small[1] = small[1] + 1
+  allocate single[2]
+  single = [0.1, 0.2]
+  single = single * 3
+  allocate cube[2, 2, 2]
+  cube[2, 2, 2] = 5
+  println(small, single, cube)
+  deallocate b
+  allocate b[0]
+  println(allocated(b), size(b), b)
+end program

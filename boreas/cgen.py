@@ -13,7 +13,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from .parser import (Apply, ArrayLit, Assign, Bool, Binary, Call, Comment, Cycle, Decl, Do, DoWhile, Exit, If, IsType,
+from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, Comment, Cycle, Deallocate, Decl, Do, DoWhile, Exit, If, IsType,
                      MatrixLit, Num, Print, Return, Slice, Stop, Str, Unary, Var)
 from .tree import statements_in, walk
 from .typecheck import infer
@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("int", "int32", "real", "real32", "logical")
 CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
-            "size", "maxval", "minval", "sum", "product", "matmul", "dot_product"}
+            "size", "maxval", "minval", "sum", "product", "matmul", "dot_product", "allocated"}
 ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real", "real32"}
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f"}
 WRITERS = {"int": "rt_write_int", "int32": "rt_write_int", "real": "rt_write_real", "real32": "rt_write_real32",
@@ -133,6 +133,8 @@ class Compiler:
         return t
 
     def check_body(self, body, f):
+        self.allocs = self.allocs_of(body, f)
+        self.skip = {id(x) for d in statements_in(body) if isinstance(d, Decl) and d.allocatable for x in d.dims}
         strings = set()
         fixed = {name for typ, name, intent in f.params if intent == "in"} if f is not None else set()
         fixed |= {d.name for d in statements_in(body) if isinstance(d, Decl) and d.const}
@@ -146,7 +148,13 @@ class Compiler:
                 self.refuse(f"a loop over the constant or parameter '{s.var}'", s)
             if kind in (If, Do, DoWhile, Stop, Exit, Cycle, Comment):
                 continue
+            if kind in (Allocate, Deallocate):
+                if s.name not in self.allocs_of(body, f):
+                    self.refuse(f"'{s.name}' is not an allocatable array", s)
+                continue
             if kind is Decl:
+                if f is not None and s.name in {p[1] for p in f.params}:
+                    self.refuse(f"a declaration of the parameter '{s.name}'", s)
                 t = self.decl_type(s)
                 if t is None:
                     what = "allocatable " if s.allocatable else ""
@@ -190,17 +198,23 @@ class Compiler:
                 self.refuse(f"'{root}' passed as inout and as another argument of the same call", s)
 
     def decl_type(self, d):
-        if d.allocatable or d.type not in KINDS:
+        if d.type not in KINDS:
             return None
         rank = len(d.dims) if d.dims is not None else 0
         if rank > MAX_RANK:
             return None
         return Type(d.type, rank)
 
-    STATEMENTS = (Decl, Assign, If, Do, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment)
+    STATEMENTS = (Decl, Assign, If, Do, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate)
+
+    @staticmethod
+    def allocs_of(body, f):
+        return {d.name for d in statements_in(body) if isinstance(d, Decl) and d.allocatable}
 
     def check_expr(self, e, strings):
         kind = type(e)
+        if id(e) in self.skip:                          # the `:` of an allocatable array's declaration
+            return
         if kind in self.STATEMENTS:
             return
         if kind is Str:
@@ -238,6 +252,10 @@ class Compiler:
 
     def check_builtin(self, e):
         name = e.name
+        if name == "allocated":
+            if len(e.args) != 1 or not isinstance(e.args[0], Var) or e.args[0].name not in self.allocs:
+                self.refuse("allocated() of anything but the name of an allocatable array", e)
+            return
         ranks = [self.types[id(a)].rank for a in e.args]
         if name in ELEMENTAL1:
             if len(e.args) != 1:
@@ -343,6 +361,8 @@ class Compiler:
         if t is Var:
             if e.name == "pi" and "pi" not in self.vars:         # the language's own, until a program declares one
                 return V(Type("real"), "3.141592653589793")
+            if e.name in self.allocs:
+                self.emit(f'rt_need_alloc({self.vars[e.name][1]}.data, "{e.name}", {self.line});')
             return V(self.vars[e.name][0], self.vars[e.name][1])
         if t is Unary:
             return self.unary(e)
@@ -482,6 +502,8 @@ class Compiler:
         """The offset of element `e` of the array `arr` (a C lvalue of an array struct), with every subscript checked
         as soon as it is evaluated."""
         rank = self.vars[e.name][0].rank
+        if e.name in self.allocs:                      # checked before the subscripts are evaluated
+            self.emit(f'rt_need_alloc({arr}.data, "{e.name}", {self.line});')
         idx = []
         for d, a in enumerate(e.args):
             i = self.tmp("int64_t", self.scalar(a, "int"))
@@ -567,6 +589,8 @@ class Compiler:
 
     def builtin(self, e):
         line, name = self.line, e.name
+        if name == "allocated":
+            return V(Type("logical"), self.tmp("bool", f"({self.vars[e.args[0].name][1]}.data != NULL)"))
         vals = [self.value(a, exact=name in ("mod", "min", "max")) for a in e.args]
         if name in ELEMENTAL1:
             v = vals[0]
@@ -739,11 +763,15 @@ class Compiler:
         t = self.vars[s.name][0]
         name = c_name(s.name)
         line = self.line
+        self.emit(f"if (decl_{s.name}) rt_fail({line}, \"'{s.name}' already declared\"); decl_{s.name} = true;")
         if t.rank == 0:
             if s.init is not None:
                 self.emit(f"{name} = {self.scalar(s.init, t.kind, f'line {line}')};")
             else:
                 self.emit(f"{name} = {'false' if t.kind == 'logical' else '0'};")
+            return
+        if s.allocatable:                                              # not allocated (again, if this runs in a loop)
+            self.emit(f"rt_free_{t.kind}(&{name});")
             return
         dims = [self.scalar(d, "int") for d in s.dims]
         dims = [self.tmp("int64_t", d) for d in dims]
@@ -772,13 +800,52 @@ class Compiler:
             self.emit(f"{name} = {self.scalar(s.value, t.kind, f'line {line}')};")
             return
         v = self.value(s.value)
+        if target.name in self.allocs:
+            if v.t.rank == 0:
+                self.emit(f'rt_need_alloc({name}.data, "{target.name}", {line});')
         if v.t.rank == 0:
             atom = self.narrow(v.atom, v.t.kind, t.kind, line, f"line {line}")
             k = self.loop_var()
             self.emit(f"for (int64_t {k} = 0; {k} < {name}.n; {k}++) {name}.data[{k}] = {atom};")
             return
+        if target.name in self.allocs:                                  # becomes the value's shape (allocated or resized)
+            if v.t.rank != t.rank:
+                self.emit(f'rt_fail({line}, "\'{target.name}\' has {t.rank} dimension(s) but the value has {v.t.rank}");')
+                return
+            new = self.tmp_array(t.kind, t.rank)
+            self.emit(f"rt_like_{t.kind}(&{new}, {v.atom}.shape, {v.atom}.rank, {line});")
+            self.copy_into(new, t.kind, v, line, f"line {line}")
+            self.emit(f"rt_free_{t.kind}(&{name});")
+            self.emit(f"{name} = {new};")
+            self.emit(f"{new}.data = NULL;                                  /* now owned by {name} */")
+            return
         self.emit(f"rt_same_shape({name}.shape, {name}.rank, {v.atom}.shape, {v.atom}.rank, 1, {line});")
         self.copy_into(name, t.kind, v, line, f"line {line}")
+
+    def st_allocate(self, s):
+        line, t = self.line, self.vars[s.name][0]
+        name = self.vars[s.name][1]
+        self.emit(f"if ({name}.data) rt_fail({line}, \"cannot allocate '{s.name}': it is already allocated (deallocate it first)\");")
+        if len(s.dims) != t.rank:
+            self.emit(f'rt_fail({line}, "\'{s.name}\' has {t.rank} dimension(s) but {len(s.dims)} extent(s) were given to allocate");')
+            return
+        dims = []
+        for d in s.dims:
+            v = self.value(d)
+            dims.append(self.tmp("int64_t", v.atom) if v.t.kind in ("int", "int32") and v.t.rank == 0 else None)
+        for d in dims:
+            if d is None:
+                self.emit(f'rt_fail({line}, "array extents must be non-negative integers");')
+                return
+        for d in dims:
+            self.emit(f"rt_check_extent({d}, {line});")
+        padded = dims + ["1"] * (3 - len(dims))
+        self.emit(f"rt_alloc_{t.kind}(&{name}, {t.rank}, {', '.join(padded)}, {line});")
+
+    def st_deallocate(self, s):
+        t, name = self.vars[s.name][0], self.vars[s.name][1]
+        self.emit(f"if (!{name}.data) rt_fail({self.line}, \"cannot deallocate '{s.name}': it is not allocated\");")
+        self.emit(f"rt_free_{t.kind}(&{name});")
 
     def st_if(self, s):
         self.if_chain(s.branches, s.orelse)
@@ -921,6 +988,7 @@ class Compiler:
     # -- whole functions -------------------------------------------------------------------------------------------
     def declare_vars(self, params, body):
         self.vars = {}
+        self.allocs = self.allocs_of(body, None)
         for typ, name, intent in params:
             t = self.param_type(typ)
             access = c_name(name) if (intent == "in" or t.rank > 0) else f"(*{c_name(name)})"
@@ -950,6 +1018,7 @@ class Compiler:
             if isinstance(d, Decl) and d.name not in seen and d.name not in declared:
                 seen.add(d.name)
                 t = self.vars[d.name][0]
+                self.emit(f"bool decl_{d.name} = false;")
                 if t.rank == 0:
                     self.emit(f"{CSCALAR[t.kind]} {c_name(d.name)};")
                 else:

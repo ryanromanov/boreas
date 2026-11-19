@@ -72,6 +72,22 @@ REAL32_CASES = {
 }
 
 FAILING = {
+    "unallocated: print": "  allocatable int[] :: a\n  println(a)",
+    "unallocated: size": "  allocatable int[] :: a\n  println(size(a))",
+    "unallocated: element read": "  allocatable int[] :: a\n  println(a[1 / 0])",
+    "unallocated: element write checked before the value": "  allocatable int[] :: a\n  a[1] = 1 / 0",
+    "unallocated: scalar assigned": "  allocatable int[] :: a\n  a = 5",
+    "unallocated: in an operation": "  allocatable int[] :: a\n  int[2] :: f = 1\n  println(f + a)",
+    "unallocated: copied": "  allocatable int[] :: a\n  int[3] :: f\n  f = a",
+    "the value is evaluated before the shape is replaced": "  allocatable int[] :: a\n  a = [1 / 0]",
+    "allocated twice": "  allocatable int[] :: a\n  allocate a[2]\n  allocate a[3]",
+    "allocated twice, extent not evaluated": "  allocatable int[] :: a\n  allocate a[2]\n  allocate a[1 / 0]",
+    "deallocated when not allocated": "  allocatable int[] :: a\n  deallocate a",
+    "negative extent": "  allocatable int[] :: a\n  int :: n = -1\n  allocate a[n]",
+    "extent that is not a whole number": "  allocatable int[] :: a\n  allocate a[2.5]",
+    "index beyond the allocated size": "  allocatable int[] :: a\n  allocate a[3]\n  a[4] = 1",
+    "int32 narrowing into an allocatable": "  allocatable int32[] :: a\n  int :: big = 5000000000\n  a = [big]",
+    "declared twice (a loop)": "  int :: i\n  do i = 1, 2\n    int :: x = 1\n  end do",
     "dot_product shapes": "  real[3] :: a = 1.0\n  real[2] :: b = 1.0\n  println(dot_product(a, b))",
     "matmul inner dimensions": "  real[2, 3] :: a = 1.0\n  real[2, 3] :: b = 1.0\n  println(matmul(a, b))",
     "int matmul overflow": "  int[1, 1] :: a = 9223372036854775807\n  int[1, 1] :: b = 2\n  println(matmul(a, b))",
@@ -224,7 +240,7 @@ class RefusalTests(unittest.TestCase):
             self.assertEqual(done.stdout, "")                  # never partial code
 
     def test_what_is_not_handled_is_refused_as_a_whole(self):
-        self.refused(prog("  allocatable int[] :: a\n  println(1)"), "allocatable")
+        self.refused(prog("  allocatable string[] :: a\n  println(1)"), "the declaration of 'a'")
         self.refused(prog("  int[2, 2, 2, 2] :: a\n  println(1)"), "the declaration of 'a'")
         self.refused(prog("  int[3] :: a = [1, 2, 3]\n  println(a[1:2])"), "part of an array")
         self.refused(prog("  real[3] :: a = [1.0, 2.0, 3.0]\n  int[3] :: b = [1, 2, 3]\n  println(matmul(a, b))"), "matmul()")

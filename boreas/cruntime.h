@@ -340,8 +340,8 @@ static inline int32_t rt_narrow32(int64_t v, int line, const char *what) {
         free(a->data);                                                                                             \
         a->rank = rank; a->shape[0] = d0; a->shape[1] = d1; a->shape[2] = d2;                                      \
         a->n = d0 * d1 * d2;                                                                                       \
-        a->data = a->n ? (T *)calloc((size_t)a->n, sizeof(T)) : NULL;                                              \
-        if (a->n && !a->data) rt_fail(line, "out of memory");                                                      \
+        a->data = (T *)calloc(a->n ? (size_t)a->n : 1, sizeof(T));      /* never NULL once allocated, even when empty */ \
+        if (!a->data) rt_fail(line, "out of memory");                                                              \
     }                                                                                                              \
     static inline void rt_like_##NAME(rt_##NAME##_arr *a, const int64_t *shape, int rank, int line) {              \
         rt_alloc_##NAME(a, rank, shape[0], rank > 1 ? shape[1] : 1, rank > 2 ? shape[2] : 1, line);                 \
@@ -528,4 +528,12 @@ static float rt_spow_f(float a, float b, int line) {
     (void)line;
 #endif
     return r;
+}
+
+/* ---- allocatable arrays: an array whose data is NULL is not allocated (these checks stay in --release) ---------- */
+static inline void rt_need_alloc(const void *data, const char *name, int line) {
+    if (!data) rt_fail(line, "'%s' is not allocated; use 'allocate %s(...)' first", name, name);
+}
+static inline void rt_check_extent(int64_t n, int line) {
+    if (n < 0) rt_fail(line, "array extents must be non-negative integers");
 }
