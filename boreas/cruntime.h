@@ -164,7 +164,9 @@ static int64_t rt_ipow(int64_t a, int64_t b, int line) {
 /* ---- reals: an operation that turns finite numbers into Infinity stops the program unless `use ieee` ------------ */
 
 /* the numbers in a message: an int argument is shown as an int (sqrt(-4)), a real as Python shows it (sqrt(-4.0)) */
+static const char *rt_shown_override = NULL;       /* set while a function runs over a whole array: the message names the array */
 static const char *rt_shown(double x, int was_int, char *buf) {
+    if (rt_shown_override) { strcpy(buf, rt_shown_override); return buf; }
     if (was_int) snprintf(buf, 48, "%lld", (long long)x);
     else rt_real_text(x, buf);
     return buf;
@@ -268,3 +270,170 @@ static inline void rt_call_out(void) { rt_depth--; }
 static inline void rt_call_in(int line, const char *name) { (void)line; (void)name; }
 static inline void rt_call_out(void) {}
 #endif
+
+/* ---- 32-bit integers --------------------------------------------------------------------------------------------- */
+
+#ifndef BOREAS_RELEASE
+static inline int32_t rt_fit32(int64_t r, int64_t a, char op, int64_t b, int line) {
+    if (r < INT32_MIN || r > INT32_MAX) rt_fail(line, "%lld %c %lld: %lld does not fit in int32 (32 bits)", (long long)a, op, (long long)b, (long long)r);
+    return (int32_t)r;
+}
+#else
+static inline int32_t rt_fit32(int64_t r, int64_t a, char op, int64_t b, int line) { (void)a; (void)op; (void)b; (void)line; return (int32_t)r; }
+#endif
+static inline int32_t rt_add32(int32_t a, int32_t b, int line) { return rt_fit32((int64_t)a + b, a, '+', b, line); }
+static inline int32_t rt_sub32(int32_t a, int32_t b, int line) { return rt_fit32((int64_t)a - b, a, '-', b, line); }
+static inline int32_t rt_mul32(int32_t a, int32_t b, int line) { return rt_fit32((int64_t)a * b, a, '*', b, line); }
+static inline int32_t rt_div32(int32_t a, int32_t b, int line) {
+    if (b == 0) rt_fail(line, "integer division by zero");
+    return rt_fit32((int64_t)a / b, a, '/', b, line);
+}
+static inline int32_t rt_neg32(int32_t a, int line) {
+#ifndef BOREAS_RELEASE
+    if (a == INT32_MIN) rt_fail(line, "negating %d: %lld does not fit in int32 (32 bits)", a, -(long long)a);
+#endif
+    (void)line;
+    return (int32_t)(0 - (uint32_t)a);
+}
+static inline int32_t rt_mod32(int32_t a, int32_t b, int line) {
+    if (b == 0) rt_fail(line, "mod(%d, 0): division by zero", a);
+    if (b == -1) return 0;
+    return a % b;
+}
+static inline int32_t rt_abs32(int32_t a, int line) {
+    if (a == INT32_MIN) rt_fail(line, "abs(): integer overflow (%lld does not fit in 32 bits)", -(long long)a);
+    return a < 0 ? -a : a;
+}
+/* a whole number stored where an int32 is wanted (an assignment, an argument, a result): checked against the value */
+static inline int32_t rt_narrow32(int64_t v, int line, const char *what) {
+#ifndef BOREAS_RELEASE
+    if (v < INT32_MIN || v > INT32_MAX) {
+        if (what[0]) rt_fail(line, "%s: %lld does not fit in int32 (32 bits)", what, (long long)v);
+        rt_fail(line, "%lld does not fit in int32 (32 bits)", (long long)v);
+    }
+#endif
+    (void)line; (void)what;
+    return (int32_t)v;
+}
+
+/* ---- arrays: column-major, 1-based, at most three dimensions, owned by the variable that holds them --------------- */
+
+#define RT_DEFINE_ARRAY(NAME, T)                                                                                   \
+    typedef struct { T *data; int64_t shape[3]; int rank; int64_t n; } rt_##NAME##_arr;                              \
+    static inline void rt_free_##NAME(rt_##NAME##_arr *a) { free(a->data); a->data = NULL; a->n = 0; }              \
+    static void rt_alloc_##NAME(rt_##NAME##_arr *a, int rank, int64_t d0, int64_t d1, int64_t d2, int line) {       \
+        if (d0 < 0 || d1 < 0 || d2 < 0) rt_fail(line, "array dimensions must be non-negative integers");           \
+        free(a->data);                                                                                             \
+        a->rank = rank; a->shape[0] = d0; a->shape[1] = d1; a->shape[2] = d2;                                      \
+        a->n = d0 * d1 * d2;                                                                                       \
+        a->data = a->n ? (T *)calloc((size_t)a->n, sizeof(T)) : NULL;                                              \
+        if (a->n && !a->data) rt_fail(line, "out of memory");                                                      \
+    }                                                                                                              \
+    static inline void rt_like_##NAME(rt_##NAME##_arr *a, const int64_t *shape, int rank, int line) {              \
+        rt_alloc_##NAME(a, rank, shape[0], rank > 1 ? shape[1] : 1, rank > 2 ? shape[2] : 1, line);                 \
+    }
+RT_DEFINE_ARRAY(int, int64_t)
+RT_DEFINE_ARRAY(int32, int32_t)
+RT_DEFINE_ARRAY(real, double)
+RT_DEFINE_ARRAY(logical, bool)
+
+/* a subscript: in range, or the interpreter's message ("in dimension 2" only for a matrix) */
+static inline void rt_check_index(int64_t i, int64_t n, int dim, int rank, int line) {
+#ifndef BOREAS_RELEASE
+    if (i < 1 || i > n) {
+        if (rank > 1) rt_fail(line, "index %lld out of bounds 1..%lld in dimension %d", (long long)i, (long long)n, dim);
+        rt_fail(line, "index %lld out of bounds 1..%lld", (long long)i, (long long)n);
+    }
+#else
+    (void)i; (void)n; (void)dim; (void)rank; (void)line;
+#endif
+}
+
+static void rt_shape_text(char *buf, const int64_t *shape, int rank) {
+    int k = sprintf(buf, "(");
+    for (int d = 0; d < rank; d++) k += sprintf(buf + k, d ? ", %lld" : "%lld", (long long)shape[d]);
+    sprintf(buf + k, ")");
+}
+/* two shapes that must be equal: Python orders them as tuples, so the smaller one is named first in an operation */
+static void rt_same_shape(const int64_t *a, int ra, const int64_t *b, int rb, int ordered, int line) {
+    int same = ra == rb;
+    for (int d = 0; same && d < ra; d++) same = a[d] == b[d];
+    if (same) return;
+    char x[80], y[80];
+    if (!ordered) {                                     /* an operation names the two shapes in order of size */
+        int less = 0, decided = 0;
+        for (int d = 0; !decided && d < ra && d < rb; d++) if (a[d] != b[d]) { less = a[d] < b[d]; decided = 1; }
+        if (!decided) less = ra < rb;
+        if (!less) { rt_shape_text(x, b, rb); rt_shape_text(y, a, ra); rt_fail(line, "array shape mismatch: %s vs %s", x, y); }
+    }
+    rt_shape_text(x, a, ra); rt_shape_text(y, b, rb);
+    rt_fail(line, "array shape mismatch: %s vs %s", x, y);
+}
+static void rt_init_shape_error(const int64_t *init, int ri, const int64_t *shape, int rs, const char *name, int line) {
+    int same = ri == rs;
+    for (int d = 0; same && d < ri; d++) same = init[d] == shape[d];
+    if (same) return;
+    char x[80], y[80];
+    rt_shape_text(x, init, ri); rt_shape_text(y, shape, rs);
+    rt_fail(line, "initializer has shape %s, '%s' has shape %s", x, name, y);
+}
+
+/* an array as text: [1, 2, 3], and a matrix by rows: [[1, 2], [3, 4]] */
+#define RT_DEFINE_WRITE(NAME, T, WRITE)                                                                            \
+    static void rt_write_##NAME##_arr(const rt_##NAME##_arr *a) {                                                  \
+        if (a->rank == 1) {                                                                                        \
+            fputc('[', stdout);                                                                                    \
+            for (int64_t i = 0; i < a->shape[0]; i++) { if (i) fputs(", ", stdout); WRITE(a->data[i]); }           \
+            fputc(']', stdout);                                                                                    \
+        } else if (a->rank == 2) {                                                                                 \
+            fputc('[', stdout);                                                                                    \
+            for (int64_t i = 0; i < a->shape[0]; i++) {                                                            \
+                if (i) fputs(", ", stdout);                                                                        \
+                fputc('[', stdout);                                                                                \
+                for (int64_t j = 0; j < a->shape[1]; j++) { if (j) fputs(", ", stdout); WRITE(a->data[i + j * a->shape[0]]); } \
+                fputc(']', stdout);                                                                                \
+            }                                                                                                      \
+            fputc(']', stdout);                                                                                    \
+        } else {                                                                                                   \
+            fputc('[', stdout);                                                                                    \
+            for (int64_t i = 0; i < a->shape[0]; i++) {                                                            \
+                if (i) fputs(", ", stdout);                                                                        \
+                fputc('[', stdout);                                                                                \
+                for (int64_t j = 0; j < a->shape[1]; j++) {                                                        \
+                    if (j) fputs(", ", stdout);                                                                    \
+                    fputc('[', stdout);                                                                            \
+                    for (int64_t k = 0; k < a->shape[2]; k++) {                                                    \
+                        if (k) fputs(", ", stdout);                                                                \
+                        WRITE(a->data[i + j * a->shape[0] + k * a->shape[0] * a->shape[1]]);                       \
+                    }                                                                                              \
+                    fputc(']', stdout);                                                                            \
+                }                                                                                                  \
+                fputc(']', stdout);                                                                                \
+            }                                                                                                      \
+            fputc(']', stdout);                                                                                    \
+        }                                                                                                          \
+    }
+RT_DEFINE_WRITE(int, int64_t, rt_write_int)
+RT_DEFINE_WRITE(int32, int32_t, rt_write_int)
+RT_DEFINE_WRITE(real, double, rt_write_real)
+RT_DEFINE_WRITE(logical, bool, rt_write_bool)
+
+/* sum and product of whole numbers are worked out exactly and checked once at the end, as the interpreter does */
+static inline void rt_check_range(rt_i128 v, int64_t lo, int64_t hi, const char *name, int bits, int line) {
+#ifndef BOREAS_RELEASE
+    if (v < lo || v > hi) {
+        char b[64];
+        if (bits == 1) rt_fail(line, "%s(): integer overflow (%s does not fit in 64 bits)", name, rt_i128_text(v, b));
+        rt_fail(line, "%s(): %s does not fit in int32 (32 bits)", name, rt_i128_text(v, b));
+    }
+#else
+    (void)v; (void)lo; (void)hi; (void)name; (void)bits; (void)line;
+#endif
+}
+
+static void rt_set_shown(char *buf, const int64_t *shape, int rank) {
+    char sh[80];
+    rt_shape_text(sh, shape, rank);
+    sprintf(buf, "an array of shape %s", sh);
+    rt_shown_override = buf;
+}

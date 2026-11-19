@@ -1,0 +1,27 @@
+! A matrix product written out with loops, and a scalar loop: what the compiler is for.
+program bench
+  int :: i
+  int :: j
+  int :: k
+  int :: n = 24
+  real[24, 24] :: a
+  real[24, 24] :: b
+  real[24, 24] :: c
+  real :: s
+  do j = 1, n
+    do i = 1, n
+      a[i, j] = real(i + j) / 100.0
+      b[i, j] = real(i - j) / 50.0
+    end do
+  end do
+  do j = 1, n
+    do i = 1, n
+      s = 0.0
+      do k = 1, n
+        s = s + a[i, k] * b[k, j]
+      end do
+      c[i, j] = s
+    end do
+  end do
+  println(c[1, 1], c[12, 12], c[24, 24], c[7, 19])
+end program

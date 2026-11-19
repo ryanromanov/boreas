@@ -1,0 +1,11 @@
+! A loop of two million steps with a square root in it.
+program bench
+  int :: i
+  int :: s = 0
+  real :: x = 0.0
+  do i = 1, 2000000
+    s = s + mod(i, 7)
+    x = x + sqrt(real(i)) / 3.0
+  end do
+  println(s, x)
+end program

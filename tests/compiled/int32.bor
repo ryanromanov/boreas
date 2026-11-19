@@ -1,0 +1,27 @@
+! int32 values: checked at 32 bits, with whole-number literals next to them taking their width.
+function triple(int32 :: n) -> int32
+  return n * 3
+end function
+
+function widen(int32 :: n) -> int
+  return n * 1000000
+end function
+
+program narrow
+  int32 :: i
+  int32 :: total = 0
+  int32[4] :: v = [10, 20, 30, 40]
+  int :: big = 2000000
+  do i = 1, 10
+    total = total + triple(i)
+  end do
+  println(total, widen(total), v, v * 2, v + 1, v / 3, mod(total, 7))
+  println(abs(-total), max(total, 50), min(total, 5.5), real(total) / 4)
+  println(total + big, big * big, total < big, v[2] == 20)
+  i = 2147483646
+  i = i + 1
+  println(i)
+  do i = 2147483640, 2147483645
+  end do
+  println(i)
+end program
