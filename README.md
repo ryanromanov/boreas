@@ -942,7 +942,11 @@ A module variable can be `allocatable`; see Allocatable arrays above.
 Parses and checks a file without running it. Besides syntax errors it reports every name
 that is used but never declared, every unknown function or subroutine, and every misuse of a function with
 several results (outside an unpacking, or with the wrong number of targets). A syntax error
-stops the check, so it is reported alone. Errors print as `file:line:col: message`
+stops the check, so it is reported alone. It also reports mistakes of type it is sure of, in the interpreter's own
+words: `cannot assign real to int`, `operator '+' needs numbers, got string`, `cannot compare int with string using '<'`,
+`condition must be logical, got int`, `array index must be integer`, a call with the wrong number of arguments or an
+argument of the wrong type, a result of the wrong type, and a field a record does not have. (A narrowing between
+whole-number widths is allowed here, as it is when running, and checked against the value then.) Errors print as `file:line:col: message`
 (column 1 when the error has no column) and the exit status is 1; a clean file prints
 nothing and exits 0. `--json` prints `{"file": ..., "errors": [{"line", "col", "message"}]}`.
 
