@@ -1,0 +1,637 @@
+"""The static type checker, first part: it works out the type of every expression it can, without running the program.
+
+`infer(unit, interp)` returns a Checker whose `types` maps `id(node)` to a `Type` (types.py). Anything it cannot work
+out is UNKNOWN, and UNKNOWN never makes an error. A type that depends on a value (`floor(x)` is an `integer` or an
+`int64` depending on how big the answer is) is also UNKNOWN: those are recorded in `Checker.value_dependent`, because a
+compiler needs them decided.
+
+The checker is checked against the interpreter, the way the compiler will be: set BOREAS_TYPE_ORACLE to a file name and
+every expression the interpreter evaluates is compared with its static type (see `install_oracle`)."""
+import json
+import os
+from . import types as T
+from .parser import (Apply, ArrayLit, Bool, Binary, Call, Case, Decl, Do, FieldAccess, Gen, IsType, MatrixLit, NamedArg,
+                     Null, Num, SelectExpr, SelectType, Slice, Str, Unary, Var)
+from .tree import STATEMENTS, children, statements_in, walk
+from .types import (COMPLEX, INT64, INTEGER, LOGICAL, NULL, REAL, REAL32, STRING, UNKNOWN, Type, parse, promote)
+from .kinds import lit_int
+
+TAKES_SCALAR = T.SCALAR_KINDS - {"file"}
+
+
+def rank_of(args):
+    """The rank of an elementwise result: 0 for all single values, the arrays' rank otherwise, -1 if unknown."""
+    ranks = [a.rank for a in args]
+    if any(r < 0 for r in ranks):
+        return -1
+    return max(ranks, default=0)
+
+
+def float_kind(args):
+    """The kind a real-valued function gives: complex for a complex argument, a single for single arguments only."""
+    kinds = {a.kind for a in args}
+    if "complex" in kinds:
+        return "complex"
+    return "real32" if "real32" in kinds and "real" not in kinds else "real"
+
+
+def elemental(kind_of):
+    def rule(args):
+        if not args or not all(a.known and a.is_number for a in args):
+            return UNKNOWN
+        return Type(kind_of(args), rank_of(args))
+    return rule
+
+
+def fixed(result):
+    """A function that always gives `result` (a Type), whatever its arguments."""
+    return lambda args: result
+
+
+def of_first(args):
+    return args[0].unwrapped() if args and args[0].known else UNKNOWN
+
+
+def reduction(args):
+    """sum, product, maxval, minval: the element kind; with `dim`, one rank less."""
+    if not args or not args[0].known or not args[0].is_number:
+        return UNKNOWN
+    a = args[0]
+    if len(args) == 1 or a.rank < 0:
+        return a.element() if len(args) == 1 else UNKNOWN
+    return a.with_rank(a.rank - 1) if a.rank > 1 else a.element()
+
+
+def logical_reduction(args):
+    if not args or not args[0].known:
+        return UNKNOWN
+    a = args[0]
+    if len(args) == 1:
+        return LOGICAL
+    return Type("logical", a.rank - 1) if a.rank > 1 else LOGICAL
+
+
+def counting(args):
+    if not args or not args[0].known:
+        return UNKNOWN
+    a = args[0]
+    if len(args) == 1:
+        return INTEGER
+    return Type("integer", a.rank - 1) if a.rank > 1 else INTEGER
+
+
+def locating(takes_value):
+    def rule(args):
+        if not args or not args[0].known:
+            return UNKNOWN
+        a = args[0]
+        dim_given = len(args) > (2 if takes_value else 1) and not (isinstance(args[-1], Type) and args[-1].kind == "logical"
+                                                                   and len(args) == (3 if takes_value else 2))
+        if a.rank < 0:
+            return UNKNOWN
+        if a.rank == 1:
+            return INTEGER
+        return Type("integer", a.rank - 1) if dim_given and a.rank > 1 else Type("integer", 1)
+    return rule
+
+
+def numeric_kind(args):
+    kinds = [a.kind for a in args]
+    kind = kinds[0]
+    for k in kinds[1:]:
+        kind = promote(kind, k)
+    return kind
+
+
+def abs_kind(args):
+    return "real" if args[0].kind == "complex" else args[0].kind
+
+
+def conversion(kind):
+    return elemental(lambda args: kind)
+
+
+def same_kind_or_unknown(args):
+    """max and min give back the argument that wins, so mixed kinds give a result that depends on the values."""
+    if not args or not all(a.known for a in args):
+        return UNKNOWN
+    kinds = {a.kind for a in args}
+    if len(kinds) != 1 or args[0].kind not in T.NUMBERS + ("string",):
+        return UNKNOWN
+    return Type(args[0].kind, rank_of(args))
+
+
+def matmul(args):
+    if len(args) != 2 or not all(a.known and a.is_number for a in args):
+        return UNKNOWN
+    a, b = args
+    if a.rank not in (1, 2) or b.rank not in (1, 2):
+        return UNKNOWN
+    kind = promote(a.kind, b.kind)
+    if a.rank == 2 and b.rank == 2:
+        return Type(kind, 2)
+    return Type(kind, 1)
+
+
+def dot(args):
+    if len(args) != 2 or not all(a.known and a.is_number for a in args):
+        return UNKNOWN
+    return Type(promote(args[0].kind, args[1].kind))
+
+
+def reshape(args):
+    if not args or not args[0].known:
+        return UNKNOWN
+    return Type(args[0].kind, -1, False, args[0].name)
+
+
+def keep(args):
+    return args[0].unwrapped() if args and args[0].known and args[0].rank != 0 else UNKNOWN
+
+
+def vector_of(kind):
+    return fixed(Type(kind, 1))
+
+
+def bits(args):
+    """iand, ior, ieor: the wider integer of the two."""
+    if not args or not all(a.known and a.kind in T.INTEGERS for a in args):
+        return UNKNOWN
+    return Type(numeric_kind(args[:2]), rank_of(args))
+
+
+def first_integer(args):
+    if not args or not args[0].known or args[0].kind not in T.INTEGERS:
+        return UNKNOWN
+    return Type(args[0].kind, rank_of(args))
+
+
+def shape_rule(args):
+    return Type("integer", 1) if len(args) == 1 else UNKNOWN
+
+
+def bounds(args):
+    return Type("integer", 1) if len(args) == 1 else INTEGER
+
+
+def epsilon_like(args):
+    return args[0].element() if args and args[0].known and args[0].is_number else UNKNOWN
+
+
+FLOATS = ("sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "exp",
+          "log", "log10", "gamma", "log_gamma", "erf", "erfc", "hypot", "atan2", "bessel_j0", "bessel_j1", "bessel_y0",
+          "bessel_y1", "bessel_jn", "bessel_yn")
+
+BUILTIN_RULES = {name: elemental(float_kind) for name in FLOATS}
+BUILTIN_RULES.update({
+    "abs": elemental(abs_kind), "mod": elemental(numeric_kind), "modulo": elemental(numeric_kind),
+    "sign": elemental(numeric_kind), "dim": elemental(numeric_kind),
+    "aint": elemental(float_kind), "anint": elemental(float_kind),
+    "real": conversion("real"), "real64": conversion("real"), "real32": conversion("real32"),
+    "int": conversion("integer"), "int32": conversion("integer"), "int8": conversion("int8"),
+    "int16": conversion("int16"), "int64": conversion("int64"),
+    "max": same_kind_or_unknown, "min": same_kind_or_unknown,
+    "isnan": lambda args: Type("logical", rank_of(args)) if args and args[0].known else UNKNOWN,
+    "isinf": lambda args: Type("logical", rank_of(args)) if args and args[0].known else UNKNOWN,
+    "cmplx": elemental(lambda args: "complex"), "conjg": elemental(lambda args: "complex"),
+    "aimag": elemental(lambda args: "real"),
+    "iand": bits, "ior": bits, "ieor": bits, "bitnot": first_integer, "ishft": first_integer, "shiftl": first_integer,
+    "shiftr": first_integer, "shifta": first_integer, "ibset": first_integer, "ibclr": first_integer,
+    "ibits": first_integer, "btest": lambda args: Type("logical", rank_of(args)) if args and args[0].known else UNKNOWN,
+    "popcnt": lambda args: Type("integer", rank_of(args)) if args and args[0].known else UNKNOWN,
+    "leadz": lambda args: Type("integer", rank_of(args)) if args and args[0].known else UNKNOWN,
+    "trailz": lambda args: Type("integer", rank_of(args)) if args and args[0].known else UNKNOWN,
+    "bit_size": fixed(INTEGER),
+    "size": fixed(INTEGER), "len": fixed(INTEGER), "len_trim": fixed(INTEGER), "index": fixed(INTEGER),
+    "scan": fixed(INTEGER), "verify": fixed(INTEGER), "iachar": fixed(INTEGER), "argument_count": fixed(INTEGER),
+    "count": counting, "shape": shape_rule, "lbound": bounds, "ubound": bounds,
+    "sum": reduction, "product": reduction, "maxval": reduction, "minval": reduction,
+    "any": logical_reduction, "all": logical_reduction,
+    "maxloc": locating(False), "minloc": locating(False), "findloc": locating(True),
+    "matmul": matmul, "dot_product": dot, "transpose": keep, "reshape": reshape,
+    "norm2": lambda args: Type(float_kind(args)) if args and args[0].known and args[0].is_number else UNKNOWN,
+    "cshift": keep, "flatten": lambda args: Type(args[0].kind, 1) if args and args[0].known and args[0].is_array else UNKNOWN,
+    "merge": lambda args: Type(args[0].kind, rank_of(args), False, args[0].name) if len(args) == 3
+    and all(a.known for a in args) and args[0].kind == args[1].kind and args[0].rank >= 0 else UNKNOWN,
+    "trim": fixed(STRING), "upper": fixed(STRING), "lower": fixed(STRING), "replace": fixed(STRING),
+    "join": fixed(STRING), "adjustl": fixed(STRING), "adjustr": fixed(STRING), "repeat": fixed(STRING),
+    "achar": fixed(STRING), "fixed": fixed(STRING), "right": fixed(STRING), "left": fixed(STRING),
+    "text": fixed(STRING), "scientific": fixed(STRING), "general": fixed(STRING), "tf": fixed(STRING),
+    "argument": fixed(STRING),
+    "contains": fixed(LOGICAL), "starts_with": fixed(LOGICAL), "ends_with": fixed(LOGICAL),
+    "allocated": fixed(LOGICAL), "present": fixed(LOGICAL), "has": fixed(LOGICAL), "exists": fixed(LOGICAL),
+    "split": vector_of("string"), "fields": vector_of("string"),
+    "field": fixed(Type("string", 0, True)), "read_line": fixed(Type("string", 0, True)),
+    "to_integer": fixed(Type("integer", 0, True)), "to_real": fixed(Type("real", 0, True)),
+    "to_logical": fixed(Type("logical", 0, True)),
+    "random": fixed(REAL), "nan": fixed(REAL), "infinity": fixed(REAL),
+    "huge": epsilon_like, "epsilon": epsilon_like, "tiny": epsilon_like,
+    "open": fixed(Type("file")), "try_open": fixed(Type("file", 0, True)),
+})
+# Functions whose type depends on the value they compute: not typed until the language decides.
+VALUE_DEPENDENT = {"floor", "ceiling", "nint"}
+
+
+class Checker:
+    def __init__(self, unit, interp):
+        self.unit, self.interp = unit, interp
+        self.types = {}                 # id(node) -> Type
+        self.value_dependent = []       # (line, what): expressions whose type depends on a value
+        self.keep = []                  # the nodes, so that their ids stay valid
+        self.procs = {}                 # callback parameter name -> its ProcType (per procedure)
+
+    # -- procedures ---------------------------------------------------------
+    def run(self):
+        u, interp = self.unit, self.interp
+        for f in self.all_functions():
+            scope = interp.scopes.get(id(f))
+            if scope is not None:
+                self.procedure(f.params, f.body, scope)
+        if u.program is not None and interp.program_scope is not None:
+            self.procedure([], u.program.body, interp.program_scope)
+        return self
+
+    def all_functions(self):
+        u = self.unit
+        out = list(u.functions.values())
+        for mod in u.modules.values():
+            out += mod.functions.values()
+            for r in mod.records.values():
+                out += r.functions.values()
+        for r in u.records.values():
+            out += r.functions.values()
+        return out
+
+    def slot_type(self, slot, scope):
+        typ, value = slot[0], slot[1]
+        rank = value.rank if hasattr(value, "rank") and hasattr(value, "shape") else 0
+        if rank == 0 and slot[2]:
+            rank = slot[4] if len(slot) > 4 else -1
+        t = parse(typ, scope, max(rank, 0))
+        return Type(t.kind, rank, t.optional, t.name) if t.known and rank != 0 and t.rank == 0 else t
+
+    def decl_type(self, d, scope):
+        rank = len(d.dims) if isinstance(d.dims, list) else 0
+        t = parse(d.type, scope, rank)
+        return t
+
+    def procedure(self, params, body, scope):
+        env = {}
+        self.procs = {}
+        for name, slot in scope.consts.items():
+            env[name] = self.slot_type(slot, scope)
+        for typ, name, intent in params:
+            env[name] = parse(typ, scope)
+            if not isinstance(typ, str) and hasattr(typ, "params"):
+                self.procs[name] = typ
+        for node in walk(body):
+            if isinstance(node, Decl):
+                env[node.name] = self.decl_type(node, scope)
+            elif isinstance(node, IsType) and node.var:
+                env[node.var] = Type("interface" if node.type in scope.interfaces else "record", 0, False, node.type)
+            elif isinstance(node, SelectType):
+                env[node.var] = UNKNOWN
+        self.scope = scope
+        for s in statements_in(body):
+            for operand in self.operands(s):
+                self.expr(operand, env)
+
+    @staticmethod
+    def operands(s):
+        """The expressions that belong directly to the statement `s`."""
+        for c in children(s):
+            if isinstance(c, tuple(STATEMENTS)):
+                continue
+            if isinstance(c, Case):
+                for x in children(c):
+                    if not isinstance(x, tuple(STATEMENTS)):
+                        yield x
+            else:
+                yield c
+
+    # -- expressions --------------------------------------------------------
+    def expr(self, e, env):
+        if isinstance(e, list):
+            return [self.expr(x, env) for x in e]
+        if e is None or not hasattr(e, "__dataclass_fields__"):
+            return UNKNOWN
+        t = self.infer(e, env)
+        self.types[id(e)] = t
+        self.keep.append(e)
+        return t
+
+    def infer(self, e, env):
+        k = type(e)
+        if k is Num:
+            if isinstance(e.value, bool):
+                return LOGICAL
+            if isinstance(e.value, int):
+                return INTEGER if lit_int(e.value) is e.value else INT64
+            if isinstance(e.value, float):
+                return REAL
+            return UNKNOWN
+        if k is Str:
+            return STRING
+        if k is Bool:
+            return LOGICAL
+        if k is Null:
+            return NULL
+        if k is Var:
+            if e.name in env:
+                return env[e.name]
+            return REAL if e.name == "pi" else UNKNOWN
+        if k is Unary:
+            t = self.expr(e.operand, env)
+            if not t.known:
+                return UNKNOWN
+            return LOGICAL.with_rank(t.rank) if e.op == "not" else t.unwrapped()
+        if k is Binary:
+            return self.binary(e, env)
+        if k is Apply:
+            return self.apply(e, env)
+        if k is FieldAccess:
+            return self.field(e, env)
+        if k is ArrayLit:
+            return self.array_literal(e.items, 1, env)
+        if k is MatrixLit:
+            for row in e.rows:
+                self.expr(row, env)
+            return self.items_type([x for row in e.rows for x in row], 2, env, infer_items=False)
+        if k is Gen:
+            inner = dict(env)
+            inner[e.var] = INTEGER
+            self.expr([e.lo, e.hi, e.step], env)
+            ts = self.expr(e.body, inner)
+            return ts[0] if len(ts) == 1 else UNKNOWN
+        if k is SelectExpr:
+            self.expr(e.subject, env)
+            for arm in e.arms:
+                self.expr(arm.values, env)
+                self.expr(arm.value, env)
+            ts = {self.types[id(arm.value)] for arm in e.arms if id(arm.value) in self.types}
+            if len(ts) == 1 and next(iter(ts)).known:
+                return next(iter(ts))
+            if ts and all(t.known and t.kind in ("integer", "real") and t.rank == 0 for t in ts):
+                return REAL if any(t.kind == "real" for t in ts) else INTEGER
+            return UNKNOWN
+        if k is IsType:
+            self.expr(e.subject, env)
+            return LOGICAL
+        if k is Slice:
+            self.expr([e.lo, e.hi, e.step], env)
+            return UNKNOWN
+        if k is NamedArg:
+            return self.expr(e.value, env)
+        for c in children(e):                      # anything else: type what is inside, and give no type
+            self.expr(c, env)
+        return UNKNOWN
+
+    def broadcast(self, a, b):
+        if a.rank < 0 or b.rank < 0:
+            return -1
+        return max(a.rank, b.rank)
+
+    def binary(self, e, env):
+        lt, rt = self.expr(e.left, env), self.expr(e.right, env)
+        op = e.op
+        if op == "??":
+            if lt.known and rt.known and lt.kind == rt.kind and lt.rank == rt.rank:
+                return Type(lt.kind, lt.rank, rt.optional, lt.name)
+            if lt.known and rt.known:                    # `x ?? 0.5` with a real32 x: which kind depends on the value
+                self.value_dependent.append((getattr(e, "line", 0), "?? with two different kinds"))
+            return UNKNOWN
+        if not (lt.known and rt.known):
+            return UNKNOWN
+        # a real literal next to a single is a single (as in Fortran)
+        if rt.kind == "real" and self.is_literal(e.right) and lt.kind == "real32":
+            rt = Type("real32", rt.rank)
+        elif lt.kind == "real" and self.is_literal(e.left) and rt.kind == "real32":
+            lt = Type("real32", lt.rank)
+        if lt.kind == "null" or rt.kind == "null":
+            return LOGICAL if op in ("==", "/=") else UNKNOWN
+        rank = self.broadcast(lt, rt)
+        if op in ("==", "/=", "<", "<=", ">", ">=", "and", "or"):
+            return Type("logical", rank)
+        if op == "+" and lt.kind == "string" and rt.kind == "string":
+            return Type("string", rank)
+        if lt.is_number and rt.is_number:
+            return Type(promote(lt.kind, rt.kind), rank)
+        return UNKNOWN
+
+    @staticmethod
+    def is_literal(e):
+        return type(e) is Num or (type(e) is Unary and type(e.operand) is Num)
+
+    def items_type(self, items, rank, env, infer_items=True):
+        ts = [self.types[id(x)] if id(x) in self.types else (self.expr(x, env) if infer_items else UNKNOWN) for x in items]
+        if not ts or not all(t.known for t in ts):
+            return UNKNOWN
+        kinds = {(t.kind, t.name) for t in ts}
+        if len(kinds) == 1 and all(t.rank in (0, 1) for t in ts):
+            kind, name = next(iter(kinds))
+            return Type(kind, rank, False, name)
+        return UNKNOWN                       # mixed kinds: the context (what it is stored in) decides
+
+    def array_literal(self, items, rank, env):
+        for x in items:
+            self.expr(x, env)
+        return self.items_type(items, rank, env, infer_items=False)
+
+    def index_type(self, t, args):
+        """What `a[...]` is for an array (or string) type `t` and subscripts `args` (nodes)."""
+        if not t.known:
+            return UNKNOWN
+        if t.kind == "string" and t.rank == 0:
+            return STRING
+        if t.rank == 0:
+            return UNKNOWN
+        slices = sum(1 for a in args if isinstance(a, Slice))
+        vector = any(isinstance(a, Apply) or (id(a) in self.types and self.types[id(a)].rank != 0) for a in args
+                     if not isinstance(a, Slice) and id(a) in self.types and self.types[id(a)].rank != 0)
+        if vector:
+            return UNKNOWN
+        return t.element() if slices == 0 else t.with_rank(slices)
+
+    def apply(self, e, env):
+        arg_nodes = [a.value if isinstance(a, NamedArg) else a for a in e.args]
+        args = [self.expr(a, env) for a in arg_nodes]
+        if e.chain:
+            self.expr(e.chain, env)
+            return UNKNOWN
+        name = e.name
+        scope = self.scope
+        if name in env:
+            t = env[name]
+            if t.kind == "proc":
+                return self.proc_result(name, args)
+            if t.kind in ("map", "set"):
+                return UNKNOWN
+            return self.index_type(t, arg_nodes)
+        if name in scope.records:
+            return Type("record", 0, False, name)
+        if name in scope.funcs:
+            return self.call_result(scope.funcs[name], args)
+        if name in VALUE_DEPENDENT:
+            self.value_dependent.append((e.line, f"{name}() gives an integer or an int64 depending on its value"))
+            return UNKNOWN
+        rule = BUILTIN_RULES.get(name)
+        if rule is not None and all(a.known for a in args):
+            try:
+                return rule(args)
+            except (IndexError, AttributeError):
+                return UNKNOWN
+        return UNKNOWN
+
+    def proc_result(self, name, args):
+        proc = self.procs.get(name)
+        if proc is None or proc.ret is None:
+            return UNKNOWN
+        return parse(proc.ret, self.scope)
+
+    def call_result(self, f, args):
+        scope = self.interp.scopes.get(id(f), self.scope)
+        if f.ret is None or hasattr(f.ret, "types"):
+            return UNKNOWN
+        ret = parse(f.ret, scope)
+        if not ret.known:
+            return UNKNOWN
+        scalar_params = [parse(typ, scope).rank == 0 and parse(typ, scope).kind in TAKES_SCALAR
+                         for typ, _, _ in f.params if isinstance(typ, str)]
+        if ret.rank == 0 and any(a.known and a.rank != 0 and p for a, p in zip(args, scalar_params)):
+            ranks = [a.rank for a, p in zip(args, scalar_params) if p]
+            return Type(ret.kind, -1 if any(r < 0 for r in ranks) else max(ranks), ret.optional, ret.name)
+        return ret
+
+    def field(self, e, env):
+        bt = self.expr(e.base, env)
+        arg_nodes = []
+        if e.args is not None:
+            arg_nodes = [a.value if isinstance(a, NamedArg) else a for a in e.args]
+            self.expr(arg_nodes, env)
+        if e.chain:
+            self.expr(e.chain, env)
+            return UNKNOWN
+        if not bt.known or bt.rank != 0 or bt.kind not in ("record", "interface"):
+            return UNKNOWN
+        scope = self.scope
+        if e.args is not None and not e.bracket:                       # a record's function: x.area(...)
+            owner = (scope.records.get(bt.name) if bt.kind == "record" else scope.interfaces.get(bt.name))
+            f = owner.functions.get(e.field) if owner is not None else None
+            if f is None or f.ret is None or hasattr(f.ret, "types"):
+                return UNKNOWN
+            ret = parse(f.ret, self.interp.scopes.get(id(f), scope))
+            return ret
+        if bt.kind != "record":
+            return UNKNOWN
+        rdef = scope.records.get(bt.name)
+        if rdef is None:
+            return UNKNOWN
+        field = next((d for d in rdef.fields if d.name == e.field), None)
+        if field is None:
+            return UNKNOWN
+        ft = self.decl_type(field, self.interp.owner.get(id(rdef), scope) if hasattr(self.interp, "owner") else scope)
+        if e.args is not None and e.bracket:
+            return self.index_type(ft, arg_nodes)
+        return ft
+
+
+def infer(unit, interp):
+    """The Checker for a linked program."""
+    return Checker(unit, interp).run()
+
+
+# -- checking the checker against the interpreter -----------------------------
+def runtime_type(v):
+    """(kind, rank, record name) of an interpreter value, or None when it has no single type."""
+    from .interp import Array, MapValue, Record, SetValue, type_of
+    if isinstance(v, Array):
+        if not v.data:
+            return ("?", v.rank, "")
+        first = type_of(v.data[0])
+        if first in T.SCALAR_KINDS:
+            return (first, v.rank, "")
+        if isinstance(v.data[0], Record):
+            return ("record", v.rank, v.data[0].rdef.name)
+        return None
+    if isinstance(v, Record):
+        return ("record", 0, v.rdef.name)
+    if isinstance(v, (MapValue, SetValue)):
+        return None
+    kind = type_of(v)
+    if kind == "null":
+        return ("null", 0, "")
+    return (kind, 0, "") if kind in T.SCALAR_KINDS else None
+
+
+def mismatch(static, runtime):
+    """Why the static type `static` does not fit the value `runtime` (see runtime_type), or None."""
+    kind, rank, name = runtime
+    if static.known is False:
+        return None
+    if kind == "null":
+        return None if static.optional or static.kind == "null" else "kind"
+    if static.kind == "null":
+        return "kind"
+    if kind != "?":
+        if static.kind == "interface" and kind == "record":
+            pass
+        elif static.kind != kind or (static.kind == "record" and static.name != name):
+            return "kind"
+    if static.rank >= 0 and static.rank != rank:
+        return "rank"
+    return None
+
+
+def install_oracle(interp_class, path):
+    """Make every interpreter created from now on compare the type of each expression it evaluates with the checker's
+    answer, writing the differences (and how many expressions had a static type) to the file `path`."""
+    import atexit
+    original_init, original_eval = interp_class.__init__, interp_class.eval
+    seen, counts = set(), {"evaluated": 0, "typed": 0}
+    untyped = {}
+
+    def init(self, *a, **k):
+        original_init(self, *a, **k)
+        try:
+            self.checker = infer(self.unit, self)
+        except Exception as err:                      # a crash in the checker is itself a finding
+            self.checker = None
+            record({"crash": f"{type(err).__name__}: {err}"})
+
+    def record(item):
+        key = json.dumps(item, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            with open(path, "a") as out:
+                out.write(key + "\n")
+
+    def evaluate(self, e, env):
+        v = original_eval(self, e, env)
+        checker = getattr(self, "checker", None)
+        if checker is not None:
+            counts["evaluated"] += 1
+            static = checker.types.get(id(e))
+            if static is None or not static.known:
+                key = type(e).__name__ + (":" + e.name if hasattr(e, "name") and isinstance(getattr(e, "name"), str) else "")
+                untyped[key] = untyped.get(key, 0) + 1
+            if static is not None and static.known:
+                counts["typed"] += 1
+                runtime = runtime_type(v)
+                if runtime is not None:
+                    why = mismatch(static, runtime)
+                    if why:
+                        from .printer import expr as show
+                        try:
+                            text = show(e)
+                        except Exception:
+                            text = type(e).__name__
+                        record({"why": why, "static": str(static), "runtime": f"{runtime[0]}[{runtime[1]}]{runtime[2]}",
+                                "expr": text, "node": type(e).__name__})
+        return v
+
+    def summary():
+        with open(path, "a") as out:
+            out.write(json.dumps({"counts": counts, "untyped": untyped}) + "\n")
+
+    interp_class.__init__, interp_class.eval = init, evaluate
+    atexit.register(summary)
