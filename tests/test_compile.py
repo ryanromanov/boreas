@@ -48,6 +48,10 @@ class ProgramTests(unittest.TestCase):
 
 
 FAILING = {
+    "dot_product shapes": "  real[3] :: a = 1.0\n  real[2] :: b = 1.0\n  println(dot_product(a, b))",
+    "matmul inner dimensions": "  real[2, 3] :: a = 1.0\n  real[2, 3] :: b = 1.0\n  println(matmul(a, b))",
+    "int matmul overflow": "  int[1, 1] :: a = 9223372036854775807\n  int[1, 1] :: b = 2\n  println(matmul(a, b))",
+    "int dot_product overflow": "  int[2] :: a = 9223372036854775807\n  println(dot_product(a, a))",
     "index too large": "  int[3] :: a\n  println(a[4])",
     "index too small": "  int[3] :: a\n  int :: i = 0\n  println(a[i])",
     "matrix row index": "  real[2, 3] :: m\n  println(m[3, 1])",
@@ -190,7 +194,7 @@ class RefusalTests(unittest.TestCase):
         self.refused(prog("  allocatable int[] :: a\n  println(1)"), "allocatable")
         self.refused(prog("  int[2, 2, 2, 2] :: a\n  println(1)"), "the declaration of 'a'")
         self.refused(prog("  int[3] :: a = [1, 2, 3]\n  println(a[1:2])"), "part of an array")
-        self.refused(prog("  real[3] :: a = [1.0, 2.0, 3.0]\n  println(sum(a))"), "sum of reals")
+        self.refused(prog("  real[3] :: a = [1.0, 2.0, 3.0]\n  int[3] :: b = [1, 2, 3]\n  println(matmul(a, b))"), "matmul()")
         self.refused(prog("  real32 :: x = 1.0\n  println(x)"), "the declaration of 'x' (real32)")
         self.refused(prog("  string :: s = \"a\"\n  println(s)"), "the declaration of 's' (string)")
         self.refused("record p\n  real :: x = 0.0\nend record\nprogram t\nend program\n", "records")

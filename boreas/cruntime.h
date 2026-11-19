@@ -437,3 +437,10 @@ static void rt_set_shown(char *buf, const int64_t *shape, int rank) {
     sprintf(buf, "an array of shape %s", sh);
     rt_shown_override = buf;
 }
+
+static void rt_dot_shapes(const int64_t *a, const int64_t *b, int line) {
+    if (a[0] != b[0]) rt_fail(line, "dot_product(): shapes differ ((%lld) vs (%lld))", (long long)a[0], (long long)b[0]);
+}
+static void rt_matmul_check(int64_t inner_a, int64_t inner_b, int line) {
+    if (inner_a != inner_b) rt_fail(line, "matmul(): inner dimensions differ (%lld vs %lld)", (long long)inner_a, (long long)inner_b);
+}

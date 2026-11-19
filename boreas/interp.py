@@ -511,6 +511,15 @@ def _reshape(src, shp):
     return Array(shp.data, list(src.data))
 
 
+def _plain_sum(values):
+    """The sum, added one at a time from the left starting at 0, as Fortran adds. (Python's own sum() of floats changed in
+    3.12 to a compensated sum, so it would print different last digits on different Pythons.)"""
+    total = 0
+    for x in values:
+        total = total + x
+    return total
+
+
 def _matmul(a, b):
     _need_array("matmul", a, rank=(1, 2))
     _need_array("matmul", b, rank=(1, 2))
@@ -522,7 +531,7 @@ def _matmul(a, b):
     out = [0] * (n * m)
     for j in range(m):
         for i in range(n):
-            out[i + j * n] = sum(a.data[i + t * n] * b.data[t + j * k] for t in range(k))
+            out[i + j * n] = _plain_sum(a.data[i + t * n] * b.data[t + j * k] for t in range(k))
     shape = (n, m) if a.rank == 2 and b.rank == 2 else (n,) if a.rank == 2 else (m,)
     return Array(shape, out)
 
@@ -561,7 +570,7 @@ def _dot_product(a, b):
     _need_array("dot_product", b, rank=(1,))
     if a.shape != b.shape:
         raise LangError(f"dot_product(): shapes differ ({fmt_shape(a.shape)} vs {fmt_shape(b.shape)})")
-    return sum((x.conjugate() if isinstance(x, complex) else x) * y for x, y in zip(a.data, b.data))
+    return _plain_sum((x.conjugate() if isinstance(x, complex) else x) * y for x, y in zip(a.data, b.data))
 
 
 def _flatten(a):
@@ -1355,7 +1364,7 @@ BUILTINS = {
     "open": None, "try_open": None, "exists": lambda name: os.path.exists(_need_string("exists", name)),
     "size": _size, "shape": _shape, "reshape": _reshape, "matmul": _matmul,
     "flatten": _flatten, "transpose": _transpose, "cshift": _cshift, "dot_product": _dot_product, "allocated": _allocated, "present": _present,
-    "sum": _reduce("sum", sum, numbers=True), "maxval": _reduce("maxval", max, numbers=True, nonempty=True),
+    "sum": _reduce("sum", _plain_sum, numbers=True), "maxval": _reduce("maxval", max, numbers=True, nonempty=True),
     "minval": _reduce("minval", min, numbers=True, nonempty=True),
     "any": _reduce("any", any), "all": _reduce("all", all),
     "count": _count_true, "pack": _pack, "norm2": _norm2, "spread": _spread, "findloc": _findloc,
@@ -2250,6 +2259,19 @@ class Interp:
                     flags.append(_is_literal(x))
         return out
 
+    def real_if_real(self, e, result):
+        """The sum or product of nothing (or a matrix product with no inner dimension) is whole-number zero or one here,
+        because an empty array does not know its elements' type; when the program says the answer is a real, it is."""
+        empty = (type(result) is int) or (isinstance(result, Array) and result.data and all(type(x) is int for x in result.data))
+        if not empty:
+            return result
+        t = self.static_type(e)
+        if t is None or t.kind != "real":
+            return result
+        if isinstance(result, Array):
+            return Array(result.shape, [float(x) for x in result.data])
+        return float(result)
+
     def static_type(self, node):
         """The type the checker worked out for `node`, or None (the checker is run the first time this is asked)."""
         if getattr(self, "_types", None) is None:
@@ -2989,7 +3011,10 @@ class Interp:
             if any(_is_real32(a) for a in args):      # ... and a real literal next to a real32 is a real32
                 args = [SINGLE_LITERALS.get(a) or single_literal(a) if type(a) is float and _is_literal(n) else a
                         for a, n in zip(args, e.args)]
-            return self.call_builtin(e.name, args, e.line)
+            result = self.call_builtin(e.name, args, e.line)
+            if e.name in ("sum", "product", "dot_product", "matmul"):
+                result = self.real_if_real(e, result)
+            return result
         raise LangError(f"line {e.line}: unknown function or array '{e.name}'"
                         + name_hint(e.name, [*env, *self.scope.funcs, *self.scope.records, *BUILTINS, *ELEMENTAL]))
 
