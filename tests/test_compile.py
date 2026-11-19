@@ -80,6 +80,32 @@ OUT_DEFS = {
     "an out array given the wrong shape": "subroutine s(out int[] :: v)\n  @v = [7, 8, 9]\nend subroutine\n",
 }
 
+MATH_CASES = {
+    'asin2': '  real :: x = 2.0\n  println(asin(x))',
+    'acos2': '  int :: x = 2\n  println(acos(x))',
+    'acosh0': '  real :: x = 0.5\n  println(acosh(x))',
+    'atanh1': '  real :: x = 1.0\n  println(atanh(x))',
+    'atanh2': '  real32 :: x = 2.0\n  println(atanh(x))',
+    'sinhbig': '  real :: x = 1000.0\n  println(sinh(x))',
+    'coshbig32': '  real32 :: x = 100.0\n  println(cosh(x))',
+    'asinarr': '  real[3] :: v = [0.1, 5.0, 0.9]\n  println(asin(v))',
+    'floorbig': '  real :: x = 1.0e30\n  println(floor(x))',
+    'floorbig32': '  real32 :: x = 3.0e9\n  println(nint(x))',
+    'aintinf': '  real :: x = 0.0\n  println(aint(1.0 / x))',
+    'conv_big': '  real :: x = 1.0e10\n  println(int32(x))',
+    'conv_big2': '  int :: n = 5000000000\n  println(int32(n))',
+    'conv_big3': '  real :: x = 1.0e20\n  println(int64(x))',
+    'signover': '  int :: a = -9223372036854775807 - 1\n  println(sign(a, 1))',
+    'signover32': '  int32 :: a = -2147483647 - 1\n  println(sign(a, 1))',
+    'modzero': '  int :: z = 0\n  println(modulo(5, z))',
+    'modzero2': '  real :: z = 0.0\n  println(modulo(5.0, z))',
+    'modzero3': '  real :: z = 0.0\n  println(modulo(5, z))',
+    'dimover': '  int :: a = 9223372036854775807\n  int :: b = -5\n  println(dim(a, b))',
+    'dimover32': '  int32 :: a = 2147483647\n  int32 :: b = -5\n  println(dim(a, b))',
+    'conv_inf': '  real :: x = 0.0\n  println(int64(1.0 / x))',
+    'conv_inf2': '  real :: x = 0.0\n  println(int32(-1.0 / x))',
+}
+
 FAILING = {
     "section: index below the range": "  int[6] :: a\n  println(a[0:3])",
     "section: end beyond the range": "  int[6] :: a\n  println(a[3:7])",
@@ -183,6 +209,14 @@ class ErrorTests(unittest.TestCase):
                 self.assertEqual(done.returncode, 1, name)
                 self.assertIn("error: line", done.stderr)
 
+    def test_math_function_errors_and_ieee_answers_are_the_interpreters(self):
+        for name, body in MATH_CASES.items():
+            with self.subTest(name):
+                same_as_interpreter(self, prog(body))
+            if not name.startswith("mod"):                       # (modulo is not compiled in a file that says `use ieee`)
+                with self.subTest(name + " (use ieee)"):
+                    same_as_interpreter(self, "use ieee\n" + prog(body))
+
     def test_every_error_is_the_interpreters(self):
         for name, body in FAILING.items():
             with self.subTest(name):
@@ -280,12 +314,13 @@ class RefusalTests(unittest.TestCase):
         self.refused(prog("  int[3] :: a = [1, 2, 3]\n  call s(@a[1:2])", "subroutine s(inout int[] :: v)\n  @v[1] = 0\nend subroutine\n"),
                      "a section of 'a' passed as inout")
         self.refused(prog("  real[3] :: a = [1.0, 2.0, 3.0]\n  int[3] :: b = [1, 2, 3]\n  println(matmul(a, b))"), "matmul()")
-        self.refused(prog("  real32 :: x = 1.0\n  println(floor(x))"), "the function 'floor'")
+        self.refused(prog("  real :: a = 1.0\n  println(hypot(a, a))"), "the function 'hypot'")
+        self.refused("use ieee\n" + prog("  println(modulo(5, 3))"), "modulo() in a file that says `use ieee`")
         self.refused(prog("  real32 :: x = 1.0\n  int :: n = 2\n  println(n ** x)"), "a real32 power whose base is not a real32")
         self.refused(prog("  string :: s = \"a\"\n  println(s)"), "the declaration of 's' (string)")
         self.refused("record p\n  real :: x = 0.0\nend record\nprogram t\nend program\n", "records")
         self.refused("module m\n  public int :: k = 1\nend module\nprogram t\nend program\n", "modules")
-        self.refused(prog("  int :: n = 1\n  println(floor(2.5), n)"), "the function 'floor'")
+        self.refused(prog("  int :: n = 1\n  println(hypot(2.5, 1.0), n)"), "the function 'hypot'")
         self.refused(prog("  const int :: i = 1\n  do i = 1, 2\n  end do"), "constant or parameter")
         self.refused("function f(int :: n) -> int\n  n = 2\n  return n\nend function\nprogram t\nend program\n", "constant or parameter")
         self.refused(prog("  int :: n = 1\n  call s(@n, @n)", "subroutine s(out int :: k, out int :: j)\n  @k = 1\n  @j = 2\nend subroutine\n"),
@@ -303,7 +338,7 @@ class RefusalTests(unittest.TestCase):
         self.refused(prog("  int :: n = 2.5"), "type error")
 
     def test_the_line_is_named(self):
-        self.refused(prog("  int :: n = 1\n  println(floor(2.5), n)"), "(line 3)")
+        self.refused(prog("  int :: n = 1\n  println(hypot(2.5, 1.0), n)"), "(line 3)")
 
 
 if __name__ == "__main__":

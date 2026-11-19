@@ -819,6 +819,14 @@ def _sign(a, b):
     return math.copysign(abs(a), b)
 
 
+def _dim(a, b):
+    """The positive difference: a - b when that is above zero, else zero (a real zero for reals)."""
+    d = a - b
+    if isinstance(d, int):
+        return max(d, 0)
+    return 0.0 if 0 > d else d
+
+
 def _modulo(a, b):
     """The remainder with the sign of b (mod() takes the sign of a)."""
     if isinstance(a, int) and isinstance(b, int):
@@ -1414,7 +1422,7 @@ ELEMENTAL = {
     "bessel_j0": _bessel("j0", False), "bessel_j1": _bessel("j1", False), "bessel_y0": _bessel("y0", False),
     "bessel_y1": _bessel("y1", False), "bessel_jn": _bessel("jn", True), "bessel_yn": _bessel("yn", True),
     "aint": lambda x: float(math.trunc(x)), "anint": _round_half_away,
-    "sign": _sign, "modulo": _modulo, "dim": lambda a, b: max(a - b, 0),
+    "sign": _sign, "modulo": _modulo, "dim": _dim,
     "mod": lambda a, b: int(math.fmod(a, b)) if isinstance(a, int) and isinstance(b, int) else math.fmod(a, b),
     "merge": _merge, "cmplx": _cmplx, "aimag": _need_complex("aimag", lambda z: z.imag),
     "conjg": _need_complex("conjg", lambda z: z.conjugate()),
@@ -1489,6 +1497,8 @@ def single_precision(name, f):
 
     def g(*xs):
         if all(type(x) is Real32 for x in xs):
+            if name == "atan" and len(xs) == 2:                 # atan(y, x) is atan2
+                return kinds.single_check("atan2", kinds.single_function("atan2")(*xs), xs)
             return kinds.single_check(name, lib(*xs), xs)
         return f(*xs)
     return g

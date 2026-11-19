@@ -1,0 +1,46 @@
+! More of the math functions: inverse and hyperbolic trigonometry, whole numbers from reals, sign, modulo, dim, conversions, huge/epsilon/tiny.
+program mathfns
+  real :: trig_x = 0.5
+  int :: trig_n = 1
+  println(asin(trig_x), acos(trig_x), atan(trig_x), sinh(trig_x), cosh(trig_x), tanh(trig_x), asinh(trig_x), acosh(trig_x + 1), atanh(trig_x), erf(trig_x), erfc(trig_x))
+  println(asin(trig_n), acos(trig_n), atan(trig_n), atan(trig_x, 2.0), atan(1, 2), atan2(trig_x, trig_n), atanh(trig_x - 1), sinh(trig_n), acosh(trig_n))
+  real32 :: trig32_x = 0.5
+  println(asin(trig32_x), acos(trig32_x), atan(trig32_x), sinh(trig32_x), cosh(trig32_x), tanh(trig32_x), asinh(trig32_x), acosh(trig32_x + 1), atanh(trig32_x), erf(trig32_x), erfc(trig32_x), atan2(trig32_x, 2.0), atan(trig32_x, trig32_x))
+  real[3] :: trigarr_v = [0.1, 0.5, 0.9]
+  real32[2] :: trigarr_w = [0.25, 0.75]
+  println(asin(trigarr_v), atan(trigarr_v), erf(trigarr_v), tanh(trigarr_w), acos(trigarr_w), atan(trigarr_w))
+  real :: floor_x = -2.5
+  real32 :: floor_y = 2.5
+  int :: floor_n = 7
+  int32 :: floor_m = 8
+  println(floor(floor_x), ceiling(floor_x), nint(floor_x), floor(floor_y), ceiling(floor_y), nint(floor_y), floor(floor_n), nint(floor_m), nint(0.5), nint(-0.5), nint(1.5), nint(2.4999999))
+  println(floor([1.5, -1.5]), nint([0.5, 1.5, 2.5]), ceiling([1.0, 1.1]))
+  real :: aint_x = -2.7
+  real32 :: aint_y = 3.7
+  int :: aint_n = 5
+  println(aint(aint_x), anint(aint_x), aint(aint_y), anint(aint_y), aint(aint_n), anint(aint_n), anint(2.5), anint(-2.5), aint([1.5, -1.5]))
+  real :: conv_x = 3.99
+  real :: conv_y = -3.99
+  real32 :: conv_z = 7.9
+  int :: conv_n = 300
+  println(int32(conv_x), int32(conv_y), int32(conv_z), int64(conv_x), int64(conv_y), int32(conv_n), int64(conv_n), real64(conv_n), real64(conv_z), int32([1.5, 2.5]))
+  println(sign(3, -2), sign(-3, 2), sign(3, 0), sign(3.5, -1.0), sign(-3.5, 2.0), sign(3, -2.0), sign(2.5, -0.0), sign(2.0, 1))
+  int32 :: sign_a = -5
+  real32 :: sign_r = 2.5
+  println(sign(sign_a, 1), sign(sign_r, -1.0), sign(sign_r, sign_a))
+  println(modulo(7, 3), modulo(-7, 3), modulo(7, -3), modulo(-7, -3), modulo(7.5, 2.0), modulo(-7.5, 2.0), modulo(7.5, -2.0), modulo(5, 2.5), modulo(-1, 3))
+  int32 :: modulo_a = -7
+  real32 :: modulo_r = 7.5
+  println(modulo(modulo_a, 3), modulo(modulo_r, 2.0), modulo(modulo_r, -2.0))
+  println(dim(5, 3), dim(3, 5), dim(5.5, 3.0), dim(3.0, 5.5), dim(5, 3.5), dim(3, 5.5), dim(0.0, 0.0))
+  int32 :: dim_a = 5
+  real32 :: dim_r = 2.5
+  println(dim(dim_a, 7), dim(dim_a, 1), dim(dim_r, 1.0), dim(1.0, dim_r))
+  real32 :: consts_r = 1.0
+  int32 :: consts_k = 1
+  println(huge(1), huge(consts_k), huge(1.0), huge(consts_r), epsilon(1.0), epsilon(consts_r), tiny(1.0), tiny(consts_r))
+  real :: types_after_x = 2.5
+  real32 :: types_after_r = 2.5
+  real :: types_after_y = floor(types_after_x) * 1.5
+  println(types_after_y, aint(types_after_x) + 1, atan2(types_after_r, 1.0) * 2, floor(types_after_r) + 1, huge(types_after_r) * 0.5)
+end program

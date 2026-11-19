@@ -262,7 +262,7 @@ static inline int64_t rt_abs(int64_t a, int line) {
     return a < 0 ? -a : a;
 }
 static inline int64_t rt_trunc_int(double x, int line) {
-    if (x != x || isinf(x)) rt_fail(line, "int(): cannot convert float %s to integer", x != x ? "NaN" : (x > 0 ? "infinity" : "-infinity"));
+    if (x != x || isinf(x)) rt_fail(line, "int(): cannot convert float %s to integer", x != x ? "NaN" : "infinity");     /* (Python's text has no sign) */
     double t = trunc(x);
     if (t >= 9223372036854775808.0 || t < -9223372036854775808.0) {
         char b[400];
@@ -556,3 +556,88 @@ static inline int64_t rt_slice_count(int64_t lo, int64_t hi, int64_t step, int64
     }
     return step > 0 ? (hi - lo) / step + 1 : (lo - hi) / (0 - step) + 1;
 }
+
+/* ---- more of the math functions: whole numbers from reals, sign, modulo, dim, conversions ------------------------ */
+static inline void rt_no_whole(const char *name, int line) {
+    rt_fail(line, "%s(): a NaN or an infinite value has no whole number", name);
+}
+/* floor (op 0), ceiling (1), nint (2) of a real; the answer is an int (bits 64) or, for a real32, an int32 (bits 32) */
+static inline int64_t rt_whole(double x, int op, int bits, int line) {
+    static const char *names[] = {"floor", "ceiling", "nint"};
+    if (x - x != 0) rt_no_whole(names[op], line);
+    double n = op == 0 ? floor(x) : op == 1 ? ceil(x) : copysign(floor(fabs(x) + 0.5), x);
+    if (bits == 32) {
+        if (n < -2147483648.0 || n > 2147483647.0) rt_fail(line, "%s(): %.0f does not fit in int32 (32 bits)", names[op], n);
+    } else if (n >= 9223372036854775808.0 || n < -9223372036854775808.0) {
+        rt_fail(line, "%s(): %.0f does not fit in 64 bits", names[op], n);
+    }
+    return (int64_t)n;
+}
+static inline void rt_cannot_convert(const char *name, double x, int line) {
+    rt_fail(line, "%s(): cannot convert float %s to integer", name, x != x ? "NaN" : "infinity");
+}
+static inline double rt_aint(double x, int line) { if (x - x != 0) rt_cannot_convert("aint", x, line); return trunc(x); }
+static inline double rt_anint(double x, int line) { if (x - x != 0) rt_cannot_convert("anint", x, line); return copysign(floor(fabs(x) + 0.5), x); }
+/* int32(x) and int64(x) of a real: truncated, and checked to fit */
+static inline int64_t rt_to_whole(double x, int bits, const char *name, int line) {
+    if (x - x != 0) rt_cannot_convert(name, x, line);
+    double t = trunc(x);
+    if (bits == 32) {
+        if (t < -2147483648.0 || t > 2147483647.0) rt_fail(line, "int32(): %.0f does not fit in int32 (32 bits)", t);
+    } else if (t >= 9223372036854775808.0 || t < -9223372036854775808.0) {
+        rt_fail(line, "int(): %.0f does not fit in int (64 bits)", t);
+    }
+    return (int64_t)t;
+}
+static inline double rt_atanh(double x, int was_int, int line) {
+#ifndef BOREAS_IEEE
+    char b[48];
+    if (fabs(x) >= 1.0) rt_fail(line, "atanh(%s) has no real answer (a file that says `use ieee` gets NaN instead)", rt_shown(x, was_int, b));
+#else
+    (void)was_int; (void)line;
+#endif
+    return atanh(x);
+}
+static inline float rt_atanhf(float x, int line) {
+#ifndef BOREAS_IEEE
+    char b[48];
+    if (fabsf(x) >= 1.0f) rt_fail(line, "atanh(%s) has no real answer (a file that says `use ieee` gets NaN instead)", rt_shown((double)x, 0, b));
+#else
+    (void)line;
+#endif
+    return atanhf(x);
+}
+static inline int64_t rt_sign_int(int64_t a, int64_t b, int line) {
+    int64_t m = a < 0 ? -a : a;
+    if (a == INT64_MIN) { char t[48]; rt_fail(line, "sign(): integer overflow (%s does not fit in 64 bits)", rt_i128_text(-(rt_i128)a, t)); }
+    return b < 0 ? -m : m;
+}
+static inline int32_t rt_sign_int32(int32_t a, int32_t b, int line) {
+    if (a == INT32_MIN) rt_fail(line, "sign(): 2147483648 does not fit in int32 (32 bits)");
+    int32_t m = a < 0 ? -a : a;
+    return b < 0 ? -m : m;
+}
+static inline int64_t rt_modulo(int64_t a, int64_t b, int line) {
+    if (b == 0) rt_fail(line, "modulo(%lld, %lld): division by zero", (long long)a, (long long)b);
+    if (b == -1) return 0;
+    int64_t r = a % b;
+    return (r != 0 && ((r < 0) != (b < 0))) ? r + b : r;
+}
+static inline double rt_fmodulo(double a, double b, int a_int, int b_int, int line) {
+    char x[48], y[48];
+    if (b == 0.0) rt_fail(line, "modulo(%s, %s): division by zero", rt_shown(a, a_int, x), rt_shown(b, b_int, y));
+    double q = a / b;
+    if (q - q != 0) rt_fail(line, "modulo(): cannot convert float %s to integer", q != q ? "NaN" : "infinity");
+    return a - floor(q) * b;
+}
+static inline int64_t rt_dim_int(int64_t a, int64_t b, int bits, int line) {
+    rt_i128 d = (rt_i128)a - b;
+    if (d <= 0) return 0;
+    if (bits == 32 ? d > INT32_MAX : d > INT64_MAX) {
+        char t[48];
+        if (bits == 32) rt_fail(line, "dim(): %s does not fit in int32 (32 bits)", rt_i128_text(d, t));
+        rt_fail(line, "dim(): integer overflow (%s does not fit in 64 bits)", rt_i128_text(d, t));
+    }
+    return (int64_t)d;
+}
+static inline double rt_dim_real(double a, double b) { double d = a - b; return 0.0 > d ? 0.0 : d; }

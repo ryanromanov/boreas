@@ -11,6 +11,7 @@ element or whole), `if`, `do`, `do while`, `exit`, `cycle`, `stop`, `return`, `p
 subroutines whose parameters are single values or arrays, passed `in` or (subroutines) `inout`."""
 import os
 import shutil
+import sys
 import subprocess
 import tempfile
 from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, Comment, Cycle, Deallocate, Decl, Do, DoWhile, Exit, If, IsType,
@@ -24,8 +25,15 @@ KINDS = ("int", "int32", "real", "real32", "logical")
 CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
             "size", "maxval", "minval", "sum", "product", "matmul", "dot_product", "allocated"}
-ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real", "real32"}
-SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f"}
+ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real", "real32", "real64", "asin", "acos", "atan",
+              "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "erf", "erfc", "floor", "ceiling", "nint", "aint", "anint",
+              "int32", "int64"}
+ELEMENTAL2 = {"atan2", "sign", "modulo", "dim"}
+CONSTANTS = {"huge", "epsilon", "tiny"}
+BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS
+SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
+               "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
+               "acosh": "acoshf", "erf": "erff", "erfc": "erfcf"}
 WRITERS = {"int": "rt_write_int", "int32": "rt_write_int", "real": "rt_write_real", "real32": "rt_write_real32",
            "logical": "rt_write_bool", "string": "rt_write_str"}
 MAX_RANK = 3
@@ -260,9 +268,20 @@ class Compiler:
                 self.refuse("allocated() of anything but the name of an allocatable array", e)
             return
         ranks = [self.types[id(a)].rank for a in e.args]
-        if name in ELEMENTAL1:
+        if name == "atan" and len(e.args) == 2:
+            if any(r != 0 for r in ranks):
+                self.refuse("atan() of an array and a second argument", e)
+        elif name in ELEMENTAL1:
             if len(e.args) != 1:
                 self.refuse(f"{name}() with {len(e.args)} arguments", e)
+        elif name in ELEMENTAL2:
+            if len(e.args) != 2 or any(r != 0 for r in ranks):
+                self.refuse(f"{name}() of anything but two single values", e)
+            if name == "modulo" and self.unit.ieee:
+                self.refuse("modulo() in a file that says `use ieee`", e)
+        elif name in CONSTANTS:
+            if len(e.args) != 1 or ranks[0] != 0 or (name != "huge" and self.types[id(e.args[0])].kind not in ("real", "real32")):
+                self.refuse(f"{name}() of anything but a single real{' or whole number' if name == 'huge' else ''}", e)
         elif name == "size":
             if len(e.args) not in (1, 2) or ranks[0] < 1 or (len(e.args) == 2 and not isinstance(e.args[1], Num)):
                 self.refuse("size() of anything but an array and a literal dimension", e)
@@ -280,7 +299,7 @@ class Compiler:
                 self.refuse(f"{name}() of anything but two real or two int arrays of the right rank", e)
         elif any(r != 0 for r in ranks):
             self.refuse(f"{name}() of an array", e)
-        if name in ("mod", "min", "max", "int") and any(self.types[id(a)].kind in ("logical",) for a in e.args):
+        if name in ("mod", "min", "max", "int", "sign", "modulo", "dim", "atan2", "atan") and any(self.types[id(a)].kind in ("logical",) for a in e.args):
             self.refuse(f"{name}() of a logical", e)
 
     # -- the generated text -----------------------------------------------------------------------------------------
@@ -653,15 +672,37 @@ class Compiler:
             return "real", f"fabs({x})"
         if name == "real32":
             return "real32", self.cast(x, kind, "real32")
+        if name in ("floor", "ceiling", "nint"):             # a whole number stays as it is; a real gives an int (an int32 for a real32)
+            if kind in ("int", "int32"):
+                return kind, x
+            op = ("floor", "ceiling", "nint").index(name)
+            if kind == "real32":
+                return "int32", f"((int32_t)rt_whole((double){x}, {op}, 32, {line}))"
+            return "int", f"rt_whole({x}, {op}, 64, {line})"
+        if name in ("int32", "int64"):
+            if kind in ("int", "int32"):
+                if name == "int64":
+                    return "int", self.cast(x, kind, "int")
+                return "int32", f'rt_narrow32({self.cast(x, kind, "int")}, {line}, "int32()")'
+            if name == "int64":
+                return "int", f'rt_to_whole({self.cast(x, kind, "real")}, 64, "int64", {line})'
+            return "int32", f'((int32_t)rt_to_whole({self.cast(x, kind, "real")}, 32, "int32", {line}))'
         r = self.cast(x, kind, "real")
-        if name == "real":
+        if name in ("real", "real64"):
             return "real", r
+        if name in ("aint", "anint"):
+            call = f"rt_{name}({r}, {line})"
+            return ("real32", f"((float){call})") if kind == "real32" else ("real", call)
         if kind == "real32":                                 # single precision: sqrt is exact in double then rounded; the
             if name == "sqrt":                               # rest are the C library's sinf, expf, ... (as the interpreter's)
                 return "real32", f"((float)rt_sqrt({r}, 0, {line}))"
             if name in ("log", "log10"):
                 return "real32", f'rt_logf({x}, {SINGLE_LIBM[name]}, "{name}", {line})'
+            if name == "atanh":
+                return "real32", f"rt_atanhf({x}, {line})"
             return "real32", f'rt_math1f("{name}", {SINGLE_LIBM[name]}({x}), {x}, {line})'
+        if name == "atanh":
+            return "real", f"rt_atanh({r}, {was_int}, {line})"
         if name == "sqrt":
             return "real", f"rt_sqrt({r}, {was_int}, {line})"
         if name == "exp":
@@ -670,11 +711,67 @@ class Compiler:
             return "real", f'rt_log({r}, {name}, "{name}", {was_int}, {line})'
         return "real", f'rt_math1("{name}", {name}({r}), {r}, {was_int}, {line})'
 
+    def constant(self, e):
+        """huge(x), epsilon(x), tiny(x): a constant of the kind of x (which is still evaluated)."""
+        name, kind = e.name, self.types[id(e.args[0])].kind
+        self.value(e.args[0])
+        if name == "huge":
+            text = {"int": "INT64_MAX", "int32": "INT32_MAX", "real": repr(sys.float_info.max),
+                    "real32": "3.4028234663852886e+38f"}.get(kind)
+        elif name == "epsilon":
+            text = {"real": repr(sys.float_info.epsilon), "real32": "1.1920928955078125e-07f"}.get(kind)
+        else:
+            text = {"real": repr(sys.float_info.min), "real32": "1.1754943508222875e-38f"}.get(kind)
+        if text is None:
+            raise NotCompiled(f"{name}() of a {kind}", self.line)
+        return V(Type(kind), self.tmp(CSCALAR[kind], text))
+
+    def elemental2(self, name, e, vals, line):
+        """atan2, sign, modulo and dim of two single values."""
+        (a, b), kinds = vals, [v.t.kind for v in vals]
+        out = self.types[id(e)].kind
+        was = [1 if k in ("int", "int32") else 0 for k in kinds]
+        ints = all(k in ("int", "int32") for k in kinds)
+        d = [self.cast(v.atom, v.t.kind, "real") for v in vals]
+        if name == "atan2":
+            if kinds == ["real32", "real32"]:
+                return V(Type("real32"), self.tmp("float", f"atan2f({a.atom}, {b.atom})"))
+            r = f"atan2({d[0]}, {d[1]})"
+            return V(Type(out), self.tmp(CSCALAR[out], f"rt_r32({r}, {line})" if out == "real32" else r))
+        if ints:
+            ia, ib = (self.cast(v.atom, v.t.kind, "int") for v in vals)
+            if out == "int32":
+                if name == "sign":
+                    return V(Type("int32"), self.tmp("int32_t", f"rt_sign_int32({a.atom}, {b.atom}, {line})"))
+                if name == "dim":
+                    return V(Type("int32"), self.tmp("int32_t", f"((int32_t)rt_dim_int({ia}, {ib}, 32, {line}))"))
+                return V(Type("int32"), self.tmp("int32_t", f"((int32_t)rt_modulo({ia}, {ib}, {line}))"))
+            if name == "sign":
+                return V(Type("int"), self.tmp("int64_t", f"rt_sign_int({ia}, {ib}, {line})"))
+            if name == "dim":
+                return V(Type("int"), self.tmp("int64_t", f"rt_dim_int({ia}, {ib}, 64, {line})"))
+            return V(Type("int"), self.tmp("int64_t", f"rt_modulo({ia}, {ib}, {line})"))
+        if name == "sign":
+            r = f"copysign(fabs({d[0]}), {d[1]})"
+        elif name == "dim":
+            r = f"rt_dim_real({d[0]}, {d[1]})"
+        else:
+            r = f"rt_fmodulo({d[0]}, {d[1]}, {was[0]}, {was[1]}, {line})"
+        if out == "real32":
+            return V(Type("real32"), self.tmp("float", f"rt_r32({r}, {line})"))
+        return V(Type("real"), self.tmp("double", r))
+
     def builtin(self, e):
         line, name = self.line, e.name
         if name == "allocated":
             return V(Type("logical"), self.tmp("bool", f"({self.vars[e.args[0].name][1]}.data != NULL)"))
-        vals = [self.value(a, exact=name in ("mod", "min", "max")) for a in e.args]
+        if name == "atan" and len(e.args) == 2:
+            name = "atan2"
+        if name in CONSTANTS:
+            return self.constant(e)
+        vals = [self.value(a, exact=name in ("mod", "min", "max") or name in ELEMENTAL2) for a in e.args]
+        if name in ELEMENTAL2:
+            return self.elemental2(name, e, vals, line)
         if name in ELEMENTAL1:
             v = vals[0]
             if v.t.rank == 0:
