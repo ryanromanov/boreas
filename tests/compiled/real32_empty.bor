@@ -1,0 +1,7 @@
+program t
+  real32[0] :: none
+  real32[2, 0] :: m
+  real32[0, 2] :: n
+  println(sum(none), product(none), dot_product(none, none), maxval([1.0, 2.0]))
+  println(matmul(m, n))
+end program

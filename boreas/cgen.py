@@ -6,7 +6,7 @@ that uses anything outside the subset is refused as a whole, with a message that
 partial code is ever written. Every operation is emitted as three-address code (each part into a temporary, in source
 order), so the order of evaluation, and of any output or error, is the interpreter's.
 
-The subset so far: `int`, `int32`, `real` and `logical` values and arrays of them (up to three dimensions, element by
+The subset so far: `int`, `int32`, `real`, `real32` and `logical` values and arrays of them (up to three dimensions, element by
 element or whole), `if`, `do`, `do while`, `exit`, `cycle`, `stop`, `return`, `print`/`println`, and functions and
 subroutines whose parameters are single values or arrays, passed `in` or (subroutines) `inout`."""
 import os
@@ -20,13 +20,14 @@ from .typecheck import infer
 from .types import Type
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-KINDS = ("int", "int32", "real", "logical")
-CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "logical": "bool"}
-BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "int", "size",
-            "maxval", "minval", "sum", "product", "matmul", "dot_product"}
-ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real"}
-WRITERS = {"int": "rt_write_int", "int32": "rt_write_int", "real": "rt_write_real", "logical": "rt_write_bool",
-           "string": "rt_write_str"}
+KINDS = ("int", "int32", "real", "real32", "logical")
+CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool"}
+BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
+            "size", "maxval", "minval", "sum", "product", "matmul", "dot_product"}
+ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real", "real32"}
+SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f"}
+WRITERS = {"int": "rt_write_int", "int32": "rt_write_int", "real": "rt_write_real", "real32": "rt_write_real32",
+           "logical": "rt_write_bool", "string": "rt_write_str"}
 MAX_RANK = 3
 
 
@@ -249,7 +250,7 @@ class Compiler:
                 self.refuse(f"{name}() of anything but a whole array", e)
         elif name in ("matmul", "dot_product"):
             ts = [self.types[id(a)] for a in e.args]
-            ok = len(ts) == 2 and ts[0].kind == ts[1].kind and ts[0].kind in ("real", "int")
+            ok = len(ts) == 2 and ts[0].kind == ts[1].kind and ts[0].kind in ("real", "real32", "int")
             if name == "dot_product":
                 ok = ok and ts[0].rank == 1 and ts[1].rank == 1
             else:
@@ -282,8 +283,12 @@ class Compiler:
     def cast(self, atom, kind, to):
         if kind == to or to is None:
             return atom
-        if to == "real" and kind in ("int", "int32"):
+        if to == "real" and kind in ("int", "int32", "real32"):
             return f"((double){atom})"
+        if to == "real32" and kind in ("int", "int32"):         # through a double, as the interpreter does (not int64 to float)
+            return f"((float)(double){atom})"
+        if to == "real32" and kind == "real":                    # a literal next to a real32, or a real stored in one: checked
+            return f"rt_r32({atom}, {self.line})"
         if to == "int" and kind == "int32":
             return f"((int64_t){atom})"
         if to == "int32" and kind == "int":                    # only a literal next to an int32 (the checker says so)
@@ -299,10 +304,14 @@ class Compiler:
         return self.cast(atom, kind, to)
 
     # -- values ---------------------------------------------------------------------------------------------------------
-    def value(self, e):
-        """The value of `e` (after the conversion the checker recorded for it)."""
+    def value(self, e, exact=False):
+        """The value of `e` (after the conversion the checker recorded for it). `exact`: a whole number that the checker
+        converts to real32 stays a whole number, because the interpreter works `int op real32` out in double precision
+        and rounds once (16777217 + 0.5 is 16777218.0, not 16777216.0)."""
         v = self.raw(e)
         target = self.conv.get(id(e))
+        if exact and target is not None and target.kind == "real32" and v.t.kind in ("int", "int32"):
+            return v
         if target is not None and target.kind != v.t.kind:
             if v.t.rank == 0:
                 return V(Type(target.kind), self.cast(v.atom, v.t.kind, target.kind))
@@ -368,13 +377,14 @@ class Compiler:
                 return V(Type("logical"), self.tmp("bool", f"!{v.atom}"))
             if e.op == "+":
                 return v
-            call = {"int": f"rt_neg({v.atom}, {line})", "int32": f"rt_neg32({v.atom}, {line})", "real": f"-{v.atom}"}[kind]
+            call = {"int": f"rt_neg({v.atom}, {line})", "int32": f"rt_neg32({v.atom}, {line})", "real": f"-{v.atom}",
+                    "real32": f"-{v.atom}"}[kind]
             return V(Type(kind), self.tmp(CSCALAR[kind], call))
         out_kind = "logical" if e.op == "not" else kind
         res = self.array_like(v, out_kind)
         k = self.loop_var()
         x = self.elem(v, k)
-        expr = {("not", "logical"): f"!{x}", ("+", kind): x, ("-", "real"): f"-{x}",
+        expr = {("not", "logical"): f"!{x}", ("+", kind): x, ("-", "real"): f"-{x}", ("-", "real32"): f"-{x}",
                 ("-", "int"): f"rt_neg({x}, {line})", ("-", "int32"): f"rt_neg32({x}, {line})"}[(e.op, kind)]
         self.emit(f"for (int64_t {k} = 0; {k} < {res}.n; {k}++) {res}.data[{k}] = {expr};")
         return V(Type(out_kind, v.t.rank), res)
@@ -392,7 +402,7 @@ class Compiler:
     def binary(self, e):
         op, line = e.op, self.line
         flags = (1 if self.types[id(e.left)].kind == "int" else 0) | (2 if self.types[id(e.right)].kind == "int" else 0)
-        lv, rv = self.value(e.left), self.value(e.right)
+        lv, rv = self.value(e.left, exact=True), self.value(e.right, exact=True)
         compare = op in ("==", "/=", "<", "<=", ">", ">=")
         logic = op in ("and", "or")
         if lv.t.rank == 0 and rv.t.rank == 0:
@@ -401,12 +411,11 @@ class Compiler:
                 return V(Type("logical"), self.tmp("bool", f"({la} {'&&' if op == 'and' else '||'} {ra})"))
             if compare:
                 if lv.t.kind != rv.t.kind:                # whole numbers next to reals compare as reals
-                    kind = "real" if "real" in (lv.t.kind, rv.t.kind) else "int"
+                    kind = "real" if {"real", "real32"} & {lv.t.kind, rv.t.kind} else "int"
                     la, ra = self.cast(la, lv.t.kind, kind), self.cast(ra, rv.t.kind, kind)
                 return V(Type("logical"), self.tmp("bool", f"({la} {'!=' if op == '/=' else op} {ra})"))
             kind = lv.t.kind if lv.t.kind == rv.t.kind else self.widest(lv.t.kind, rv.t.kind)
-            la, ra = self.cast(la, lv.t.kind, kind), self.cast(ra, rv.t.kind, kind)
-            return V(Type(kind), self.tmp(CSCALAR[kind], self.scalar_op(op, kind, la, ra, flags, line)))
+            return V(Type(kind), self.tmp(CSCALAR[kind], self.arith(op, kind, lv.t.kind, la, rv.t.kind, ra, flags, line)))
         # whole arrays, element by element: the shapes must agree, then each operation runs over every element
         arrays = [v for v in (lv, rv) if v.t.rank > 0]
         if len(arrays) == 2:
@@ -425,18 +434,31 @@ class Compiler:
         elif compare:
             lk, rk = lv.t.kind, rv.t.kind
             if lk != rk:
-                common = "real" if "real" in (lk, rk) else "int"
+                common = "real" if {"real", "real32"} & {lk, rk} else "int"
                 la, ra = self.cast(la, lk, common), self.cast(ra, rk, common)
             expr = f"({la} {'!=' if op == '/=' else op} {ra})"
         else:
-            la, ra = self.cast(la, lv.t.kind, kind), self.cast(ra, rv.t.kind, kind)
-            expr = self.scalar_op(op, kind, la, ra, flags, line)
+            expr = self.arith(op, kind, lv.t.kind, la, rv.t.kind, ra, flags, line)
         self.emit(f"for (int64_t {k} = 0; {k} < {res}.n; {k}++) {res}.data[{k}] = {expr};")
         return V(Type(kind, shape_of.t.rank), res)
 
+    def arith(self, op, kind, lk, la, rk, ra, flags, line):
+        """The C expression for `la op ra` where the operands are of kinds `lk` and `rk` and the answer is of `kind`."""
+        if kind != "real32":
+            return self.scalar_op(op, kind, self.cast(la, lk, kind), self.cast(ra, rk, kind), flags, line)
+        if op == "**":                                       # a real32 base, to a whole number or to a real32
+            if lk != "real32":
+                raise NotCompiled("a real32 power whose base is not a real32", line)
+            if rk in ("int", "int32"):
+                return f"rt_spow_i({la}, (int64_t){ra}, {line})"
+            return f"rt_spow_f({la}, {ra}, {line})"
+        # worked out in double precision (exact for two singles, as is a whole number), then rounded to single once
+        d = self.scalar_op(op, "real", self.cast(la, lk, "real"), self.cast(ra, rk, "real"), flags, line)
+        return f"rt_r32({d}, {line})"
+
     @staticmethod
     def widest(a, b):
-        order = ["int32", "int", "real"]
+        order = ["int32", "int", "real32", "real"]
         return order[max(order.index(a), order.index(b))]
 
     # -- array literals and elements ----------------------------------------------------------------------------------
@@ -521,10 +543,20 @@ class Compiler:
                 return "int", f"rt_abs({x}, {line})"
             if kind == "int32":
                 return "int32", f"rt_abs32({x}, {line})"
+            if kind == "real32":
+                return "real32", f"fabsf({x})"
             return "real", f"fabs({x})"
+        if name == "real32":
+            return "real32", self.cast(x, kind, "real32")
         r = self.cast(x, kind, "real")
         if name == "real":
             return "real", r
+        if kind == "real32":                                 # single precision: sqrt is exact in double then rounded; the
+            if name == "sqrt":                               # rest are the C library's sinf, expf, ... (as the interpreter's)
+                return "real32", f"((float)rt_sqrt({r}, 0, {line}))"
+            if name in ("log", "log10"):
+                return "real32", f'rt_logf({x}, {SINGLE_LIBM[name]}, "{name}", {line})'
+            return "real32", f'rt_math1f("{name}", {SINGLE_LIBM[name]}({x}), {x}, {line})'
         if name == "sqrt":
             return "real", f"rt_sqrt({r}, {was_int}, {line})"
         if name == "exp":
@@ -535,7 +567,7 @@ class Compiler:
 
     def builtin(self, e):
         line, name = self.line, e.name
-        vals = [self.value(a) for a in e.args]
+        vals = [self.value(a, exact=name in ("mod", "min", "max")) for a in e.args]
         if name in ELEMENTAL1:
             v = vals[0]
             if v.t.rank == 0:
@@ -574,18 +606,28 @@ class Compiler:
                 a, b = (self.cast(atoms[i], kinds[i], "int") for i in (0, 1))
                 return V(Type("int"), self.tmp("int64_t", f"rt_mod({a}, {b}, {line})"))
             a, b = (self.cast(atoms[i], kinds[i], "real") for i in (0, 1))
-            return V(Type("real"), self.tmp("double", f"rt_fmod({a}, {b}, {was[0]}, {was[1]}, {line})"))
+            m = f"rt_fmod({a}, {b}, {was[0]}, {was[1]}, {line})"
+            if self.types[id(e)].kind == "real32":             # the remainder of two singles is a single (exactly)
+                return V(Type("real32"), self.tmp("float", f"rt_r32({m}, {line})"))
+            return V(Type("real"), self.tmp("double", m))
         if name in ("min", "max") and len(atoms) >= 2:
             kind = self.types[id(e)].kind
+            op = '>' if name == 'max' else '<'
+            if kind == "real32" and any(k != "real32" for k in kinds):     # compared as the interpreter does: in double
+                xs = [self.cast(a, k, "real") for a, k in zip(atoms, kinds)]
+                best = self.tmp("double", xs[0])
+                for x in xs[1:]:
+                    self.emit(f"if ({x} {op} {best}) {best} = {x};")
+                return V(Type(kind), self.tmp("float", f"rt_r32({best}, {line})"))
             xs = [self.cast(a, k, kind) for a, k in zip(atoms, kinds)]
             best = self.tmp(CSCALAR[kind], xs[0])
             for x in xs[1:]:
-                self.emit(f"if ({x} {'>' if name == 'max' else '<'} {best}) {best} = {x};")
+                self.emit(f"if ({x} {op} {best}) {best} = {x};")
             return V(Type(kind), best)
         if name == "int" and len(atoms) == 1:
             if kinds[0] in ("int", "int32"):
                 return V(Type("int"), self.cast(atoms[0], kinds[0], "int"))
-            return V(Type("int"), self.tmp("int64_t", f"rt_trunc_int({atoms[0]}, {line})"))
+            return V(Type("int"), self.tmp("int64_t", f"rt_trunc_int({self.cast(atoms[0], kinds[0], 'real')}, {line})"))
         raise NotCompiled(f"the function '{name}' with {len(atoms)} arguments", line)
 
     def reduction(self, name, a, line):
@@ -598,9 +640,11 @@ class Compiler:
             best = self.tmp(ct, f"{a.atom}.data[0]")
             self.emit(f"for (int64_t {k} = 1; {k} < {a.atom}.n; {k}++) if ({x} {'>' if name == 'maxval' else '<'} {best}) {best} = {x};")
             return V(Type(kind), best)
-        if kind == "real":                                  # plain multiplication or addition, one at a time from the left
-            acc = self.tmp("double", "1.0" if name == "product" else "0.0")
-            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {acc} {'*' if name == 'product' else '+'} {x};")
+        if kind in ("real", "real32"):                      # plain multiplication or addition, one at a time from the left
+            acc = self.tmp("double", "1.0" if name == "product" else "0.0")      # (a real32 array in double, rounded once at
+            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {acc} {'*' if name == 'product' else '+'} {x};")  # the end)
+            if kind == "real32":
+                return V(Type(kind), self.tmp("float", f"rt_r32({acc}, {line})"))
             return V(Type(kind), acc)
         wide = self.tmp("rt_i128", "1" if name == "product" else "0")   # exact, then checked once, like the interpreter
         op = "*" if name == "product" else "+"
@@ -617,9 +661,11 @@ class Compiler:
         if name == "dot_product":
             self.emit(f"rt_dot_shapes({a.atom}.shape, {b.atom}.shape, {line});")
             k = self.loop_var()
-            if kind == "real":
+            if kind in ("real", "real32"):
                 acc = self.tmp("double", "0.0")
-                self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {acc} + {a.atom}.data[{k}] * {b.atom}.data[{k}];")
+                self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {acc} + (double){a.atom}.data[{k}] * (double){b.atom}.data[{k}];")
+                if kind == "real32":
+                    return V(Type(kind), self.tmp("float", f"rt_r32({acc}, {line})"))
                 return V(Type(kind), acc)
             wide = self.tmp("rt_i128", "0")
             self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {wide} = {wide} + (rt_i128){a.atom}.data[{k}] * {b.atom}.data[{k}];")
@@ -637,11 +683,11 @@ class Compiler:
         i, j, t = self.loop_var(), self.loop_var(), self.loop_var()
         self.emit(f"for (int64_t {j} = 0; {j} < {m}; {j}++) for (int64_t {i} = 0; {i} < {n}; {i}++) {{")
         self.depth += 1
-        term = f"{a.atom}.data[{i} + {t} * {n}] * {b.atom}.data[{t} + {j} * {kk}]"
-        if kind == "real":
+        term = f"(double){a.atom}.data[{i} + {t} * {n}] * (double){b.atom}.data[{t} + {j} * {kk}]"
+        if kind in ("real", "real32"):
             self.emit("double acc = 0.0;")
             self.emit(f"for (int64_t {t} = 0; {t} < {kk}; {t}++) acc = acc + {term};")
-            self.emit(f"{res}.data[{i} + {j} * {n}] = acc;")
+            self.emit(f"{res}.data[{i} + {j} * {n}] = " + (f"rt_r32(acc, {line});" if kind == "real32" else "acc;"))
         else:
             self.emit("rt_i128 acc = 0;")
             self.emit(f"for (int64_t {t} = 0; {t} < {kk}; {t}++) acc = acc + (rt_i128){a.atom}.data[{i} + {t} * {n}] * {b.atom}.data[{t} + {j} * {kk}];")
@@ -677,9 +723,7 @@ class Compiler:
     def copy_into(self, dst, dst_kind, src, line, what):
         """Store the array value `src` in the array variable `dst`, element by element (shapes already agree)."""
         k = self.loop_var()
-        x = self.elem(src, k)
-        if src.t.kind == "int" and dst_kind == "int32":
-            x = self.narrow(x, "int", "int32", line, what)
+        x = self.narrow(self.elem(src, k), src.t.kind, dst_kind, line, what)
         self.emit(f"for (int64_t {k} = 0; {k} < {dst}.n; {k}++) {dst}.data[{k}] = {x};")
 
     def st_decl(self, s):
@@ -963,7 +1007,10 @@ def build(src_c, output, release=False, keep=False):
     cc = find_compiler()
     if cc is None:
         return "no C compiler found (set CC, or install cc, clang or gcc)"
-    flags = ["-O2", "-std=gnu11", "-ffp-contract=off", "-fwrapv", "-w"]
+    # -fno-builtin-sinf ...: the single-precision library functions must run at run time, as the interpreter's do. A compiler
+    # that knows sinf may work a constant argument out itself, correctly rounded, where the C library is a bit off now and then.
+    flags = ["-O2", "-std=gnu11", "-ffp-contract=off", "-fwrapv", "-w",
+             *(f"-fno-builtin-{name}" for name in (*SINGLE_LIBM.values(), "powf"))]
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "prog.c")
         with open(path, "w") as f:

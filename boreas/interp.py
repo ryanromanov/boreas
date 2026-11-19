@@ -2266,11 +2266,12 @@ class Interp:
         if not empty:
             return result
         t = self.static_type(e)
-        if t is None or t.kind != "real":
+        if t is None or t.kind not in ("real", "real32"):
             return result
+        make = Real32 if t.kind == "real32" else float
         if isinstance(result, Array):
-            return Array(result.shape, [float(x) for x in result.data])
-        return float(result)
+            return Array(result.shape, [make(x) for x in result.data])
+        return make(result)
 
     def static_type(self, node):
         """The type the checker worked out for `node`, or None (the checker is run the first time this is asked)."""

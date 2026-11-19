@@ -941,14 +941,22 @@ A module variable can be `allocatable`; see Allocatable arrays above.
     boreas build prog.bor -o prog          compile with the system C compiler (cc, clang or gcc)
     boreas emit-c prog.bor                 print the C it writes
 
-The compiler handles the numeric core of the language so far: `int`, `int32`, `real` and `logical` values and arrays of
+The compiler handles the numeric core of the language so far: `int`, `int32`, `real`, `real32` and `logical` values and arrays of
 them (up to three dimensions, element by element or whole: `a = b * 2.0 + c`, bounds checked), `if`, `do`, `do while`,
 `exit`, `cycle`, `stop`, `return`, `print` and `println`, and functions and subroutines whose parameters are single
 values or arrays, passed `in` or (in subroutines) `inout`; also `size`, `maxval`, `minval`, `sum`, `product`,
-`dot_product` and `matmul` (two real or two int arrays). A program that uses anything else (records, strings, modules, `out` parameters, `real32`, sections such
-as `a[1:3]`, allocatable arrays, ...) is refused as a whole, with a message that names the
-construct and its line ("not supported by the compiler yet: an allocatable array (line 3)"): run it with the
+`dot_product` and `matmul` (two real, two real32 or two int arrays). A program that uses anything else (records, strings,
+modules, `out` parameters, sections such as `a[1:3]`, allocatable arrays, ...) is refused as a whole, with a message that
+names the construct and its line ("not supported by the compiler yet: an allocatable array (line 3)"): run it with the
 interpreter instead, or wait for the next slice. Nothing is ever compiled halfway.
+
+A `real32` in a compiled program is worked out as the interpreter works it out: `+ - * /` between singles, or between a
+single and a whole number, are done in double precision and rounded to single once (the same bits as single-precision
+hardware for two singles), `**` multiplies for a whole-number exponent and calls `powf` otherwise, `sin cos tan exp log
+log10` call the C library's `sinf`, `expf`, ... and `sqrt` is correctly rounded. `sum`, `product`, `dot_product` and
+`matmul` of `real32` values add in double precision and round once at the end, where gfortran adds in single precision at
+every step, so the last digits can differ from a Fortran program's. A `real32` prints as the shortest text that reads back
+as the same single (`100.0`, `0.1`, `1e-05`).
 
 A compiled program prints exactly what the interpreter prints, and fails the way it fails: the same message on stderr
 (with the same line number, also inside a function) and the same exit code. Numbers print the same, digit for digit;
