@@ -10,6 +10,10 @@ from .names import undeclared_names
 USAGE = """usage:
   boreas FILE.bor                    run a program
   boreas check FILE.bor [--json]     parse and check without running; exit 1 on errors
+  boreas emit-c FILE.bor [--release] print the C the compiler writes for a program
+  boreas build FILE.bor -o PROGRAM [--release] [--keep]
+                                     compile to a native program (the numeric part of the language so far;
+                                     --release leaves out the integer overflow checks; --keep also writes PROGRAM.c)
   boreas lsp                         language server on stdin/stdout (errors as diagnostics)
   boreas fmt [--check] [--indent N | --tabs] FILE.bor [FILE...]
                                      re-indent files in place (2 spaces a level unless told);
@@ -181,6 +185,50 @@ def convert_command(args):
         sys.exit(verify(paths[0] if len(paths) == 1 else paths, text, bool(todos), timeout or DEFAULT_TIMEOUT, stdin_text=stdin_text, defines=defines))
 
 
+def compile_to_c(path, release):
+    """The C text for the program in `path`, or a message for the user (and the exit code to use)."""
+    from .cgen import NotCompiled, compile_unit
+    with open(path) as f:
+        src = f.read()
+    unit = parse(src)
+    interp = Interp(unit, lambda *a: None)
+    try:
+        return compile_unit(unit, interp, release), None
+    except NotCompiled as err:
+        return None, f"{path}: {err}"
+
+
+def emit_c_command(args):
+    release = "--release" in args
+    files = [a for a in args if a != "--release"]
+    if len(files) != 1 or files[0].startswith("-"):
+        sys.exit(USAGE)
+    text, problem = compile_to_c(files[0], release)
+    if problem:
+        sys.exit(problem)
+    sys.stdout.write(text)
+
+
+def build_command(args):
+    from .cgen import build
+    release, keep = "--release" in args, "--keep" in args
+    rest = [a for a in args if a not in ("--release", "--keep")]
+    if "-o" not in rest or rest.index("-o") + 1 >= len(rest):
+        sys.exit(USAGE)
+    i = rest.index("-o")
+    output = rest[i + 1]
+    files = rest[:i] + rest[i + 2:]
+    if len(files) != 1 or files[0].startswith("-"):
+        sys.exit(USAGE)
+    text, problem = compile_to_c(files[0], release)
+    if problem:
+        sys.exit(problem)
+    complaint = build(text, output, release, keep)
+    if complaint:
+        sys.exit(f"error: the C compiler failed:\n{complaint}")
+    print(f"built {output}" + (" (release: no integer overflow checks)" if release else ""))
+
+
 def main():
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help"):
@@ -193,6 +241,10 @@ def main():
         elif args[0] == "lsp" and len(args) == 1:
             from .lsp import serve
             serve()
+        elif args[0] == "emit-c":
+            emit_c_command(args[1:])
+        elif args[0] == "build":
+            build_command(args[1:])
         elif args[0] == "convert":
             convert_command(args[1:])
         elif args[0] == "fmt":

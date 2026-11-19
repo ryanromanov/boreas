@@ -15,3 +15,6 @@ boreas = "boreas.cli:main"
 
 [tool.setuptools]
 packages = ["boreas"]
+
+[tool.setuptools.package-data]
+boreas = ["cruntime.h"]

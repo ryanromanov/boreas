@@ -3503,3 +3503,8 @@ class Interp:
 if os.environ.get("BOREAS_TYPE_ORACLE"):                 # development only: check the type checker against this interpreter
     from .typecheck import install_oracle
     install_oracle(Interp, os.environ["BOREAS_TYPE_ORACLE"])
+
+
+if os.environ.get("BOREAS_COMPILE_CORPUS"):               # development only: collect the programs the tests run
+    from .cgen import install_corpus_dump
+    install_corpus_dump(Interp, os.environ["BOREAS_COMPILE_CORPUS"])

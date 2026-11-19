@@ -248,6 +248,7 @@ class Checker:
         self.value_dependent = []       # (line, what): expressions whose type depends on a value
         self.keep = []                  # the nodes, so that their ids stay valid
         self.errors = []                # (line, col, message, length): mistakes the checker is sure of
+        self.conv = {}                  # id(node) -> the type its value is converted to where it is used (for the compiler)
         self.where = {}                 # error -> the statement it was found in
         self.line = 0                   # the line of the statement being looked at
         self.stmt = None                # ... and the statement itself
@@ -436,6 +437,10 @@ class Checker:
         if lt.kind == "null" or rt.kind == "null":
             return LOGICAL if op in ("==", "/=") else UNKNOWN
         self.check_operands(e, lt, rt)
+        if lt.is_number and rt.is_number and e.op not in ("and", "or"):    # both sides are converted to the wider kind
+            kind = promote(lt.kind, rt.kind)
+            for node in (e.left, e.right):
+                self.convert(node, Type(kind))
         rank = self.broadcast(lt, rt)
         if op in ("==", "/=", "<", "<=", ">", ">=", "and", "or"):
             return Type("logical", rank)
@@ -672,21 +677,31 @@ class Checker:
                 return f"cannot assign {value.kind} to {target.kind}"
         return None
 
+    def convert(self, node, target):
+        """Record that the single number `node` is converted to `target` where it is used (the emitter reads this)."""
+        t = self.types.get(id(node))
+        if t is not None and t.known and target.known and t.rank == 0 and target.rank == 0 and t.kind != target.kind \
+                and t.kind in T.NUMBERS and target.kind in T.NUMBERS:
+            self.conv[id(node)] = Type(target.kind)
+
     def type_of_node(self, node):
         return self.types.get(id(node), UNKNOWN)
 
     def check_statement(self, s, env):
         if isinstance(s, Assign):
+            self.convert(s.value, self.type_of_node(s.target))
             problem = self.assign_problem(self.type_of_node(s.target), self.type_of_node(s.value))
             if problem:
                 self.error(problem, s)
         elif isinstance(s, Decl) and s.init is not None and not s.allocatable:
+            self.convert(s.init, env.get(s.name, UNKNOWN))
             problem = self.assign_problem(env.get(s.name, UNKNOWN), self.type_of_node(s.init))
             if problem:
                 self.error(problem, s)
         elif isinstance(s, Return) and s.value is not None and self.func is not None and self.func.ret is not None \
                 and not hasattr(self.func.ret, "types"):
             ret = parse(self.func.ret, self.scope)
+            self.convert(s.value, ret)
             problem = self.assign_problem(ret, self.type_of_node(s.value))
             if problem:
                 self.error(f"function {self.func.name}: {problem}", s)
@@ -720,6 +735,8 @@ class Checker:
             ptype, atype = parse(typ, scope), self.type_of_node(a)
             if not (ptype.known and atype.known):
                 continue
+            if intent == "in":
+                self.convert(a, ptype)
             if intent in ("out", "inout"):
                 if ptype.kind in T.SCALAR_KINDS and atype.kind in T.SCALAR_KINDS and ptype.rank >= 0 and atype.rank >= 0 \
                         and (ptype.kind != atype.kind or ptype.rank != atype.rank) and not ptype.optional:
