@@ -440,7 +440,7 @@ class Checker:
         if lt.is_number and rt.is_number and e.op not in ("and", "or"):    # both sides are converted to the wider kind
             kind = promote(lt.kind, rt.kind)
             for node in (e.left, e.right):
-                self.convert(node, Type(kind))
+                self.convert(node, Type(kind), literal=self.is_literal(node))
         rank = self.broadcast(lt, rt)
         if op in ("==", "/=", "<", "<=", ">", ">=", "and", "or"):
             return Type("logical", rank)
@@ -677,12 +677,18 @@ class Checker:
                 return f"cannot assign {value.kind} to {target.kind}"
         return None
 
-    def convert(self, node, target):
-        """Record that the single number `node` is converted to `target` where it is used (the emitter reads this)."""
+    WIDTH = {"int8": 0, "int16": 1, "int32": 2, "int": 3, "real32": 4, "real": 5, "complex": 6}
+
+    def convert(self, node, target, literal=False):
+        """Record that the number `node` (a single value or an array) is converted to `target` where it is used: the
+        emitter reads this. A narrowing (an `int` stored in an `int32`) is checked against the value when it happens, so it
+        is not recorded, except for a literal next to an int32, which is an int32 from the start."""
         t = self.types.get(id(node))
-        if t is not None and t.known and target.known and t.rank == 0 and target.rank == 0 and t.kind != target.kind \
-                and t.kind in T.NUMBERS and target.kind in T.NUMBERS:
-            self.conv[id(node)] = Type(target.kind)
+        if t is not None and t.known and target.known and t.rank >= 0 and t.kind != target.kind \
+                and t.kind in T.NUMBERS and target.kind in T.NUMBERS and (t.rank == target.rank or target.rank <= 0 or t.rank == 0):
+            if self.WIDTH[target.kind] < self.WIDTH[t.kind] and not literal:
+                return
+            self.conv[id(node)] = Type(target.kind, t.rank)
 
     def type_of_node(self, node):
         return self.types.get(id(node), UNKNOWN)

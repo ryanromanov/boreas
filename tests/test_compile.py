@@ -48,6 +48,24 @@ class ProgramTests(unittest.TestCase):
 
 
 FAILING = {
+    "index too large": "  int[3] :: a\n  println(a[4])",
+    "index too small": "  int[3] :: a\n  int :: i = 0\n  println(a[i])",
+    "matrix row index": "  real[2, 3] :: m\n  println(m[3, 1])",
+    "matrix column index": "  real[2, 3] :: m\n  println(m[1, 4])",
+    "an element written out of range": "  int[3] :: a\n  a[0] = 1",
+    "the target is checked before the value": "  int[3] :: a\n  a[9] = 1 / 0",
+    "shape mismatch in an operation": "  int[3] :: a = 1\n  int[2] :: b = 1\n  println(a + b)",
+    "shape mismatch the other way": "  int[2] :: a = 1\n  int[3] :: b = 1\n  println(a + b)",
+    "shape mismatch in an assignment": "  int[3] :: a\n  int[2] :: b\n  a = b",
+    "initializer shape": "  int[3] :: a = [1, 2]",
+    "negative extent": "  int :: n = -2\n  int[n] :: a",
+    "int32 overflow": "  int32 :: n = 2147483647\n  n = n + 1",
+    "int32 narrowing": "  int :: big = 5000000000\n  int32 :: n = big",
+    "int32 array narrowing": "  int :: big = 5000000000\n  int32[2] :: a = big",
+    "sum overflow": "  int[2] :: a = 9223372036854775807\n  println(sum(a))",
+    "maxval of nothing": "  int[0] :: a\n  println(maxval(a))",
+    "an error inside an array operation": "  int[3] :: a = 9223372036854775807\n  println(a + 1)",
+    "sqrt of a negative element": "  real[3] :: a = [1.0, -4.0, 9.0]\n  println(sqrt(a))",
     "power too large": "  println(10.0 ** 400)",
     "negative int to a fractional power": "  println((-8) ** 0.5)",
     "int times a huge real": "  real :: x = 1.0e308\n  println(10 * x)",
@@ -169,14 +187,26 @@ class RefusalTests(unittest.TestCase):
             self.assertEqual(done.stdout, "")                  # never partial code
 
     def test_what_is_not_handled_is_refused_as_a_whole(self):
-        self.refused(prog("  int[3] :: a = [1, 2, 3]\n  println(a)"), "the declaration of 'a' (an array)")
+        self.refused(prog("  allocatable int[] :: a\n  println(1)"), "allocatable")
+        self.refused(prog("  int[2, 2, 2, 2] :: a\n  println(1)"), "the declaration of 'a'")
+        self.refused(prog("  int[3] :: a = [1, 2, 3]\n  println(a[1:2])"), "part of an array")
+        self.refused(prog("  real[3] :: a = [1.0, 2.0, 3.0]\n  println(sum(a))"), "sum of reals")
+        self.refused(prog("  real32 :: x = 1.0\n  println(x)"), "the declaration of 'x' (real32)")
         self.refused(prog("  string :: s = \"a\"\n  println(s)"), "the declaration of 's' (string)")
         self.refused("record p\n  real :: x = 0.0\nend record\nprogram t\nend program\n", "records")
         self.refused("module m\n  public int :: k = 1\nend module\nprogram t\nend program\n", "modules")
         self.refused(prog("  int :: n = 1\n  println(floor(2.5), n)"), "the function 'floor'")
         self.refused(prog("  const int :: i = 1\n  do i = 1, 2\n  end do"), "constant or parameter")
         self.refused("function f(int :: n) -> int\n  n = 2\n  return n\nend function\nprogram t\nend program\n", "constant or parameter")
-        self.refused("subroutine s(inout int :: k)\n  @k = 1\nend subroutine\nprogram t\nend program\n", "inout parameter")
+        self.refused("subroutine s(out int :: k)\n  @k = 1\nend subroutine\nprogram t\nend program\n", "out parameter")
+
+    def test_calls_that_the_interpreter_rejects_are_refused(self):
+        defs = "subroutine s(inout real[] :: x, real[] :: y)\n  @x[1] = 9.0\nend subroutine\n"
+        self.refused(prog("  real[2] :: a = 1.0\n  call s(@a, a)", defs), "passed as inout and as another argument")
+        self.refused(prog("  const int :: n = 1\n  call t(@n)", "subroutine t(inout int :: k)\n  @k = 2\nend subroutine\n"),
+                     "constant or parameter")
+        self.refused("function g(int[] :: a) -> int[]\n  return a\nend function\nprogram t\nend program\n", "returns")
+        self.refused(prog("  int[3] :: a = [1, 2, 3]\n  int :: t = 0\n  println(mod(a, 2), t)"), "mod() of an array")
 
     def test_a_program_with_a_type_error_is_refused(self):
         self.refused(prog("  int :: n = 2.5"), "type error")

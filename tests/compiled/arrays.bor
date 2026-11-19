@@ -1,0 +1,62 @@
+! Arrays, element by element and whole, and subroutines that change their arguments.
+subroutine bump(inout int :: k, inout real[] :: v)
+  @k = k + 1
+  @v[1] = v[1] * 2
+end subroutine
+
+function total(int[] :: a) -> int
+  int :: i
+  int :: s = 0
+  do i = 1, size(a)
+    s = s + a[i]
+  end do
+  return s
+end function
+
+function trace(real[,] :: m) -> real
+  int :: i
+  real :: t = 0.0
+  do i = 1, size(m, 1)
+    t = t + m[i, i]
+  end do
+  return t
+end function
+
+program arrays
+  int :: i
+  int :: j
+  int[5] :: a = [5, 3, 1, 4, 2]
+  real[3] :: x = [1.5, 2.5, 3.5]
+  real[2, 3] :: m = [1.0, 2.0, 3.0; 4.0, 5.0, 6.0]
+  int32[3] :: small = 7
+  logical[4] :: flags
+  int :: n = 0
+  real[3, 3] :: id
+  println(a, x, m, small, flags)
+  println(total(a), size(a), size(m), size(m, 2), maxval(a), minval(x), product(x), sum(a))
+  do i = 1, 3
+    do j = 1, 3
+      if i == j then
+        id[i, j] = 1.0
+      end if
+    end do
+  end do
+  println(id, trace(id))
+  call bump(@n, @x)
+  call bump(@n, @x)
+  println(n, x)
+  x = x * 2.0 + 1
+  println(x, -x, x > 4.0, x == x)
+  a = a + a
+  println(a, a / 2, a - 1, 2 * a)
+  m = m + 0.5
+  println(m, sqrt(m), abs(-m))
+  real[5] :: y
+  y = a
+  println(y)
+  small = small + 1
+  small[2] = 100
+  println(small, small[2] + 1)
+  flags[2] = true
+  println(flags, not flags, flags and true)
+end program
