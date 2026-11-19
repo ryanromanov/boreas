@@ -71,7 +71,50 @@ REAL32_CASES = {
     "mod by zero": "  real32 :: x = 5.0\n  real32 :: z = 0.0\n  println(mod(x, z))",
 }
 
+OUT_DEFS = {
+    "an out parameter read before it is assigned": "subroutine s(out int :: k)\n  println(k)\n  @k = 5\nend subroutine\n",
+    "an out parameter never assigned": "subroutine s(out int :: k, int :: c)\n  if c > 0 then\n    @k = 5\n  end if\nend subroutine\n",
+    "an out parameter used to start a value": "subroutine s(out int :: k)\n  int :: a = k\n  @k = 5\nend subroutine\n",
+    "an unassigned out parameter passed as inout": "subroutine s(out int :: k)\n  call u(@k)\n  @k = 5\nend subroutine\nsubroutine u(inout int :: j)\n  @j = j + 1\nend subroutine\n",
+    "an out parameter handed on to a callee that does not assign it": "subroutine s(out int :: k)\n  @k = 1\n  call u(@k)\nend subroutine\nsubroutine u(out int :: j)\n  println(1)\nend subroutine\n",
+    "an out array given the wrong shape": "subroutine s(out int[] :: v)\n  @v = [7, 8, 9]\nend subroutine\n",
+}
+
 FAILING = {
+    "section: index below the range": "  int[6] :: a\n  println(a[0:3])",
+    "section: end beyond the range": "  int[6] :: a\n  println(a[3:7])",
+    "section: with a step, out of range": "  int[6] :: a\n  println(a[1:9:2])",
+    "section: zero step": "  int[6] :: a\n  println(a[1:4:0])",
+    "section: negative step without both ends": "  int[6] :: a\n  println(a[3::-1])",
+    "section: out of range in the second dimension": "  int[2, 3] :: m\n  println(m[1, 2:5:2])",
+    "section: out of range in the first dimension": "  int[2, 3] :: m\n  println(m[1:3, 1])",
+    "section: whole number subscript out of range": "  int[2, 3] :: m\n  println(m[3, 1:2])",
+    "section: evaluated left to right": "  int[4] :: a\n  int :: k = 0\n  println(a[1 / k:2])",
+    "section: end evaluated after the start": "  int[4] :: a\n  println(a[7:1 / 0])",
+    "section: of an unallocated array": "  allocatable int[] :: a\n  println(a[1:2])",
+    "section: assigned to an unallocated array": "  allocatable int[] :: a\n  a[1:2] = 1",
+    "section assigned a value of the wrong length": "  int[6] :: a\n  a[2:4] = [1, 2]",
+    "section assigned a value of the wrong rank": "  int[2, 2] :: m\n  m[:, 1] = [1, 2, 3]",
+    "section target checked before the value": "  int[6] :: a\n  a[7:8] = 1 / 0",
+    "section value evaluated before the shapes are compared": "  int[6] :: a\n  a[2:4] = [1 / 0]",
+    "section assigned into int32 too large": "  int32[3] :: a\n  int :: big = 5000000000\n  a[1:2] = big",
+    "section of an array of real32 too large": "  real[2] :: big = 1.0e39\n  real32[4] :: a\n  a[1:2] = big",
+    "unallocated: print": "  allocatable int[] :: a\n  println(a)",
+    "unallocated: size": "  allocatable int[] :: a\n  println(size(a))",
+    "unallocated: element read": "  allocatable int[] :: a\n  println(a[1 / 0])",
+    "unallocated: element write checked before the value": "  allocatable int[] :: a\n  a[1] = 1 / 0",
+    "unallocated: scalar assigned": "  allocatable int[] :: a\n  a = 5",
+    "unallocated: in an operation": "  allocatable int[] :: a\n  int[2] :: f = 1\n  println(f + a)",
+    "unallocated: copied": "  allocatable int[] :: a\n  int[3] :: f\n  f = a",
+    "the value is evaluated before the shape is replaced": "  allocatable int[] :: a\n  a = [1 / 0]",
+    "allocated twice": "  allocatable int[] :: a\n  allocate a[2]\n  allocate a[3]",
+    "allocated twice, extent not evaluated": "  allocatable int[] :: a\n  allocate a[2]\n  allocate a[1 / 0]",
+    "deallocated when not allocated": "  allocatable int[] :: a\n  deallocate a",
+    "negative extent": "  allocatable int[] :: a\n  int :: n = -1\n  allocate a[n]",
+    "extent that is not a whole number": "  allocatable int[] :: a\n  allocate a[2.5]",
+    "index beyond the allocated size": "  allocatable int[] :: a\n  allocate a[3]\n  a[4] = 1",
+    "int32 narrowing into an allocatable": "  allocatable int32[] :: a\n  int :: big = 5000000000\n  a = [big]",
+    "declared twice (a loop)": "  int :: i\n  do i = 1, 2\n    int :: x = 1\n  end do",
     "dot_product shapes": "  real[3] :: a = 1.0\n  real[2] :: b = 1.0\n  println(dot_product(a, b))",
     "matmul inner dimensions": "  real[2, 3] :: a = 1.0\n  real[2, 3] :: b = 1.0\n  println(matmul(a, b))",
     "int matmul overflow": "  int[1, 1] :: a = 9223372036854775807\n  int[1, 1] :: b = 2\n  println(matmul(a, b))",
@@ -131,6 +174,14 @@ class ErrorTests(unittest.TestCase):
                 self.assertIn("error: line", done.stderr)
             with self.subTest(name + " (use ieee)"):
                 same_as_interpreter(self, "use ieee\n" + prog(body))
+
+    def test_out_parameter_mistakes_are_the_interpreters(self):
+        for name, defs in OUT_DEFS.items():
+            with self.subTest(name):
+                arg, decl = ("a", "  int[2] :: a = [1, 2]") if "array" in name else ("n", "  int :: n = 3")
+                done = same_as_interpreter(self, prog(f"{decl}\n  call s(@{arg}{', 0' if 'never' in name else ''})", defs))
+                self.assertEqual(done.returncode, 1, name)
+                self.assertIn("error: line", done.stderr)
 
     def test_every_error_is_the_interpreters(self):
         for name, body in FAILING.items():
@@ -224,9 +275,10 @@ class RefusalTests(unittest.TestCase):
             self.assertEqual(done.stdout, "")                  # never partial code
 
     def test_what_is_not_handled_is_refused_as_a_whole(self):
-        self.refused(prog("  allocatable int[] :: a\n  println(1)"), "allocatable")
+        self.refused(prog("  allocatable string[] :: a\n  println(1)"), "the declaration of 'a'")
         self.refused(prog("  int[2, 2, 2, 2] :: a\n  println(1)"), "the declaration of 'a'")
-        self.refused(prog("  int[3] :: a = [1, 2, 3]\n  println(a[1:2])"), "part of an array")
+        self.refused(prog("  int[3] :: a = [1, 2, 3]\n  call s(@a[1:2])", "subroutine s(inout int[] :: v)\n  @v[1] = 0\nend subroutine\n"),
+                     "a section of 'a' passed as inout")
         self.refused(prog("  real[3] :: a = [1.0, 2.0, 3.0]\n  int[3] :: b = [1, 2, 3]\n  println(matmul(a, b))"), "matmul()")
         self.refused(prog("  real32 :: x = 1.0\n  println(floor(x))"), "the function 'floor'")
         self.refused(prog("  real32 :: x = 1.0\n  int :: n = 2\n  println(n ** x)"), "a real32 power whose base is not a real32")
@@ -236,7 +288,8 @@ class RefusalTests(unittest.TestCase):
         self.refused(prog("  int :: n = 1\n  println(floor(2.5), n)"), "the function 'floor'")
         self.refused(prog("  const int :: i = 1\n  do i = 1, 2\n  end do"), "constant or parameter")
         self.refused("function f(int :: n) -> int\n  n = 2\n  return n\nend function\nprogram t\nend program\n", "constant or parameter")
-        self.refused("subroutine s(out int :: k)\n  @k = 1\nend subroutine\nprogram t\nend program\n", "out parameter")
+        self.refused(prog("  int :: n = 1\n  call s(@n, @n)", "subroutine s(out int :: k, out int :: j)\n  @k = 1\n  @j = 2\nend subroutine\n"),
+                     "passed as out and as another argument")
 
     def test_calls_that_the_interpreter_rejects_are_refused(self):
         defs = "subroutine s(inout real[] :: x, real[] :: y)\n  @x[1] = 9.0\nend subroutine\n"

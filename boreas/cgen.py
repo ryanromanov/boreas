@@ -13,7 +13,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from .parser import (Apply, ArrayLit, Assign, Bool, Binary, Call, Comment, Cycle, Decl, Do, DoWhile, Exit, If, IsType,
+from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, Comment, Cycle, Deallocate, Decl, Do, DoWhile, Exit, If, IsType,
                      MatrixLit, Num, Print, Return, Slice, Stop, Str, Unary, Var)
 from .tree import statements_in, walk
 from .typecheck import infer
@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("int", "int32", "real", "real32", "logical")
 CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
-            "size", "maxval", "minval", "sum", "product", "matmul", "dot_product"}
+            "size", "maxval", "minval", "sum", "product", "matmul", "dot_product", "allocated"}
 ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real", "real32"}
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f"}
 WRITERS = {"int": "rt_write_int", "int32": "rt_write_int", "real": "rt_write_real", "real32": "rt_write_real32",
@@ -115,10 +115,8 @@ class Compiler:
                 pt = self.param_type(typ)
                 if pt is None:
                     self.refuse(f"parameter '{name}' of '{f.name}' ({typ if isinstance(typ, str) else 'a procedure'})")
-                if intent == "out":
-                    self.refuse(f"out parameter '{name}' of '{f.name}'")
-                if intent == "inout" and f.ret is not None:
-                    self.refuse(f"inout parameter '{name}' of the function '{f.name}'")
+                if intent in ("out", "inout") and f.ret is not None:
+                    self.refuse(f"{intent} parameter '{name}' of the function '{f.name}'")
         for f in [*u.functions.values(), None]:
             self.check_body((f.body if f else u.program.body), f)
 
@@ -133,6 +131,8 @@ class Compiler:
         return t
 
     def check_body(self, body, f):
+        self.allocs = self.allocs_of(body, f)
+        self.skip = {id(x) for d in statements_in(body) if isinstance(d, Decl) and d.allocatable for x in d.dims}
         strings = set()
         fixed = {name for typ, name, intent in f.params if intent == "in"} if f is not None else set()
         fixed |= {d.name for d in statements_in(body) if isinstance(d, Decl) and d.const}
@@ -146,7 +146,13 @@ class Compiler:
                 self.refuse(f"a loop over the constant or parameter '{s.var}'", s)
             if kind in (If, Do, DoWhile, Stop, Exit, Cycle, Comment):
                 continue
+            if kind in (Allocate, Deallocate):
+                if s.name not in self.allocs_of(body, f):
+                    self.refuse(f"'{s.name}' is not an allocatable array", s)
+                continue
             if kind is Decl:
+                if f is not None and s.name in {p[1] for p in f.params}:
+                    self.refuse(f"a declaration of the parameter '{s.name}'", s)
                 t = self.decl_type(s)
                 if t is None:
                     what = "allocatable " if s.allocatable else ""
@@ -154,8 +160,8 @@ class Compiler:
             elif kind is Assign:
                 root = s.target
                 if isinstance(root, Apply):
-                    if not root.bracket or any(isinstance(a, Slice) for a in root.args):
-                        self.refuse("an assignment to part of an array", s)
+                    if not root.bracket:
+                        self.refuse("an assignment to anything but a variable or an array element", s)
                 elif not isinstance(root, Var):
                     self.refuse("an assignment to anything but a variable or an array element", s)
                 if root.name in fixed:
@@ -183,29 +189,40 @@ class Compiler:
         f = self.unit.functions[s.name]
         self.check_call_args(f, s.args, s)
         roots = [getattr(a, "name", None) for a in s.args]
+        for a, (typ, pname, intent) in zip(s.args, f.params):
+            if intent in ("out", "inout") and isinstance(a, Apply) and any(isinstance(x, Slice) for x in a.args):
+                self.refuse(f"a section of '{a.name}' passed as {intent}", s)
         for (typ, pname, intent), root in zip(f.params, roots):
-            if intent == "inout" and root in fixed:
-                self.refuse(f"the constant or parameter '{root}' passed as inout", s)
-            if intent == "inout" and root is not None and roots.count(root) > 1:
-                self.refuse(f"'{root}' passed as inout and as another argument of the same call", s)
+            if intent in ("out", "inout") and root in fixed:
+                self.refuse(f"the constant or parameter '{root}' passed as {intent}", s)
+            if intent in ("out", "inout") and root is not None and roots.count(root) > 1:
+                self.refuse(f"'{root}' passed as {intent} and as another argument of the same call", s)
 
     def decl_type(self, d):
-        if d.allocatable or d.type not in KINDS:
+        if d.type not in KINDS:
             return None
         rank = len(d.dims) if d.dims is not None else 0
         if rank > MAX_RANK:
             return None
         return Type(d.type, rank)
 
-    STATEMENTS = (Decl, Assign, If, Do, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment)
+    STATEMENTS = (Decl, Assign, If, Do, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate)
+
+    @staticmethod
+    def allocs_of(body, f):
+        return {d.name for d in statements_in(body) if isinstance(d, Decl) and d.allocatable}
 
     def check_expr(self, e, strings):
         kind = type(e)
+        if id(e) in self.skip:                          # the `:` of an allocatable array's declaration
+            return
         if kind in self.STATEMENTS:
             return
         if kind is Str:
             if id(e) not in strings:
                 self.refuse("text outside a print", e)
+            return
+        if kind is Slice:                               # the parts of a section: checked as the expressions they are
             return
         if kind not in (Num, Bool, Var, Unary, Binary, Apply, ArrayLit, MatrixLit):
             if kind is IsType:
@@ -222,7 +239,7 @@ class Compiler:
         if kind is Apply:
             if e.chain:
                 self.refuse("a chained subscript", e)
-            if any(isinstance(a, Slice) for a in e.args):
+            if any(isinstance(a, Slice) for a in e.args) and not e.bracket:
                 self.refuse("part of an array", e)
             if e.bracket:
                 pass
@@ -238,6 +255,10 @@ class Compiler:
 
     def check_builtin(self, e):
         name = e.name
+        if name == "allocated":
+            if len(e.args) != 1 or not isinstance(e.args[0], Var) or e.args[0].name not in self.allocs:
+                self.refuse("allocated() of anything but the name of an allocatable array", e)
+            return
         ranks = [self.types[id(a)].rank for a in e.args]
         if name in ELEMENTAL1:
             if len(e.args) != 1:
@@ -343,6 +364,10 @@ class Compiler:
         if t is Var:
             if e.name == "pi" and "pi" not in self.vars:         # the language's own, until a program declares one
                 return V(Type("real"), "3.141592653589793")
+            if e.name in self.allocs:
+                self.emit(f'rt_need_alloc({self.vars[e.name][1]}.data, "{e.name}", {self.line});')
+            if e.name in self.outs:
+                self.emit(f'if (!*set_{e.name}) rt_fail({self.line}, "\'{e.name}\' is used before it is assigned");')
             return V(self.vars[e.name][0], self.vars[e.name][1])
         if t is Unary:
             return self.unary(e)
@@ -482,6 +507,8 @@ class Compiler:
         """The offset of element `e` of the array `arr` (a C lvalue of an array struct), with every subscript checked
         as soon as it is evaluated."""
         rank = self.vars[e.name][0].rank
+        if e.name in self.allocs:                      # checked before the subscripts are evaluated
+            self.emit(f'rt_need_alloc({arr}.data, "{e.name}", {self.line});')
         idx = []
         for d, a in enumerate(e.args):
             i = self.tmp("int64_t", self.scalar(a, "int"))
@@ -492,7 +519,69 @@ class Compiler:
             off = f"(({idx[d]} - 1) + {arr}.shape[{d}] * {off})"
         return self.tmp("int64_t", off)
 
+    def section_plan(self, e):
+        """Evaluate and check the subscripts of the section `e` (one dimension at a time, as the interpreter does) and say what
+        each dimension picks: ("i", index) for a whole number, ("s", start, step, count) for a range."""
+        arr = self.vars[e.name][1]
+        rank, line = self.vars[e.name][0].rank, self.line
+        if e.name in self.allocs:
+            self.emit(f'rt_need_alloc({arr}.data, "{e.name}", {line});')
+        plan = []
+        for d, a in enumerate(e.args):
+            n = f"{arr}.shape[{d}]"
+            if isinstance(a, Slice):
+                step = self.tmp("int64_t", self.scalar(a.step, "int")) if a.step is not None else "INT64_C(1)"
+                if a.step is not None:
+                    self.emit(f"rt_check_step_nonzero({step}, {line});")
+                    if a.lo is None or a.hi is None:
+                        self.emit(f'rt_check_backwards({step}, "{e.name}", {n}, {line});')
+                lo = self.tmp("int64_t", self.scalar(a.lo, "int")) if a.lo is not None else "INT64_C(1)"
+                hi = self.tmp("int64_t", self.scalar(a.hi, "int")) if a.hi is not None else self.tmp("int64_t", n)
+                count = self.tmp("int64_t", f"rt_slice_count({lo}, {hi}, {step}, {n}, {d + 1}, {rank}, {1 if a.step is not None else 0}, {line})")
+                plan.append(("s", lo, step, count))
+            else:
+                i = self.tmp("int64_t", self.scalar(a, "int"))
+                self.emit(f"rt_check_index({i}, {n}, {d + 1}, {rank}, {line});")
+                plan.append(("i", i))
+        return plan
+
+    def section_loops(self, e, plan, body):
+        """Emit loops over the picked elements in the section's own column-major order; `body(source_offset, k)` writes
+        the statement for one element (`k` counts them from 0)."""
+        arr = self.vars[e.name][1]
+        strides, stride = [], "1"
+        for d in range(len(plan)):
+            strides.append(stride)
+            stride = f"({stride} * {arr}.shape[{d}])"
+        slices = [d for d, p in enumerate(plan) if p[0] == "s"]
+        fixed = " + ".join(f"({plan[d][1]} - 1) * {strides[d]}" for d, p in enumerate(plan) if p[0] == "i") or "0"
+        js = {d: self.loop_var() for d in slices}
+        k = self.loop_var()
+        self.emit(f"int64_t {k} = 0;")
+        for d in reversed(slices):                       # the last dimension is the outermost loop, the first the fastest
+            self.emit(f"for (int64_t {js[d]} = 0; {js[d]} < {plan[d][3]}; {js[d]}++) {{")
+            self.depth += 1
+        pos = " + ".join([f"({fixed})"] + [f"({plan[d][1]} + {js[d]} * {plan[d][2]} - 1) * {strides[d]}" for d in slices])
+        body(pos, k)
+        self.emit(f"{k}++;")
+        for _ in slices:
+            self.depth -= 1
+            self.emit("}")
+
+    def section(self, e):
+        t = self.vars[e.name][0]
+        plan = self.section_plan(e)
+        slices = [p for p in plan if p[0] == "s"]
+        res = self.tmp_array(t.kind, len(slices))
+        counts = [p[3] for p in slices] + ["1"] * (3 - len(slices))
+        self.emit(f"rt_alloc_{t.kind}(&{res}, {len(slices)}, {', '.join(counts)}, {self.line});")
+        arr = self.vars[e.name][1]
+        self.section_loops(e, plan, lambda pos, k: self.emit(f"{res}.data[{k}] = {arr}.data[{pos}];"))
+        return V(Type(t.kind, len(slices)), res)
+
     def element(self, e):
+        if any(isinstance(a, Slice) for a in e.args):
+            return self.section(e)
         t = self.vars[e.name][0]
         arr = self.vars[e.name][1]
         off = self.subscripts(e, arr)
@@ -500,12 +589,28 @@ class Compiler:
 
     # -- calls and built-in functions -----------------------------------------------------------------------------------
     def call_args(self, f, args):
-        """The C arguments of a call of `f`: values for `in`, addresses for an `inout` single value, arrays as they are."""
+        """The C arguments of a call of `f`: values for `in`, addresses for an `inout` or `out` single value (an `out` one
+        with a flag that the callee sets when it assigns it), arrays as they are. Also sets `self.after_call`: what to do
+        once the call has returned (the out parameters that were never assigned are an error then)."""
         out = []
+        self.after_call = []
         for a, (typ, pname, intent) in zip(args, f.params):
             pt = self.param_type(typ)
-            if intent == "inout" and pt.rank == 0:
-                out.append("&" + self.lvalue(a))
+            if intent in ("inout", "out") and pt.rank == 0:
+                if isinstance(a, Var) and a.name in self.outs and intent == "inout":     # an unassigned out parameter is read
+                    self.emit(f'if (!*set_{a.name}) rt_fail({self.line}, "\'{a.name}\' is used before it is assigned");')
+                ref = "&" + self.lvalue(a)
+                if intent == "out":
+                    self.n += 1
+                    flag = f"set{self.n}"
+                    self.emit(f"bool {flag} = false;")
+                    out.append(ref)
+                    out.append("&" + flag)
+                    self.after_call.append(f'if (!{flag}) rt_fail({self.line}, "out parameter \'{pname}\' was never assigned in {f.name}");')
+                    if isinstance(a, Var) and a.name in self.outs:                       # now assigned in this function too
+                        self.after_call.append(f"*set_{a.name} = true;")
+                else:
+                    out.append(ref)
             elif pt.rank == 0:
                 out.append(self.scalar(a, pt.kind, f"argument '{pname}'"))
             else:
@@ -567,6 +672,8 @@ class Compiler:
 
     def builtin(self, e):
         line, name = self.line, e.name
+        if name == "allocated":
+            return V(Type("logical"), self.tmp("bool", f"({self.vars[e.args[0].name][1]}.data != NULL)"))
         vals = [self.value(a, exact=name in ("mod", "min", "max")) for a in e.args]
         if name in ELEMENTAL1:
             v = vals[0]
@@ -739,11 +846,15 @@ class Compiler:
         t = self.vars[s.name][0]
         name = c_name(s.name)
         line = self.line
+        self.emit(f"if (decl_{s.name}) rt_fail({line}, \"'{s.name}' already declared\"); decl_{s.name} = true;")
         if t.rank == 0:
             if s.init is not None:
                 self.emit(f"{name} = {self.scalar(s.init, t.kind, f'line {line}')};")
             else:
                 self.emit(f"{name} = {'false' if t.kind == 'logical' else '0'};")
+            return
+        if s.allocatable:                                              # not allocated (again, if this runs in a loop)
+            self.emit(f"rt_free_{t.kind}(&{name});")
             return
         dims = [self.scalar(d, "int") for d in s.dims]
         dims = [self.tmp("int64_t", d) for d in dims]
@@ -763,6 +874,9 @@ class Compiler:
         line = self.line
         target = s.target
         t = self.vars[target.name][0]
+        if isinstance(target, Apply) and any(isinstance(a, Slice) for a in target.args):
+            self.assign_section(s, t)
+            return
         if isinstance(target, Apply):                                   # an element: its subscripts first
             lv = self.lvalue(target)
             self.emit(f"{lv} = {self.scalar(s.value, t.kind, f'line {line}')};")
@@ -770,15 +884,77 @@ class Compiler:
         name = self.vars[target.name][1]
         if t.rank == 0:
             self.emit(f"{name} = {self.scalar(s.value, t.kind, f'line {line}')};")
+            if target.name in self.outs:
+                self.emit(f"*set_{target.name} = true;")
             return
         v = self.value(s.value)
+        if target.name in self.allocs:
+            if v.t.rank == 0:
+                self.emit(f'rt_need_alloc({name}.data, "{target.name}", {line});')
         if v.t.rank == 0:
             atom = self.narrow(v.atom, v.t.kind, t.kind, line, f"line {line}")
             k = self.loop_var()
             self.emit(f"for (int64_t {k} = 0; {k} < {name}.n; {k}++) {name}.data[{k}] = {atom};")
             return
+        if target.name in self.allocs:                                  # becomes the value's shape (allocated or resized)
+            if v.t.rank != t.rank:
+                self.emit(f'rt_fail({line}, "\'{target.name}\' has {t.rank} dimension(s) but the value has {v.t.rank}");')
+                return
+            new = self.tmp_array(t.kind, t.rank)
+            self.emit(f"rt_like_{t.kind}(&{new}, {v.atom}.shape, {v.atom}.rank, {line});")
+            self.copy_into(new, t.kind, v, line, f"line {line}")
+            self.emit(f"rt_free_{t.kind}(&{name});")
+            self.emit(f"{name} = {new};")
+            self.emit(f"{new}.data = NULL;                                  /* now owned by {name} */")
+            return
         self.emit(f"rt_same_shape({name}.shape, {name}.rank, {v.atom}.shape, {v.atom}.rank, 1, {line});")
         self.copy_into(name, t.kind, v, line, f"line {line}")
+
+    def assign_section(self, s, t):
+        """`a[2:4, j] = value`: the section is worked out first, then the value, then the shapes must agree (a single
+        value fills the section)."""
+        line, target = self.line, s.target
+        plan = self.section_plan(target)
+        slices = [p for p in plan if p[0] == "s"]
+        v = self.value(s.value)
+        arr = self.vars[target.name][1]
+        what = f"line {line}"
+        if v.t.rank == 0:
+            atom = self.narrow(v.atom, v.t.kind, t.kind, line, what)
+            self.section_loops(target, plan, lambda pos, k: self.emit(f"{arr}.data[{pos}] = {atom};"))
+            return
+        self.n += 1
+        shape = f"sh{self.n}"
+        counts = ", ".join([p[3] for p in slices] + ["1"] * (3 - len(slices)))
+        self.emit(f"int64_t {shape}[3] = {{{counts}}};")
+        self.emit(f"rt_same_shape({shape}, {len(slices)}, {v.atom}.shape, {v.atom}.rank, 1, {line});")
+        x = lambda k: self.narrow(self.elem(v, k), v.t.kind, t.kind, line, what)
+        self.section_loops(target, plan, lambda pos, k: self.emit(f"{arr}.data[{pos}] = {x(k)};"))
+
+    def st_allocate(self, s):
+        line, t = self.line, self.vars[s.name][0]
+        name = self.vars[s.name][1]
+        self.emit(f"if ({name}.data) rt_fail({line}, \"cannot allocate '{s.name}': it is already allocated (deallocate it first)\");")
+        if len(s.dims) != t.rank:
+            self.emit(f'rt_fail({line}, "\'{s.name}\' has {t.rank} dimension(s) but {len(s.dims)} extent(s) were given to allocate");')
+            return
+        dims = []
+        for d in s.dims:
+            v = self.value(d)
+            dims.append(self.tmp("int64_t", v.atom) if v.t.kind in ("int", "int32") and v.t.rank == 0 else None)
+        for d in dims:
+            if d is None:
+                self.emit(f'rt_fail({line}, "array extents must be non-negative integers");')
+                return
+        for d in dims:
+            self.emit(f"rt_check_extent({d}, {line});")
+        padded = dims + ["1"] * (3 - len(dims))
+        self.emit(f"rt_alloc_{t.kind}(&{name}, {t.rank}, {', '.join(padded)}, {line});")
+
+    def st_deallocate(self, s):
+        t, name = self.vars[s.name][0], self.vars[s.name][1]
+        self.emit(f"if (!{name}.data) rt_fail({self.line}, \"cannot deallocate '{s.name}': it is not allocated\");")
+        self.emit(f"rt_free_{t.kind}(&{name});")
 
     def st_if(self, s):
         self.if_chain(s.branches, s.orelse)
@@ -914,17 +1090,24 @@ class Compiler:
         if len(s.args) != len(f.params):
             raise NotCompiled(f"a call of '{s.name}' with optional or missing arguments", s.line)
         args = self.call_args(f, s.args)
+        after = self.after_call
         self.emit(f'rt_call_in({s.line}, "{s.name}");')
         self.emit(f"{f_name(s.name)}({', '.join(args)});")
         self.emit("rt_call_out();")
+        for text in after:
+            self.emit(text)
 
     # -- whole functions -------------------------------------------------------------------------------------------
     def declare_vars(self, params, body):
         self.vars = {}
+        self.outs = set()                                   # out parameters that are single values (they start unassigned)
+        self.allocs = self.allocs_of(body, None)
         for typ, name, intent in params:
             t = self.param_type(typ)
             access = c_name(name) if (intent == "in" or t.rank > 0) else f"(*{c_name(name)})"
             self.vars[name] = (t, access)
+            if intent == "out" and t.rank == 0:
+                self.outs.add(name)
         seen = set()
         for d in statements_in(body):
             if isinstance(d, Decl) and d.name not in seen:
@@ -939,6 +1122,8 @@ class Compiler:
                 out.append(f"rt_{t.kind}_arr {c_name(name)}")
             elif intent == "inout":
                 out.append(f"{CSCALAR[t.kind]} *{c_name(name)}")
+            elif intent == "out":
+                out.append(f"{CSCALAR[t.kind]} *{c_name(name)}, bool *set_{name}")
             else:
                 out.append(f"{CSCALAR[t.kind]} {c_name(name)}")
         return ", ".join(out) or "void"
@@ -950,6 +1135,7 @@ class Compiler:
             if isinstance(d, Decl) and d.name not in seen and d.name not in declared:
                 seen.add(d.name)
                 t = self.vars[d.name][0]
+                self.emit(f"bool decl_{d.name} = false;")
                 if t.rank == 0:
                     self.emit(f"{CSCALAR[t.kind]} {c_name(d.name)};")
                 else:

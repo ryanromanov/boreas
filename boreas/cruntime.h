@@ -340,8 +340,8 @@ static inline int32_t rt_narrow32(int64_t v, int line, const char *what) {
         free(a->data);                                                                                             \
         a->rank = rank; a->shape[0] = d0; a->shape[1] = d1; a->shape[2] = d2;                                      \
         a->n = d0 * d1 * d2;                                                                                       \
-        a->data = a->n ? (T *)calloc((size_t)a->n, sizeof(T)) : NULL;                                              \
-        if (a->n && !a->data) rt_fail(line, "out of memory");                                                      \
+        a->data = (T *)calloc(a->n ? (size_t)a->n : 1, sizeof(T));      /* never NULL once allocated, even when empty */ \
+        if (!a->data) rt_fail(line, "out of memory");                                                              \
     }                                                                                                              \
     static inline void rt_like_##NAME(rt_##NAME##_arr *a, const int64_t *shape, int rank, int line) {              \
         rt_alloc_##NAME(a, rank, shape[0], rank > 1 ? shape[1] : 1, rank > 2 ? shape[2] : 1, line);                 \
@@ -528,4 +528,31 @@ static float rt_spow_f(float a, float b, int line) {
     (void)line;
 #endif
     return r;
+}
+
+/* ---- allocatable arrays: an array whose data is NULL is not allocated (these checks stay in --release) ---------- */
+static inline void rt_need_alloc(const void *data, const char *name, int line) {
+    if (!data) rt_fail(line, "'%s' is not allocated; use 'allocate %s(...)' first", name, name);
+}
+static inline void rt_check_extent(int64_t n, int line) {
+    if (n < 0) rt_fail(line, "array extents must be non-negative integers");
+}
+
+/* ---- sections: a[lo:hi:step, i, :] ---------------------------------------------------------------------------- */
+/* checked as the interpreter does, one dimension at a time: the step, the ends, then the bounds (an empty section is never out of bounds) */
+static inline void rt_check_step_nonzero(int64_t step, int line) { if (step == 0) rt_fail(line, "the step of a section cannot be zero"); }
+static inline void rt_check_backwards(int64_t step, const char *name, int64_t n, int line) {
+    if (step < 0) rt_fail(line, "a section with a negative step needs both ends: write %s[%lld:1:%lld] to run backwards", name, (long long)n, (long long)step);
+}
+static inline int64_t rt_slice_count(int64_t lo, int64_t hi, int64_t step, int64_t n, int dim, int rank, int has_step, int line) {
+    int nonempty = step > 0 ? lo <= hi : lo >= hi;
+    if (!nonempty) return 0;
+    if (lo < 1 || lo > n || hi < 1 || hi > n) {
+        char t[80], where[24] = "";
+        if (has_step) snprintf(t, sizeof t, "%lld:%lld:%lld", (long long)lo, (long long)hi, (long long)step);
+        else snprintf(t, sizeof t, "%lld:%lld", (long long)lo, (long long)hi);
+        if (rank > 1) snprintf(where, sizeof where, " in dimension %d", dim);
+        rt_fail(line, "slice %s out of bounds 1..%lld%s", t, (long long)n, where);
+    }
+    return step > 0 ? (hi - lo) / step + 1 : (lo - hi) / (0 - step) + 1;
 }
