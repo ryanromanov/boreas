@@ -4,7 +4,7 @@ function square(real :: x) -> real
   return x * x
 end function
 
-function fib(integer :: n) -> integer
+function fib(int :: n) -> int
   if n < 2 then
     return n
   end if
@@ -12,11 +12,11 @@ function fib(integer :: n) -> integer
 end function
 
 program demo
-  integer :: i
-  integer :: count = 0
+  int :: i
+  int :: count = 0
   real :: total = 0.0
   real[5] :: xs
-  integer[5] :: ys = [1, 2, 3, 4, 5]
+  int[5] :: ys = [1, 2, 3, 4, 5]
 
   do i = 1, 5
     xs[i] = square(real(i))

@@ -29,7 +29,7 @@ def stable(src):
     return once
 
 
-GRADES = """integer :: g = {g}
+GRADES = """int :: g = {g}
 select case fallthrough g
 case 90:100
   println("A")
@@ -63,7 +63,7 @@ class StatementTests(unittest.TestCase):
         self.assertEqual(run("select case 5\ncase 1\nprintln(1)\nend select\nprintln(2)"), ["2"])
 
     def test_open_ranges(self):
-        body = "integer :: i\ndo i = 0, 4\nselect case i\ncase :1\nprintln(\"lo\")\ncase 3:\nprintln(\"hi\")\ncase default\nprintln(\"mid\")\nend select\nend do"
+        body = "int :: i\ndo i = 0, 4\nselect case i\ncase :1\nprintln(\"lo\")\ncase 3:\nprintln(\"hi\")\ncase default\nprintln(\"mid\")\nend select\nend do"
         self.assertEqual(run(body), ["lo", "lo", "mid", "hi", "hi"])
 
     def test_negative_values(self):
@@ -81,11 +81,11 @@ class StatementTests(unittest.TestCase):
         self.assertEqual(run(body.format(f="false")), ["n"])
 
     def test_const_names_as_case_values(self):
-        body = "const integer :: lo = 10\nconst integer :: hi = 20\nselect case 15\ncase lo:hi\nprintln(\"in\")\ncase default\nprintln(\"out\")\nend select"
+        body = "const int :: lo = 10\nconst int :: hi = 20\nselect case 15\ncase lo:hi\nprintln(\"in\")\ncase default\nprintln(\"out\")\nend select"
         self.assertEqual(run(body), ["in"])
 
     def test_const_names_from_a_module(self):
-        src = ("module m\n  public const integer :: k = 4\nend module m\n"
+        src = ("module m\n  public const int :: k = 4\nend module m\n"
                "program t\n  use m: k\n  select case 4\n  case k\n    println(\"four\")\n  end select\nend program t\n")
         out = []
         run_source(src, out.append)
@@ -130,11 +130,11 @@ class StatementTests(unittest.TestCase):
         self.assertEqual(run(body), ["inner done", "flowed"])
 
     def test_break_in_a_select_inside_a_loop_does_not_leave_the_loop(self):
-        body = ("integer :: i\ndo i = 1, 3\nselect case i\ncase 2\nbreak\nend select\nprintln(i)\nend do")
+        body = ("int :: i\ndo i = 1, 3\nselect case i\ncase 2\nbreak\nend select\nprintln(i)\nend do")
         self.assertEqual(run(body), ["1", "2", "3"])
 
     def test_exit_and_cycle_in_a_flowing_select(self):
-        body = ("integer :: i\ndo i = 1, 5\nselect case fallthrough i\ncase 2\ncycle\ncase 4\nexit\n"
+        body = ("int :: i\ndo i = 1, 5\nselect case fallthrough i\ncase 2\ncycle\ncase 4\nexit\n"
                 "case default\nprintln(i)\nend select\nprintln(\"after\", i)\nend do")
         self.assertEqual(run(body), ["1", "after 1", "3", "after 3"])
 
@@ -144,11 +144,11 @@ class StatementTests(unittest.TestCase):
         self.assertEqual(run(body.format(n=2)), ["d"])
 
     def test_exit_and_cycle_refer_to_the_loop(self):
-        body = ("integer :: i\ndo i = 1, 6\nselect case i\ncase 2\ncycle\ncase 4\nexit\nend select\nprintln(i)\nend do\nprintln(\"done\")")
+        body = ("int :: i\ndo i = 1, 6\nselect case i\ncase 2\ncycle\ncase 4\nexit\nend select\nprintln(i)\nend do\nprintln(\"done\")")
         self.assertEqual(run(body), ["1", "3", "done"])
 
     def test_return_inside_select(self):
-        f = ("function kind(integer :: n) -> string\n select case n\n case 0\n return \"zero\"\n"
+        f = ("function kind(int :: n) -> string\n select case n\n case 0\n return \"zero\"\n"
              " case default\n return \"other\"\n end select\n return \"unreachable\"\nend function")
         self.assertEqual(run("println(kind(0), kind(5))", f), ["zero other"])
 
@@ -158,10 +158,10 @@ class StatementTests(unittest.TestCase):
         self.assertEqual(run(body), ["b", "outer"])
 
     def test_declaration_inside_case(self):
-        self.assertEqual(run("select case 1\ncase 1\ninteger :: z = 4\nprintln(z)\nend select"), ["4"])
+        self.assertEqual(run("select case 1\ncase 1\nint :: z = 4\nprintln(z)\nend select"), ["4"])
 
     def test_selector_is_evaluated_once(self):
-        f = "function bump(integer :: n) -> integer\n println(\"called\")\n return n\nend function"
+        f = "function bump(int :: n) -> int\n println(\"called\")\n return n\nend function"
         self.assertEqual(run("select case bump(2)\ncase 1\nprintln(1)\ncase 2\nprintln(2)\nend select", f), ["called", "2"])
 
     def test_blank_lines_and_comments_inside(self):
@@ -180,12 +180,12 @@ class ErrorTests(unittest.TestCase):
         fails("select case [1, 2]\ncase 1\nprintln(1)\nend select", "got array")
 
     def test_type_mismatch(self):
-        fails("select case 1\ncase \"a\"\nprintln(1)\nend select", "is string, but the select value is integer")
-        fails("select case \"a\"\ncase 1\nprintln(1)\nend select", "is integer, but the select value is string")
-        fails("select case true\ncase 1\nprintln(1)\nend select", "is integer, but the select value is logical")
+        fails("select case 1\ncase \"a\"\nprintln(1)\nend select", "is string, but the select value is int")
+        fails("select case \"a\"\ncase 1\nprintln(1)\nend select", "is int, but the select value is string")
+        fails("select case true\ncase 1\nprintln(1)\nend select", "is int, but the select value is logical")
 
     def test_mixed_literal_types_rejected_at_parse_time(self):
-        with self.assertRaisesRegex(LangError, "mix integer and string"):
+        with self.assertRaisesRegex(LangError, "mix int and string"):
             parse("program t\nselect case 1\ncase 1\nprintln(1)\ncase \"a\"\nprintln(2)\nend select\nend program t\n")
 
     def test_real_case_value(self):
@@ -214,10 +214,10 @@ class ErrorTests(unittest.TestCase):
             parse('program t\nselect case "a"\ncase "a":"m"\nprintln(1)\ncase "k"\nprintln(2)\nend select\nend program t\n')
 
     def test_overlap_with_const_names_found_at_run_time(self):
-        fails("const integer :: a = 3\nselect case 1\ncase a\nprintln(1)\ncase 1:5\nprintln(2)\nend select", "overlap")
+        fails("const int :: a = 3\nselect case 1\ncase a\nprintln(1)\ncase 1:5\nprintln(2)\nend select", "overlap")
 
     def test_runtime_overlap_is_checked_even_if_selector_matches_earlier(self):
-        fails("const integer :: a = 1\nselect case 1\ncase 1\nprintln(1)\ncase a\nprintln(2)\nend select", "overlap")
+        fails("const int :: a = 1\nselect case 1\ncase 1\nprintln(1)\ncase a\nprintln(2)\nend select", "overlap")
 
     def test_non_constant_case_values(self):
         for v in ("n + 1", "abs(2)", "[1, 2]"):
@@ -225,9 +225,9 @@ class ErrorTests(unittest.TestCase):
                 parse(f"program t\nselect case 1\ncase {v}\nprint 1\nend select\nend program t\n")
 
     def test_name_must_be_a_const_at_run_time(self):
-        fails("integer :: n = 2\nselect case 2\ncase n\nprintln(1)\nend select", "'n' is not a scalar const")
+        fails("int :: n = 2\nselect case 2\ncase n\nprintln(1)\nend select", "'n' is not a scalar const")
         fails("select case 2\ncase nope\nprintln(1)\nend select", "not declared")
-        fails("const integer[2] :: a = 1\nselect case 2\ncase a\nprintln(1)\nend select", "not a scalar const")
+        fails("const int[2] :: a = 1\nselect case 2\ncase a\nprintln(1)\nend select", "not a scalar const")
 
     def test_two_defaults(self):
         with self.assertRaisesRegex(LangError, "'case default' appears more than once"):
@@ -291,7 +291,7 @@ class ErrorTests(unittest.TestCase):
 
 
 class ExpressionTests(unittest.TestCase):
-    EXPR = """integer :: g = {g}
+    EXPR = """int :: g = {g}
 string :: label
 label = select case g
   case 90:100 -> "A"
@@ -306,12 +306,12 @@ println(label)"""
             self.assertEqual(run(self.EXPR.format(g=g)), [want])
 
     def test_print_argument_and_arithmetic(self):
-        body = ("integer :: n = 2\nprintln(\"n is\", select case n\n case 1 -> \"one\"\n case default -> \"many\"\nend select)\n"
+        body = ("int :: n = 2\nprintln(\"n is\", select case n\n case 1 -> \"one\"\n case default -> \"many\"\nend select)\n"
                 "println(10 * select case n\n case 2 -> 3\n case default -> 0\nend select + 1)")
         self.assertEqual(run(body), ["n is many", "31"])
 
     def test_call_argument(self):
-        f = "function twice(integer :: x) -> integer\n return x * 2\nend function"
+        f = "function twice(int :: x) -> int\n return x * 2\nend function"
         body = "println(twice(select case 4\n case 4 -> 21\n case default -> 0\nend select))"
         self.assertEqual(run(body, f), ["42"])
 
@@ -357,7 +357,7 @@ println(label)"""
             parse('program t\nprintln(select case 1\n case 1 -> 2\n case default -> "x"\nend select)\nend program t\n')
 
     def test_arm_type_mismatch_with_computed_arm_is_a_run_time_error(self):
-        fails('integer :: n = 1\nprintln(select case 1\n case 1 -> n\n case default -> "x"\nend select)', "different types")
+        fails('int :: n = 1\nprintln(select case 1\n case 1 -> n\n case default -> "x"\nend select)', "different types")
 
     def test_then_is_not_an_arrow(self):
         with self.assertRaisesRegex(LangError, "use '->' instead of 'then'"):
@@ -374,12 +374,12 @@ println(label)"""
     def test_expression_overlap_and_types(self):
         with self.assertRaisesRegex(LangError, "overlap"):
             parse("program t\nprintln(select case 1\n case 1 -> 2\n case 1 -> 3\n case default -> 0\nend select)\nend program t\n")
-        fails('println(select case "a"\n case 1 -> 2\n case default -> 0\nend select)', "is integer, but the select value is string")
+        fails('println(select case "a"\n case 1 -> 2\n case default -> 0\nend select)', "is int, but the select value is string")
         fails("println(select case 1.5\n case 1 -> 2\n case default -> 0\nend select)", "got real")
 
 
 class UpdateTests(unittest.TestCase):
-    SUB = """subroutine bump(integer :: k, out integer :: r, inout integer :: total)
+    SUB = """subroutine bump(int :: k, out int :: r, inout int :: total)
   select case k
   case 1
     @r = 10
@@ -390,30 +390,30 @@ class UpdateTests(unittest.TestCase):
 end subroutine"""
 
     def test_update_in_select_bodies(self):
-        body = "integer :: r\ninteger :: t = 0\ncall bump(1, @r, @t)\nprintln(r, t)\ncall bump(2, @r, @t)\nprintln(r, t)"
+        body = "int :: r\nint :: t = 0\ncall bump(1, @r, @t)\nprintln(r, t)\ncall bump(2, @r, @t)\nprintln(r, t)"
         self.assertEqual(run(body, self.SUB), ["10 0", "0 1"])
 
     def test_update_in_a_flowing_select_with_break(self):
-        sub = ("subroutine f(integer :: k, inout integer :: t)\n select case fallthrough k\n case 1\n @t = t + 1\n"
+        sub = ("subroutine f(int :: k, inout int :: t)\n select case fallthrough k\n case 1\n @t = t + 1\n"
                " case 2\n @t = t + 10\n break\n case 3\n @t = t + 100\n end select\nend subroutine")
-        body = "integer :: t = 0\ncall f(1, @t)\nprintln(t)\ncall f(2, @t)\nprintln(t)\ncall f(3, @t)\nprintln(t)"
+        body = "int :: t = 0\ncall f(1, @t)\nprintln(t)\ncall f(2, @t)\nprintln(t)\ncall f(3, @t)\nprintln(t)"
         self.assertEqual(run(body, sub), ["11", "21", "121"])
         bad = sub.replace("@t = t + 100", "t = t + 100")
         with self.assertRaisesRegex(LangError, "write '@t = ...'"):
             parse(bad + "\nprogram p\nend program p\n")
 
     def test_missing_update_in_select_body(self):
-        sub = "subroutine f(out integer :: r)\n select case 1\n case 1\n r = 2\n end select\nend subroutine"
+        sub = "subroutine f(out int :: r)\n select case 1\n case 1\n r = 2\n end select\nend subroutine"
         with self.assertRaisesRegex(LangError, "write '@r = ...'"):
             parse(sub + "\nprogram t\nend program t\n")
 
     def test_update_of_local_in_select_body(self):
-        sub = "subroutine f(integer :: n)\n integer :: x\n select case n\n case 1\n @x = 2\n end select\nend subroutine"
+        sub = "subroutine f(int :: n)\n int :: x\n select case n\n case 1\n @x = 2\n end select\nend subroutine"
         with self.assertRaisesRegex(LangError, "'@' is for out and inout"):
             parse(sub + "\nprogram t\nend program t\n")
 
     def test_loop_variable_cannot_be_parameter_inside_select(self):
-        sub = "subroutine f(inout integer :: i)\n select case 1\n case 1\n do i = 1, 2\n end do\n end select\nend subroutine"
+        sub = "subroutine f(inout int :: i)\n select case 1\n case 1\n do i = 1, 2\n end do\n end select\nend subroutine"
         with self.assertRaisesRegex(LangError, "loop variable"):
             parse(sub + "\nprogram t\nend program t\n")
 
@@ -422,7 +422,7 @@ class PrinterTests(unittest.TestCase):
     def test_statement_layout(self):
         src = "program t\n" + GRADES.format(g=3) + "\nend program t\n"
         want = """program t
-  integer :: g = 3
+  int :: g = 3
   select case fallthrough g
     case 90:100
       println("A")
@@ -444,7 +444,7 @@ end program t
         self.assertEqual(stable(src), want)
 
     def test_open_ranges_negatives_strings_logicals_consts(self):
-        src = ("program t\nconst integer :: k = 2\nselect case 1\ncase :-3, -2:-1, 0, k:, 9\nprintln(1)\nend select\n"
+        src = ("program t\nconst int :: k = 2\nselect case 1\ncase :-3, -2:-1, 0, k:, 9\nprintln(1)\nend select\n"
                "select case \"a\"\ncase \"b\":\"c\", \":\"\nprintln(2)\nend select\n"
                "select case true\ncase true\nprintln(3)\nend select\nend program t\n")
         text = stable(src)
@@ -482,7 +482,7 @@ end program t
         self.assertEqual(out1, ["inner 5"])
 
     def test_nested_statements_and_inside_procedures(self):
-        src = ("function f(integer :: n) -> integer\n  select case n\n  case 1\n    select case n + 1\n    case 2\n      return 5\n    end select\n"
+        src = ("function f(int :: n) -> int\n  select case n\n  case 1\n    select case n + 1\n    case 2\n      return 5\n    end select\n"
                "  end select\n  return 0\nend function\nprogram t\n  println(f(1))\nend program t\n")
         text = stable(src)
         self.assertIn("      return 5", text)
@@ -594,7 +594,7 @@ class ConverterTests(unittest.TestCase):
         src = ("subroutine setit(k, r)\n  integer, intent(in) :: k\n  integer :: r\n  select case (k)\n  case (1)\n    r = 5\n"
                "  end select\nend subroutine\nprogram p\n  integer :: v\n  v = 0\n  call setit(1, v)\n  print *, v\nend program\n")
         text, _ = convert(src)
-        self.assertIn("inout integer :: r", text)      # not always written, so it cannot be out
+        self.assertIn("inout int32 :: r", text)      # not always written, so it cannot be out
         self.assertIn("@r = 5", text)
         self.assertEqual(run_bor(text), ["5"])
 

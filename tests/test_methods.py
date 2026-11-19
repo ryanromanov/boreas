@@ -124,7 +124,7 @@ class MethodErrorTests(unittest.TestCase):
         self.fails("  real :: x = 1.0\n  call @x.grow(2.0)", "has no function 'grow'")
 
     def test_old_array_indexing_still_gets_its_own_message(self):
-        defs = "record r\n  integer[3] :: v\nend record\n"
+        defs = "record r\n  int[3] :: v\nend record\n"
         self.fails("  r :: a\n  println(a.v(2))", "index with brackets", defs)
 
 

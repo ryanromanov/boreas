@@ -21,9 +21,9 @@ end module
 module counting
   use geometry: pi
 
-  public function tally(integer :: n) -> (integer :: evens, real :: tau)
-    integer :: i
-    integer :: count = 0
+  public function tally(int :: n) -> (int :: evens, real :: tau)
+    int :: i
+    int :: count = 0
     do i = 1, n
       if mod(i, 2) == 0 then
         count = count + 1
@@ -36,7 +36,7 @@ end module
 program demo
   use geometry: area, pi
   use counting: tally
-  integer :: e
+  int :: e
   real :: t
 
   println("area of r=2:", area(2.0))

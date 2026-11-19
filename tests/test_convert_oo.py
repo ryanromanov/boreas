@@ -858,7 +858,7 @@ class PassArgTests(unittest.TestCase):
   k = y%show("y is")
   print *, k
 end program
-""", ["subroutine add(inout self, integer :: amount)", "call @x.add(5)"])
+""", ["subroutine add(inout self, int32 :: amount)", "call @x.add(5)"])
         self.assertNotIn("subroutine add(integer", text)
 
     def test_polymorphic_calls_dispatch_through_the_override(self):
@@ -941,9 +941,9 @@ end program
   call o%favourite%describe()
   print *, o%age, o%name
 end program
-""", ["shape_ :: favourite", "integer :: age = 30"])
+""", ["shape_ :: favourite", "int32 :: age = 30"])
         record = text[text.index("record pet_owner"):]
-        self.assertLess(record.index("integer :: age"), record.index("shape_ :: favourite"))   # declaration order kept
+        self.assertLess(record.index("int32 :: age"), record.index("shape_ :: favourite"))   # declaration order kept
         self.assertLess(record.index("shape_ :: favourite"), record.index("string :: name"))
 
     def test_select_type_on_a_component(self):

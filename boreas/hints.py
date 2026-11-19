@@ -127,7 +127,7 @@ def parse_hint(toks, i, msg, src_lines):
                 and (at(n + 2) is None or at(n + 2).kind in ("nl", "eof")) and line[0][1].kind == "ident":
             return here.line, tok.col, f"there is no '{tok.text * 2}'; write {first} = {first} {tok.text} 1"
     if here.text == "*" and i > 0 and toks[i - 1].text in KINDS:
-        return here.line, here.col, "write a kind as a type name: real64, real32, int8, int16, integer, int64"
+        return here.line, here.col, "write a kind as a type name: real, real32, int8, int16, int32, int"
     if msg == "expected 'then'" and here.text == "=":
         return here.line, here.col, "a condition compares with '=='; a single '=' assigns"
     return None

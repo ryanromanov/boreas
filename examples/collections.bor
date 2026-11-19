@@ -1,10 +1,10 @@
 ! Maps and sets. Keys and members are integers or strings.
 
 ! A map can be a parameter: read-only unless it is `inout`.
-function total(map[string, integer] :: m) -> integer
+function total(map[string, int] :: m) -> int
   string :: k
-  integer :: v
-  integer :: t = 0
+  int :: v
+  int :: t = 0
   do k, v in m
     t = t + v
   end do
@@ -12,14 +12,14 @@ function total(map[string, integer] :: m) -> integer
 end function
 
 ! `inout` changes the caller's map; writes that reach the caller carry `@`, and call add/remove need no mark.
-subroutine bump(inout map[string, integer] :: m, string :: word)
+subroutine bump(inout map[string, int] :: m, string :: word)
   @m[word] = (get(m, word) ?? 0) + 1
 end subroutine
 
 ! A set (or a map) can be a function result.
 function distinct(string[] :: words) -> set[string]
   set[string] :: s
-  integer :: i
+  int :: i
   do i = 1, size(words)
     call add(@s, words[i])
   end do
@@ -29,18 +29,18 @@ end function
 ! A record can hold them; a field starts empty.
 record inventory
   string :: owner = "shop"
-  map[string, integer] :: stock
+  map[string, int] :: stock
   set[string] :: tags
 end record
 
 program demo
-  map[string, integer] :: age
+  map[string, int] :: age
   set[string] :: seen
   allocatable string[] :: words
   allocatable string[] :: names
-  integer :: i
+  int :: i
   string :: word
-  integer :: n
+  int :: n
 
   ! A map: insert or replace with an assignment, read with brackets.
   age["ann"] = 31
@@ -55,7 +55,7 @@ program demo
 
   ! Counting words: the usual use of a map.
   words = split("the cat saw the dog and the cat", " ")
-  map[string, integer] :: count
+  map[string, int] :: count
   do i = 1, size(words)
     count[words[i]] = (get(count, words[i]) ?? 0) + 1
   end do
@@ -87,12 +87,12 @@ program demo
   println(has(seen, "the"), seen)           ! false {cat, saw, dog, and}
 
   ! Assigning copies: the two stay separate.
-  map[string, integer] :: copy = count
+  map[string, int] :: copy = count
   copy["extra"] = 1
   println(has(count, "extra"), has(copy, "extra"))    ! false true
 
   ! Parameters, results and record fields.
-  map[string, integer] :: tally
+  map[string, int] :: tally
   call bump(@tally, "x")
   call bump(@tally, "x")
   call bump(@tally, "y")

@@ -34,7 +34,7 @@ class SavedLocalTests(unittest.TestCase):
                                    "  calls = calls + 1\n  n = calls\nend subroutine\n")
         self.assertEqual(got, ["2"])
         self.assertIn("module s_state", text)
-        self.assertIn("public integer :: calls = 0", text)
+        self.assertIn("public int32 :: calls = 0", text)
         self.assertIn("use s_state: calls", text)
         self.assertIn("@calls = calls + 1", text)
 
@@ -47,14 +47,14 @@ class SavedLocalTests(unittest.TestCase):
         text, got = run_both(self, "subroutine s(n)\n  integer, intent(out) :: n\n  integer :: total, other\n"
                                    "  save total\n  other = 5\n  total = total + other\n  n = total\nend subroutine\n")
         self.assertEqual(got, ["10"])
-        self.assertIn("public integer :: total", text)
+        self.assertIn("public int32 :: total", text)
         self.assertNotIn("public integer :: other", text)
 
     def test_bare_save_moves_only_the_locals_that_keep_a_value(self):
         text, got = run_both(self, "subroutine s(n)\n  integer, intent(out) :: n\n  integer :: a, b, c\n  save\n"
                                    "  a = a + 1\n  b = 2\n  c = 3\n  n = a + b + c\nend subroutine\n")
         self.assertEqual(got, ["7"])
-        self.assertIn("public integer :: a", text)
+        self.assertIn("public int32 :: a", text)
         self.assertNotIn("public integer :: b", text)            # overwritten before it is read
 
     def test_array_element_updates_count(self):
@@ -81,7 +81,7 @@ class SavedLocalTests(unittest.TestCase):
         main = "program p\n  integer :: next, a\n  a = next()\n  a = a + next()\n  print *, a\nend program\n"
         text, got = run_both(self, sub, main)
         self.assertEqual(got, ["3"])
-        self.assertIn("subroutine next(out integer :: next_result)", text)
+        self.assertIn("subroutine next(out int32 :: next_result)", text)
 
     def test_a_declaration_that_uses_other_names_stays_a_todo(self):
         sub = ("module cfg\n  integer, parameter :: start = 5\nend module\n"

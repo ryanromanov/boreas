@@ -49,7 +49,7 @@ end subroutine
 program shapes
   figure[3] :: all                                 ! no wrapper type needed
   real :: total = 0.0
-  integer :: i
+  int :: i
 
   all[1] = circle(label = "circle", r = 2.0)
   all[2] = rect(label = "rect", w = 3.0, h = 4.0)

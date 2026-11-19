@@ -66,8 +66,8 @@ class FileTests(unittest.TestCase):
 
     def test_the_terminal_is_unchanged(self):
         self.write_file("5\n")
-        body = ('  file :: f = open("PATH", "read")\n  integer :: n = to_integer(read_line() ?? "")\n'
-                '  integer :: m = to_integer(read_line(f) ?? "")\n  println(n, m)')
+        body = ('  file :: f = open("PATH", "read")\n  int :: n = to_integer(read_line() ?? "")\n'
+                '  int :: m = to_integer(read_line(f) ?? "")\n  println(n, m)')
         self.assertEqual(self.run_body(body, stdin="9\n"), ["9 5"])
 
     def test_missing_file(self):
@@ -98,8 +98,8 @@ class FileTests(unittest.TestCase):
 
     def test_files_are_not_numbers(self):
         self.write_file("")
-        self.fails('  file :: f = open("PATH", "read")\n  integer :: n\n  n = f', "cannot assign file to integer")
-        self.fails('  file :: f = 3', "cannot assign integer to file")
+        self.fails('  file :: f = open("PATH", "read")\n  int :: n\n  n = f', "cannot assign file to int")
+        self.fails('  file :: f = 3', "cannot assign int to file")
 
     def test_a_file_can_be_passed_to_a_subroutine(self):
         extra = "subroutine log_line(file :: f, string :: s)\n  writeln(f, s)\nend subroutine\n"
@@ -122,7 +122,7 @@ class FileTests(unittest.TestCase):
             self.assertEqual(f.read(), "kept\n")
 
     def test_to_and_from_still_work_as_names(self):
-        body = "  integer :: to = 1\n  integer :: from = 2\n  println(to, from)\n  println(to + from)"
+        body = "  int :: to = 1\n  int :: from = 2\n  println(to, from)\n  println(to + from)"
         self.assertEqual(self.run_body(body), ["1 2", "3"])
 
     def test_round_trip(self):

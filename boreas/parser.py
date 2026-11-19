@@ -3,7 +3,7 @@ from .lexer import lex, LangError
 from .hints import parse_hint
 from .kinds import lit_int, SPELLINGS, KIND_TYPES
 
-TYPES = {"integer", "real", "logical", "string", "file", "complex", "int8", "int16", "int32", "int64", "real32", "real64"}
+TYPES = {"int", "real", "logical", "string", "file", "complex", "int8", "int16", "int32", "int64", "real32", "real64"}
 
 
 # --- AST ---------------------------------------------------------------
@@ -178,7 +178,7 @@ class Comment: text: str          # only produced by `boreas convert`; the inter
 
 @dataclass(frozen=True)
 class MapType:
-    """The type of a map: `map[string, integer]`. Not a string, so nothing that reads type names by their
+    """The type of a map: `map[string, int]`. Not a string, so nothing that reads type names by their
     shape (a trailing `]` means an array) can mistake it for one."""
     key: str
     value: object        # a type name, a SetType, or an ArrayOf
@@ -208,7 +208,7 @@ class SetType:
 
 @dataclass(frozen=True)
 class ResultList:
-    """The results of a function that gives back several values: `-> (integer :: q, integer :: r)`.
+    """The results of a function that gives back several values: `-> (int :: q, int :: r)`.
     Only the types take part in comparing (a record fits an interface when they match in order); the names
     are documentation."""
     types: tuple
@@ -446,7 +446,7 @@ def literal_value(e):
 
 
 def literal_type(v):
-    return "logical" if isinstance(v, bool) else "integer" if isinstance(v, int) else \
+    return "logical" if isinstance(v, bool) else "int" if isinstance(v, int) else \
            "real" if isinstance(v, float) else "string"
 
 
@@ -961,7 +961,7 @@ class Parser:
 
     def result_type(self):
         """A function's result: a type, an array of one (`integer[]`, `real[,]`: a comma for each extra
-        dimension), or a list of two or more of those, `(integer :: q, integer :: r)`. An array result's length
+        dimension), or a list of two or more of those, `(int :: q, int :: r)`. An array result's length
         is only known after the call."""
         if not self.at("("):
             return self.one_result()
@@ -1015,8 +1015,8 @@ class Parser:
                                   and self.toks[self.i + 4].kind == "ident" and self.toks[self.i + 4].text in TYPES)
 
     def collection_type(self):
-        """`map[string, integer]` or `set[string]`. Keys are integers or strings. A map's value is a single
-        value, a set (`map[string, set[string]]`) or an array (`map[string, integer[]]`); not an optional or a
+        """`map[string, int]` or `set[string]`. Keys are integers or strings. A map's value is a single
+        value, a set (`map[string, set[string]]`) or an array (`map[string, int[]]`); not an optional or a
         map."""
         word = self.next().text
         self.expect("[")
@@ -1029,13 +1029,13 @@ class Parser:
             value = self.collection_type()
         else:
             value = self.simple_type("a map's value", keys=False)
-            if self.at("["):                                   # integer[] or real[,]
+            if self.at("["):                                   # int[] or real[,]
                 self.next()
                 rank = 1
                 while self.accept(","):
                     rank += 1
                 if not self.at("]"):
-                    self.error("a map's array value is written without sizes, as in 'integer[]' or 'real[,]'")
+                    self.error("a map's array value is written without sizes, as in 'int[]' or 'real[,]'")
                 self.next()
                 value = ArrayOf(value, rank)
         if self.at("?"):
@@ -1051,11 +1051,11 @@ class Parser:
             self.error(f"{what} must be a single value: arrays, optional values and other collections "
                        f"are not supported here")
         if t.kind != "ident" or t.text not in TYPES or t.text == "file":
-            self.error(f"{what} must be a type name" + (" (integer or string)" if keys else ""))
+            self.error(f"{what} must be a type name" + (" (int or string)" if keys else ""))
         name = SPELLINGS.get(t.text, t.text)
         self.next()
-        if keys and name not in ("integer", "string"):
-            self.error(f"{what} must be integer or string, not {name}")
+        if keys and name not in ("int", "int32", "string"):
+            self.error(f"{what} must be int or string, not {name}")
         if keys and self.at("[", "?"):
             self.error(f"{what} must be a single value: arrays, optional values and other collections "
                        f"are not supported here")
@@ -1074,9 +1074,11 @@ class Parser:
             name = SPELLINGS.get(t.text, t.text)
             self.next()
         elif t.kind == "ident" and t.text not in KEYWORDS and (anywhere or self.typed_ahead()):
+            if t.text == "integer":
+                self.error("'integer' is now called 'int' (64-bit); write 'int32' for Fortran's 32-bit default integer")
             name = self.next().text
         else:
-            self.error("expected a type (integer, real, logical, string, or a record)")
+            self.error("expected a type (int, real, logical, string, or a record)")
         return name + "?" if self.accept("?") else name
 
     # -- statements
@@ -1213,7 +1215,7 @@ class Parser:
                 while self.accept(","):
                     values.append(self.expr())
                 if want is None or not isinstance(want[1], ResultList):
-                    self.error("only a function declared with a result list, as in '-> (integer :: q, integer :: r)', "
+                    self.error("only a function declared with a result list, as in '-> (int :: q, int :: r)', "
                                "can return several values")
                 if len(values) != len(want[1].types):
                     self.error(f"{want[0]} returns {len(want[1].types)} results, but {len(values)} values are given")
@@ -1637,7 +1639,7 @@ class Parser:
             raise LangError(f"line {line}: a select expression must end with a 'case default -> ...' arm")
         check_cases([(a.values, a.line) for a in arms])
         kinds = arm_types(arms)
-        if len(kinds) > 1 and kinds != {"integer", "real"}:
+        if len(kinds) > 1 and kinds != {"int", "real"}:
             raise LangError(f"line {line}: the arms of a select expression have different types "
                             f"({' and '.join(sorted(kinds))})")
         return SelectExpr(subject, arms, line)
@@ -1802,7 +1804,10 @@ class Parser:
     def primary(self):
         t = self.tok
         if t.kind == "int":
-            self.next(); return Num(lit_int(int(t.text)))
+            n = int(t.text)
+            if n > 2 ** 63:
+                self.error("this whole number does not fit in an int (64 bits)")
+            self.next(); return Num(lit_int(n))
         if t.kind == "real":
             self.next(); return Num(float(t.text))
         if t.kind == "str":

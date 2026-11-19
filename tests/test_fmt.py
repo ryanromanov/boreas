@@ -35,7 +35,7 @@ subroutine grow(self, real :: k)
 end interface
 
 program t
-integer :: i
+int :: i
 if i > 0 then
 println("pos")
 else if i < 0 then
@@ -69,7 +69,7 @@ interface shape
 end interface
 
 program t
-  integer :: i
+  int :: i
   if i > 0 then
     println("pos")
   else if i < 0 then
@@ -141,16 +141,16 @@ end program
                                     "  end select)\nend program\n"))
 
     def test_generators_open_nothing(self):
-        src = "program t\ninteger[] :: a = [(i do i = 1, 3)]\nprintln(a)\nend program\n"
-        self.assertEqual(fmt(src), "program t\n  integer[] :: a = [(i do i = 1, 3)]\n  println(a)\nend program\n")
+        src = "program t\nint[] :: a = [(i do i = 1, 3)]\nprintln(a)\nend program\n"
+        self.assertEqual(fmt(src), "program t\n  int[] :: a = [(i do i = 1, 3)]\n  println(a)\nend program\n")
 
     def test_select_expressions_inside_other_statements(self):
-        src = ("program t\ninteger :: i = 0\n"
+        src = ("program t\nint :: i = 0\n"
                "if select case i\ncase 0 -> 1\ncase default -> 2\nend select == 1 then\nprintln(\"one\")\nend if\n"
                "do while select case i\ncase 0 -> true\ncase default -> false\nend select\ni = i + 1\nend do\n"
                "println(i, select case i\ncase 1 -> \"one\"\ncase default -> \"other\"\nend select)\nend program\n")
         parse(src)
-        self.assertEqual(fmt(src), ("program t\n  integer :: i = 0\n"
+        self.assertEqual(fmt(src), ("program t\n  int :: i = 0\n"
                                     "  if select case i\n    case 0 -> 1\n    case default -> 2\n  end select == 1 then\n"
                                     "    println(\"one\")\n  end if\n"
                                     "  do while select case i\n    case 0 -> true\n    case default -> false\n  end select\n"

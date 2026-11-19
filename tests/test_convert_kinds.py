@@ -26,9 +26,9 @@ class DeclarationKindTests(unittest.TestCase):
                 self.assertEqual(declared(spec), want)
 
     def test_integer_kinds(self):
-        for spec, want in [("integer", "integer"), ("integer(1)", "int8"), ("integer(2)", "int16"),
-                           ("integer(4)", "integer"), ("integer(8)", "int64"), ("integer(kind=8)", "int64"),
-                           ("integer*8", "int64"), ("integer*2", "int16")]:
+        for spec, want in [("integer", "int32"), ("integer(1)", "int8"), ("integer(2)", "int16"),
+                           ("integer(4)", "int32"), ("integer(8)", "int"), ("integer(kind=8)", "int"),
+                           ("integer*8", "int"), ("integer*2", "int16")]:
             with self.subTest(spec):
                 self.assertEqual(declared(spec), want)
 
@@ -71,14 +71,14 @@ class KindNameTests(unittest.TestCase):
         text, findings = self.kinds("  real(sp) :: a\n  real(dp) :: b\n  real(wp) :: c\n  real(r15) :: d\n  real(r6) :: e\n"
                                     "  integer(i9) :: f\n  integer(i18) :: g\n  integer(i4) :: h\n  real(kind=eight) :: i\n")
         self.assertEqual(todos(findings), [])
-        for want in ("real32 :: a", "real :: b", "real :: c", "real :: d", "real32 :: e", "integer :: f",
-                     "int64 :: g", "int16 :: h", "real :: i"):
+        for want in ("real32 :: a", "real :: b", "real :: c", "real :: d", "real32 :: e", "int32 :: f",
+                     "int :: g", "int16 :: h", "real :: i"):
             self.assertIn(want, text)
 
     def test_kind_constants_become_plain_integers(self):
         text, _ = self.kinds("")
-        for want in ("public const integer :: sp = 4", "public const integer :: dp = 8", "public const integer :: wp = dp",
-                     "public const integer :: r15 = 8", "public const integer :: i18 = 8", "public const integer :: i4 = 2"):
+        for want in ("public const int32 :: sp = 4", "public const int32 :: dp = 8", "public const int32 :: wp = dp",
+                     "public const int32 :: r15 = 8", "public const int32 :: i18 = 8", "public const int32 :: i4 = 2"):
             self.assertIn(want, text)
         self.assertNotIn("selected", text)
         self.assertNotIn("kind(", text)
@@ -92,7 +92,7 @@ class KindNameTests(unittest.TestCase):
                                  "  implicit none\n  real(real64) :: a\n  integer(int64) :: b\n  real(real32) :: c\n  integer(int8) :: d\n"
                                  "end program\n")
         self.assertEqual(todos(findings), [])
-        for want in ("real :: a", "int64 :: b", "real32 :: c", "int8 :: d"):
+        for want in ("real :: a", "int :: b", "real32 :: c", "int8 :: d"):
             self.assertIn(want, text)
 
     def test_use_iso_fortran_env_without_attributes(self):
@@ -121,7 +121,7 @@ class LiteralAndConversionTests(unittest.TestCase):
         self.assertIn("println(0.1, real32(0.1))", text)
 
     def test_integer_literal_kinds(self):
-        self.assertEqual(self.out("5_8, 5_4, 5_2, 5_1, 5"), "int64(5), 5, int16(5), int8(5), 5")
+        self.assertEqual(self.out("5_8, 5_4, 5_2, 5_1, 5"), "int(5), 5, int16(5), int8(5), 5")
 
     def test_real_of_an_integer_or_real_is_single(self):
         self.assertEqual(self.out("real(i), real(d), real(x)"), "real32(i), real32(d), real32(x)")
@@ -136,11 +136,11 @@ class LiteralAndConversionTests(unittest.TestCase):
         self.assertEqual(self.out("dble(i), float(i), sngl(d)"), "real64(i), real32(i), real32(d)")
 
     def test_int_with_a_kind(self):
-        self.assertEqual(self.out("int(x), int(x, 8), int(x, kind=2), int(x, 1)"), "int(x), int64(x), int16(x), int8(x)")
+        self.assertEqual(self.out("int(x), int(x, 8), int(x, kind=2), int(x, 1)"), "int32(x), int(x), int16(x), int8(x)")
 
     def test_epsilon_of_a_bare_single_literal(self):
         self.assertEqual(self.out("epsilon(1.0), epsilon(1.0d0), huge(1.0), huge(1)"),
-                         "epsilon(real32(1.0)), epsilon(1.0), huge(real32(1.0)), huge(1)")
+                         "epsilon(real32(1.0)), epsilon(1.0), huge(real32(1.0)), huge(int32(1))")
 
     def test_cmplx_kind_is_dropped(self):
         self.assertEqual(self.out("cmplx(1.0, 2.0, kind=8), cmplx(1.0, 2.0, 8)"), "cmplx(1.0, 2.0), cmplx(1.0, 2.0)")

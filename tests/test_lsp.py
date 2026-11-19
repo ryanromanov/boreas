@@ -48,9 +48,9 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("expected an expression", d["message"])
 
     def test_error_without_a_column_covers_the_line(self):
-        (d,) = diagnostics("record r\n  integer :: a\n  integer :: a\nend record\n" + GOOD)
+        (d,) = diagnostics("record r\n  int :: a\n  int :: a\nend record\n" + GOOD)
         self.assertEqual(d["range"]["start"], {"line": 2, "character": 0})
-        self.assertEqual(d["range"]["end"], {"line": 2, "character": len("  integer :: a")})
+        self.assertEqual(d["range"]["end"], {"line": 2, "character": len("  int :: a")})
 
     def test_crlf_does_not_leak_into_the_range(self):
         (d,) = diagnostics(BAD.replace("\n", "\r\n"))

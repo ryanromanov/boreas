@@ -3,8 +3,8 @@
 ! A parameter with no mode is `in` and cannot be assigned inside the callee.
 ! Writes that reach the caller are marked `@`, so they stand out.
 
-subroutine swap(inout integer :: a, inout integer :: b)
-  integer :: t
+subroutine swap(inout int :: a, inout int :: b)
+  int :: t
   t = a
   @a = b
   @b = t
@@ -24,8 +24,8 @@ end function
 
 ! `out` is still the right tool when the caller already has the storage: the subroutine
 ! fills the caller's array in place, and no new array is made.
-subroutine squares(out integer[] :: v)
-  integer :: i
+subroutine squares(out int[] :: v)
+  int :: i
   do i = 1, size(v)
     @v[i] = i * i
   end do
@@ -36,8 +36,8 @@ subroutine scale(in real :: k, inout real[] :: xs)
 end subroutine
 
 program demo
-  integer :: x = 1
-  integer :: y = 2
+  int :: x = 1
+  int :: y = 2
   real :: a
   real :: c
   real[3] :: v = [1.0, 2.0, 3.0]
@@ -48,7 +48,7 @@ program demo
   (a, c) = circle(3.0)
   println("circle r=3:", a, c)
 
-  integer[5] :: table
+  int[5] :: table
   call squares(@table)
   println("squares:", table)
 

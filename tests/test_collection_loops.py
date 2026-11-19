@@ -7,8 +7,8 @@ from boreas.lexer import LangError
 from boreas.parser import parse
 from boreas.printer import to_source
 
-DECLS = ("  map[string, integer] :: age\n  set[string] :: seen\n"
-         "  string :: name\n  integer :: n\n  integer :: total\n")
+DECLS = ("  map[string, int] :: age\n  set[string] :: seen\n"
+         "  string :: name\n  int :: n\n  int :: total\n")
 
 
 def show(body, decls=DECLS):
@@ -63,15 +63,15 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(out, ["a 1", "a 2"])
 
     def test_a_field(self):
-        src = ("record shelf\n  map[string, integer] :: stock\nend record\n"
-               "program t\n  shelf :: s\n  string :: k\n  integer :: v\n  s.stock[\"pen\"] = 3\n"
+        src = ("record shelf\n  map[string, int] :: stock\nend record\n"
+               "program t\n  shelf :: s\n  string :: k\n  int :: v\n  s.stock[\"pen\"] = 3\n"
                "  do k, v in s.stock\n    println(k, v)\n  end do\nend program\n")
         self.assertEqual(run_bor(src), ["pen 3"])
 
     def test_a_parameter_and_a_result(self):
-        src = ("function total(map[string, integer] :: m) -> integer\n  string :: k\n  integer :: v\n  integer :: t\n"
+        src = ("function total(map[string, int] :: m) -> int\n  string :: k\n  int :: v\n  int :: t\n"
                "  t = 0\n  do k, v in m\n    t = t + v\n  end do\n  return t\nend function\n"
-               "program t\n  map[string, integer] :: m\n  m[\"a\"] = 4\n  m[\"b\"] = 5\n  println(total(m))\nend program\n")
+               "program t\n  map[string, int] :: m\n  m[\"a\"] = 4\n  m[\"b\"] = 5\n  println(total(m))\nend program\n")
         self.assertEqual(run_bor(src), ["9"])
 
 
@@ -86,15 +86,15 @@ class ArrayLoopTests(unittest.TestCase):
         self.assertEqual(out, ["a", "b", "3"])
 
     def test_a_matrix_is_column_major(self):
-        out = show('  integer[2, 2] :: g = reshape([1, 2, 3, 4], [2, 2])\n  do n in g\n    println(n)\n  end do')
+        out = show('  int[2, 2] :: g = reshape([1, 2, 3, 4], [2, 2])\n  do n in g\n    println(n)\n  end do')
         self.assertEqual(out, ["1", "2", "3", "4"])
 
     def test_an_empty_array(self):
-        out = show('  allocatable integer[] :: e\n  allocate e[0]\n  do n in e\n    println(n)\n  end do\n  println("done")')
+        out = show('  allocatable int[] :: e\n  allocate e[0]\n  do n in e\n    println(n)\n  end do\n  println("done")')
         self.assertEqual(out, ["done"])
 
     def test_the_loop_walks_a_snapshot(self):
-        out = show('  integer[3] :: a = [1, 2, 3]\n  do n in a\n    a[3] = 0\n    println(n)\n  end do')
+        out = show('  int[3] :: a = [1, 2, 3]\n  do n in a\n    a[3] = 0\n    println(n)\n  end do')
         self.assertEqual(out, ["1", "2", "3"])
 
     def test_a_string_array_and_exit(self):
@@ -117,10 +117,10 @@ class ErrorTests(unittest.TestCase):
 
     def test_a_wrong_variable_type(self):
         fails(self, '  age["a"] = 1\n  do n, name in age\n    println(n)\n  end do',
-              "loop variable 'n' takes the key of the map, but cannot assign string to integer")
+              "loop variable 'n' takes the key of the map, but cannot assign string to int")
 
     def test_a_loop_variable_must_be_declared(self):
-        src = "program t\n  map[string, integer] :: m\n  do k, v in m\n    println(k)\n  end do\nend program\n"
+        src = "program t\n  map[string, int] :: m\n  do k, v in m\n    println(k)\n  end do\nend program\n"
         errors = check_errors(src)
         self.assertTrue(any("'k' is not declared" in e[2] for e in errors), errors)
         self.assertTrue(any("'v' is not declared" in e[2] for e in errors), errors)
@@ -138,7 +138,7 @@ class ErrorTests(unittest.TestCase):
 
 
 class ToolTests(unittest.TestCase):
-    SRC = ("program t\n  map[string, integer] :: m\n  string :: k\n  integer :: v\n"
+    SRC = ("program t\n  map[string, int] :: m\n  string :: k\n  int :: v\n"
            "  outer: do k, v in m\n    println(k)\n  end do outer\nend program\n")
 
     def test_prints_back(self):

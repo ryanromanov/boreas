@@ -7,10 +7,10 @@
 
 ! ---- What a map or set can be ------------------------------------------------------------
 !
-!  > allocatable map[string, integer] :: m
+!  > allocatable map[string, int] :: m
 !  error: a map cannot be 'allocatable': it is always there, and grows by itself
 !
-!  > const map[string, integer] :: m
+!  > const map[string, int] :: m
 !  error: constant 'm' needs a value: a literal such as {...}, or another map
 !
 !  > m["a"] = 2                            (m is a const map)
@@ -19,29 +19,29 @@
 !  > call add(s, "b")                      (s is a const set)
 !  error: 's' is a constant and cannot be changed
 !
-!  > map[string, integer] :: ms[3]
+!  > map[string, int] :: ms[3]
 !  error: an array of maps is not supported: a map is declared on its own
 !
-!  > map[string, integer]? :: m
+!  > map[string, int]? :: m
 !  error: a map cannot be optional: it is always there, and may be empty
 !
-!  > map[real, integer] :: m
-!  error: a map's key must be integer or string, not real
+!  > map[real, int] :: m
+!  error: a map's key must be int or string, not real
 !
-!  > map[string, map[string, integer]] :: m
+!  > map[string, map[string, int]] :: m
 !  error: a map's value cannot be another map; use a set or an array as the value
 !
-!  > map[string, integer?] :: m
+!  > map[string, int?] :: m
 !  error: a map's value cannot be optional: get(m, key) already gives null for a missing key
 !
 !  > set[set[string]] :: s
 !  error: a set's member must be a single value: arrays, optional values and other collections are not supported here
 !
-!  > map[string, integer[3]] :: m
-!  error: a map's array value is written without sizes, as in 'integer[]' or 'real[,]'
+!  > map[string, int[3]] :: m
+!  error: a map's array value is written without sizes, as in 'int[]' or 'real[,]'
 !
 !  In a record, a map or set field starts empty, so it cannot have a default:
-!  > map[string, integer] :: stock = other
+!  > map[string, int] :: stock = other
 !  error: a map field starts empty, so it has no default value
 
 ! ---- Things you cannot do to one -----------------------------------------------------------
@@ -49,7 +49,7 @@
 !  > same = a < b                          (a and b are maps; == and /= work, ordering does not)
 !  error: a map cannot be used with '<'; maps and sets can be compared with == and /=, not ordered
 
-!  > same = a == b                         (a is a map[string, integer], b a map[string, real])
+!  > same = a == b                         (a is a map[string, int], b a map[string, real])
 !  error: cannot compare a map with a map: their types differ
 !
 !  > b = a + a
@@ -65,7 +65,7 @@
 !  error: 'a' is not a map, so it takes one subscript list: write a[i, j] for a matrix
 !
 !  > x = m["a"][2]                         (m holds integers, not arrays)
-!  error: an entry of 'm' is one integer, not an array, so it takes no second subscript
+!  error: an entry of 'm' is one int, not an array, so it takes no second subscript
 !
 !  > println(values(g))                    (g is a map of sets)
 !  error: values() gives an array of single values, but this map's values are sets; loop with do k in keys(m), or read one entry at a time
@@ -79,10 +79,10 @@
 !  error: cannot remove "x": 'm' has no such key (test with has first)
 !
 !  > m[1] = 2                              (m has string keys)
-!  error: the map 'm' has string keys, got integer
+!  error: the map 'm' has string keys, got int
 !
 !  > m["a"] = "x"                          (m holds integers)
-!  error: a value of 'm': cannot assign string to integer
+!  error: a value of 'm': cannot assign string to int
 !
 !  > call add(g["a"], "x")                 (g is a map of sets and has no key "a": it is not created for you)
 !  error: the map 'g' has no key "a" (test with has(g, key), or use get(g, key) ?? default)
@@ -96,12 +96,12 @@
 ! ---- What to write instead -----------------------------------------------------------------
 
 program workarounds
-  map[string, integer] :: a
-  map[string, integer] :: b
+  map[string, int] :: a
+  map[string, int] :: b
   map[string, set[string]] :: groups
-  map[string, integer[]] :: lists
+  map[string, int[]] :: lists
   string :: key
-  integer :: value
+  int :: value
   logical :: same
 
   a["x"] = 1

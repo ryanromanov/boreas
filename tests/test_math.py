@@ -69,7 +69,8 @@ class FunctionTests(unittest.TestCase):
         self.assertEqual(value("product([0.5, 4.0])"), "2.0")
 
     def test_inquiry_functions(self):
-        self.assertEqual(value("huge(1)"), "2147483647")
+        self.assertEqual(value("huge(1)"), "9223372036854775807")
+        self.assertEqual(value("huge(int32(1))"), "2147483647")
         self.assertEqual(number("huge(1.0)"), sys.float_info.max)
         self.assertEqual(number("epsilon(1.0)"), sys.float_info.epsilon)
         self.assertEqual(number("tiny(1.0)"), sys.float_info.min)
@@ -94,7 +95,7 @@ class FunctionTests(unittest.TestCase):
         self.assertAlmostEqual(float(out[2].strip("[]").split(",")[0]), math.atan2(0.5, 1.0))
 
     def test_new_functions_are_allowed_in_field_defaults(self):
-        out = run_bor("record r\n  real :: a = hypot(3.0, 4.0)\n  integer :: n = floor(2.7)\nend record\n"
+        out = run_bor("record r\n  real :: a = hypot(3.0, 4.0)\n  int :: n = floor(2.7)\nend record\n"
                       "program t\n  r :: x\n  println(x.a, x.n)\nend program\n")
         self.assertEqual(out, ["5.0 2"])
 

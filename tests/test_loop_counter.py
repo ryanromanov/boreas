@@ -73,7 +73,7 @@ end subroutine
   info = 0
 end subroutine
 """)
-        self.assertEqual(text.count("integer :: info_i"), 1)
+        self.assertEqual(text.count("int32 :: info_i"), 1)
 
 
 if __name__ == "__main__":

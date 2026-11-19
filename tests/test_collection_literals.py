@@ -19,7 +19,7 @@ def fails(case, body, message, before=""):
 
 class LiteralTests(unittest.TestCase):
     def test_map_set_and_empty(self):
-        self.assertEqual(out('  map[string, integer] :: a\n  set[string] :: s\n  a = {"x": 1, "y": 2}\n  s = {"p", "q"}\n'
+        self.assertEqual(out('  map[string, int] :: a\n  set[string] :: s\n  a = {"x": 1, "y": 2}\n  s = {"p", "q"}\n'
                              '  println(a, s)\n  a = {}\n  s = {}\n  println(size(a), size(s))\n'),
                          ["{x: 1, y: 2} {p, q}", "0 0"])
 
@@ -27,12 +27,12 @@ class LiteralTests(unittest.TestCase):
         self.assertEqual(out('  map[string, real] :: r = {"pi": 3}\n  println(r)\n'), ["{pi: 3.0}"])
 
     def test_values_are_converted_like_an_assignment(self):
-        fails(self, '  map[string, integer] :: a\n  a = {"x": "no"}\n', "cannot assign string to integer")
-        fails(self, '  map[string, integer] :: a\n  a = {1: 1}\n', "has string keys, got integer")
-        fails(self, '  set[string] :: s\n  s = {1}\n', "has string members, got integer")
+        fails(self, '  map[string, int] :: a\n  a = {"x": "no"}\n', "cannot assign string to int")
+        fails(self, '  map[string, int] :: a\n  a = {1: 1}\n', "has string keys, got int")
+        fails(self, '  set[string] :: s\n  s = {1}\n', "has string members, got int")
 
     def test_nested_set_and_array_values(self):
-        self.assertEqual(out('  map[string, set[string]] :: g\n  map[string, integer[]] :: l\n'
+        self.assertEqual(out('  map[string, set[string]] :: g\n  map[string, int[]] :: l\n'
                              '  g = {"fruit": {"apple", "pear"}, "none": {}}\n  l = {"k": [1, 2, 3]}\n  println(g)\n  println(l)\n'
                              '  g["x"] = {"a"}\n  println(size(g))\n'),
                          ["{fruit: {apple, pear}, none: {}}", "{k: [1, 2, 3]}", "3"])
@@ -40,7 +40,7 @@ class LiteralTests(unittest.TestCase):
     def test_arguments_results_and_comparisons(self):
         before = ("module m\n  public subroutine show(in map[string, real] :: x)\n    println(x)\n  end subroutine\n"
                   "  public function mk() -> set[string]\n    return {\"p\", \"q\"}\n  end function\nend module\n")
-        src = before + ('program t\n  use m: show, mk\n  map[string, integer] :: a\n  set[string] :: s\n  s = mk()\n'
+        src = before + ('program t\n  use m: show, mk\n  map[string, int] :: a\n  set[string] :: s\n  s = mk()\n'
                         '  call show({"z": 1})\n  println(s, a == {}, s == {"q", "p"}, s /= {"p"})\nend program\n')
         self.assertEqual(run_bor(src), ["{z: 1.0}", "{p, q} true true true"])
 
@@ -49,20 +49,20 @@ class LiteralTests(unittest.TestCase):
                          ["u", "v", "{a: 1}"])
 
     def test_the_wrong_kind_of_literal(self):
-        fails(self, '  map[string, integer] :: a\n  a = {"p"}\n', "got a set literal; a map is written {key: value}")
+        fails(self, '  map[string, int] :: a\n  a = {"p"}\n', "got a set literal; a map is written {key: value}")
         fails(self, '  set[string] :: s\n  s = {"p": 1}\n', "got a map literal; a set is written {a, b}")
 
     def test_a_key_listed_twice_and_bad_keys(self):
-        fails(self, '  map[string, integer] :: a\n  a = {"x": 1, "x": 2}\n', '"x" appears twice in this literal')
+        fails(self, '  map[string, int] :: a\n  a = {"x": 1, "x": 2}\n', '"x" appears twice in this literal')
         fails(self, '  set[string] :: s\n  s = {"p", "p"}\n', '"p" appears twice in this literal')
         fails(self, '  set[string] :: s\n  s = {[1, 2]}\n', "must be a single integer or string")
 
     def test_mixing_the_two_forms_is_a_parse_error(self):
-        fails(self, '  map[string, integer] :: a\n  a = {"x": 1, "y"}\n', "expected ':'")
+        fails(self, '  map[string, int] :: a\n  a = {"x": 1, "y"}\n', "expected ':'")
         fails(self, '  set[string] :: s\n  s = {"x", "y": 1}\n', "a set literal lists members only")
 
     def test_the_formatter_keeps_them(self):
-        src = 'program t\n  map[string, integer] :: a = {"x": 1, "y": 2}\n  set[string] :: s = {"p", "q"}\n  a = {}\nend program\n'
+        src = 'program t\n  map[string, int] :: a = {"x": 1, "y": 2}\n  set[string] :: s = {"p", "q"}\n  a = {}\nend program\n'
         self.assertEqual(parse(to_source(parse(src))), parse(src))
 
 

@@ -61,7 +61,7 @@ class InterfaceTests(unittest.TestCase):
         # the same program in Fortran prints 12.566, 12.000, 3.142 and a total of 27.708 (checked with gfortran)
         body = """  figure[3] :: all
   real :: total = 0.0
-  integer :: i
+  int :: i
   all[1] = circle(label = "circle", r = 2.0)
   all[2] = rect(label = "rect", w = 3.0, h = 4.0)
   all[3] = circle(label = "unit")
@@ -123,8 +123,8 @@ class InterfaceErrorTests(unittest.TestCase):
         self.fails("  figure :: f = 3.0", "cannot assign real to figure")
 
     def test_a_function_with_the_wrong_signature(self):
-        defs = DEFS + "\nrecord odd\n  function name(self) -> string\n    return \"odd\"\n  end function\n  function area(self) -> integer\n    return 1\n  end function\nend record\n"
-        self.fails("  figure :: f = odd()", "its 'area' is function area() -> integer, but figure needs function area() -> real", defs)
+        defs = DEFS + "\nrecord odd\n  function name(self) -> string\n    return \"odd\"\n  end function\n  function area(self) -> int\n    return 1\n  end function\nend record\n"
+        self.fails("  figure :: f = odd()", "its 'area' is function area() -> int, but figure needs function area() -> real", defs)
 
     def test_is_is_checked_when_written(self):
         defs = DEFS.replace("record rect\n", "record rect is figure, figure2\n", 1)

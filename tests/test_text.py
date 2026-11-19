@@ -22,7 +22,7 @@ class TextTests(unittest.TestCase):
         self.assertEqual(run("text([1, 2, 3]) + text(-4)"), "[1, 2, 3]-4")
 
     def test_matches_what_print_writes(self):
-        decls = "  real32 :: a = 0.1\n  real :: b = 1.0 / 3.0\n  integer :: n = 12"
+        decls = "  real32 :: a = 0.1\n  real :: b = 1.0 / 3.0\n  int :: n = 12"
         for name in ("a", "b", "n"):
             with self.subTest(name=name):
                 self.assertEqual(run(f"text({name})", decls), run(name, decls))

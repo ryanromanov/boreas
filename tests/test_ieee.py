@@ -68,7 +68,7 @@ class IeeeTests(unittest.TestCase):
     def test_things_that_still_stop(self):
         fails(self, "  println(1 / 0)", "integer division by zero", ieee=True)
         fails(self, "  println(int(nan()))", "", ieee=True)
-        fails(self, "  integer :: n\n  n = nint(infinity())", "", ieee=True)
+        fails(self, "  int :: n\n  n = nint(infinity())", "", ieee=True)
 
     def test_the_flag_belongs_to_the_run(self):
         run("  println(1.0 / z)", decls=self.ZERO)

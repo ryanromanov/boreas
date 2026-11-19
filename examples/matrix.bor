@@ -3,7 +3,7 @@
 ! between rows is written the way the matrix reads, and is stored the same way.
 
 function trace(real[,] :: m) -> real
-  integer :: i
+  int :: i
   real :: t = 0.0
   do i = 1, size(m, 1)
     t = t + m[i, i]
@@ -12,7 +12,7 @@ function trace(real[,] :: m) -> real
 end function
 
 subroutine normalize_rows(inout real[,] :: m)
-  integer :: i
+  int :: i
   do i = 1, size(m, 1)
     @m[i, :] = m[i, :] / sum(m[i, :])      ! every row now sums to 1
   end do

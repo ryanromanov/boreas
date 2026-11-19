@@ -1,8 +1,8 @@
 """Fixed-width numbers.
 
-Plain Python `int` is Boreas's `integer` (32 bits, checked) and plain `float` is `real` (a double). The
+Plain Python `int` is Boreas's `int` (64 bits, checked) and plain `float` is `real` (a double). The
 other widths are subclasses, so a value carries its kind and arithmetic can pick the right one:
-int8, int16, int64, real32."""
+int8, int16, int32, real32."""
 import ctypes
 import ctypes.util
 import math
@@ -12,24 +12,25 @@ from .lexer import LangError
 
 class Int8(int): __slots__ = ()
 class Int16(int): __slots__ = ()
-class Int64(int): __slots__ = ()
+class Int32(int): __slots__ = ()
 class Real32(float): __slots__ = ()
 
 
 INT_RANGE = {"int8": (-2 ** 7, 2 ** 7 - 1), "int16": (-2 ** 15, 2 ** 15 - 1),
-             "integer": (-2 ** 31, 2 ** 31 - 1), "int64": (-2 ** 63, 2 ** 63 - 1)}
-INT_CLASS = {"int8": Int8, "int16": Int16, "integer": int, "int64": Int64}
-INT_ORDER = ["int8", "int16", "integer", "int64"]          # narrowest first
-INT_BITS = {"int8": 8, "int16": 16, "integer": 32, "int64": 64}
-LO32, HI32 = INT_RANGE["integer"]
+             "int32": (-2 ** 31, 2 ** 31 - 1), "int": (-2 ** 63, 2 ** 63 - 1)}
+INT_CLASS = {"int8": Int8, "int16": Int16, "int32": Int32, "int": int}
+INT_ORDER = ["int8", "int16", "int32", "int"]              # narrowest first
+INT_BITS = {"int8": 8, "int16": 16, "int32": 32, "int": 64}
+LO32, HI32 = INT_RANGE["int32"]
+LO64, HI64 = INT_RANGE["int"]
 
-TYPE_NAMES = {bool: "logical", int: "integer", Int8: "int8", Int16: "int16", Int64: "int64",
+TYPE_NAMES = {bool: "logical", int: "int", Int8: "int8", Int16: "int16", Int32: "int32",
               float: "real", Real32: "real32", str: "string", complex: "complex"}
-NUMERIC = {"integer", "int8", "int16", "int64", "real", "real32", "complex"}
-TAGGED = (Int8, Int16, Int64, Real32)
+NUMERIC = {"int", "int8", "int16", "int32", "real", "real32", "complex"}
+TAGGED = (Int8, Int16, Int32, Real32)
 
-# `int32` and `real64` are other spellings of the plain types.
-SPELLINGS = {"int32": "integer", "real64": "real"}
+# `int64` and `real64` are other spellings of the plain types.
+SPELLINGS = {"int64": "int", "real64": "real"}
 KIND_TYPES = ["int8", "int16", "int32", "int64", "real32", "real64"]
 
 REAL32_MAX = 3.4028234663852886e38
@@ -187,13 +188,13 @@ def shortest32(x):
 def make_int(kind, value, what="value"):
     lo, hi = INT_RANGE[kind]
     if not lo <= value <= hi:
-        raise LangError(f"{what}: {value} does not fit in {'integer (32 bits)' if kind == 'integer' else kind}")
+        raise LangError(f"{what}: {value} does not fit in {kind} ({INT_BITS[kind]} bits)")
     return INT_CLASS[kind](value)
 
 
 def lit_int(v):
-    """An integer literal too big for 32 bits is an int64."""
-    return v if LO32 <= v <= HI32 else Int64(v)
+    """An integer literal is a plain `int`; one that does not fit in 64 bits is left for the caller to refuse."""
+    return v
 
 
 def int_div(a, b):
@@ -292,7 +293,7 @@ def wrap(kind, r):
 def widest_tag(args):
     """For a function applied to `args`: the kind its result should keep, or None. Tagged integer
     arguments give the widest integer kind; real32 arguments give real32 unless a real64 is mixed in."""
-    ints, real32, real64 = None, False, False
+    ints, real32, real64, plain = None, False, False, False
     for a in args:
         v = a
         if hasattr(a, "data"):
@@ -304,8 +305,12 @@ def widest_tag(args):
             real32 = True
         elif t is float:
             real64 = True
-        elif t in (Int8, Int16, Int64):
+        elif t in (Int8, Int16, Int32):
             k = TYPE_NAMES[t]
             if ints is None or INT_ORDER.index(k) > INT_ORDER.index(ints):
                 ints = k
+        elif t is int:
+            plain = True                      # a 64-bit `int` next to a narrower one: the result is the wider
+    if plain and ints is not None:
+        ints = "int"
     return ints, (real32 and not real64)

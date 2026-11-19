@@ -58,7 +58,7 @@ class ArrayResultTests(unittest.TestCase):
             show("  println(use_it(one))", self.USE)
 
     def test_the_element_type_must_match(self):
-        defs = "function ints(integer :: n) -> integer[]\n  return [n]\nend function\n"
+        defs = "function ints(int :: n) -> int[]\n  return [n]\nend function\n"
         with self.assertRaisesRegex(LangError, "'ints' is function"):
             show("  println(use_it(ints))", defs + self.USE)
 
@@ -92,7 +92,7 @@ class SeveralResultsTests(unittest.TestCase):
             with self.subTest(fn):
                 with self.assertRaisesRegex(LangError, f"'{fn}' is function"):
                     show(f"  println(spread_of({fn}))", self.USE)
-        defs = "function mixed(real :: x) -> (real, integer)\n  return x, 1\nend function\n"
+        defs = "function mixed(real :: x) -> (real, int)\n  return x, 1\nend function\n"
         with self.assertRaisesRegex(LangError, "'mixed' is function"):
             show("  println(spread_of(mixed))", defs + self.USE)
 

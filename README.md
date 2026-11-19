@@ -20,7 +20,7 @@ Currently a tree-walking interpreter written in Python.
     end function
 
     program demo
-      integer[3] :: ys = [1, 2, 3]
+      int[3] :: ys = [1, 2, 3]
       println("squares:", ys * ys, square(2.5))
     end program
 
@@ -28,40 +28,48 @@ Currently a tree-walking interpreter written in Python.
 
 Each variable is declared on its own line, with an optional initial value:
 
-    integer :: i
-    integer :: count = 0
+    int :: i
+    int :: count = 0
     real[3] :: v = [1.0, 2.0, 3.0]
 
-A variable you don't give a value starts at its type's default: `0` for `integer`, `0.0` for `real`,
+A variable you don't give a value starts at its type's default: `0` for `int`, `0.0` for `real`,
 `0.0 + 0.0i` for `complex`, `false` for `logical` and `""` for `string`. Arrays and records start that way element by element
 and field by field. The one exception is an `out` parameter, which starts with no value: producing
 it is the subroutine's job, so reading it first, or never assigning it, is an error.
 
-`integer :: i, j` is an error ("declare one variable per line"). That way every
+`int :: i, j` is an error ("declare one variable per line"). That way every
 variable can carry its own comment, and a change touches only the line it is
 about. `boreas convert` splits Fortran's `real :: x, y, z` into separate lines.
 
 ## Number kinds
 
-Integers and reals come in fixed widths, named by their size:
+Integers and reals come in fixed widths. `int` and `real` are the full-size ones, 64 bits; the narrower ones are named
+by their size:
 
 | type | what it is |
 |---|---|
-| `int8`, `int16`, `integer` (also `int32`), `int64` | signed integers of 8, 16, 32 and 64 bits |
-| `real` (also `real64`), `real32` | double and single precision floating point |
+| `int` (also `int64`) | signed 64-bit integer, the default |
+| `int8`, `int16`, `int32` | signed integers of 8, 16 and 32 bits |
+| `real` (also `real64`) | double precision floating point, the default |
+| `real32` | single precision floating point |
 
-    int64 :: big = 3000000000
+    int :: big = 3000000000
     real32 :: x = 0.1
     println(big * 3, x * 3.0)          ! 9000000000 0.3
 
-- **Overflow is an error.** `integer` is 32 bits, so `2147483647 + 1` stops the program ("integer
-  overflow") where Fortran wraps around silently. Integer literals too big for 32 bits are `int64`.
+- **Overflow is an error.** `int` is 64 bits, so `9223372036854775807 + 1` stops the program ("integer
+  overflow"); an `int32` stops at 2147483647 ("does not fit in int32") where Fortran wraps around silently.
 - **Wrapping is an operator.** `+%`, `-%` and `*%` wrap at the width of their operands, for the
-  hashes and random-number generators that rely on it: `seed = (seed *% 1103515245) +% 12345`.
-  Everything else is checked.
+  hashes and random-number generators that rely on it: `seed = (seed *% 1103515245) +% 12345`
+  with `int32 :: seed`. Everything else is checked.
+- **A whole-number literal next to an `int32` is an `int32`**, as `2.0` next to a `real32` is a `real32`: `n + 1` and
+  `seed *% 1103515245` keep their 32 bits. A literal that does not fit in 32 bits stays an `int`.
+- **`integer` is now `int`.** Older programs that say `integer :: n` get an error that names the new spellings;
+  `python3 tools/rename_integer.py FILE...` rewrites them (`--int32` keeps the old 32-bit meaning, for a program
+  that relied on it, such as a hash that wraps).
 - **Mixing widths widens** to the bigger one; an integer next to a real gives that real. Assigning to
   a narrower integer works when the value fits (`int8 :: b = 100`) and is an error when it does not.
-  A real never goes into an integer without `int(x)`, `int64(x)`, ...; a `real` rounds into a
+  A real never goes into an integer without `int(x)`, `int32(x)`, ...; a `real` rounds into a
   `real32` on assignment.
 - **`real32` is real single precision**: every operation is rounded to 24 bits, so the results match
   Fortran's `real`. A real literal next to a `real32` is a `real32` (`x * 2.0`), as in Fortran.
@@ -73,11 +81,11 @@ Integers and reals come in fixed widths, named by their size:
   percent of cases). `x ** n` with a whole exponent multiplies in single precision and `x ** y` calls `powf`,
   as gfortran does. Another platform's library can differ in the last bit, as with Fortran. If the library
   cannot be loaded, Boreas falls back to double precision rounded to single.
-- Conversion functions: `int8(x)`, `int16(x)`, `int32(x)` / `int(x)`, `int64(x)` (truncate and check
+- Conversion functions: `int8(x)`, `int16(x)`, `int32(x)`, `int(x)` / `int64(x)` (truncate and check
   the range), `real32(x)`, `real64(x)` / `real(x)`. `huge`, `epsilon` and `tiny` work for every kind.
 - Single precision is slower than double: each result is rounded and tagged with its width.
 - **Whole numbers from reals.** `floor`, `ceiling` and `nint` give an `int64` when the answer does not fit in 32
-  bits, so `integer :: n = floor(1.0e10)` stops with "does not fit in integer" and `int64 :: n = floor(1.0e10)`
+  bits, so `int32 :: n = floor(1.0e10)` stops with "does not fit in int32" and `int :: n = floor(1.0e10)`
   works. A NaN or an answer beyond 64 bits is an error.
 - **Real overflow is an error too.** `1.0e308 * 10.0` stops the program ("too large for a real") unless the file
   says `use ieee`; so does a negative number to a fractional power (`(-8.0) ** (1.0 / 3.0)`, which has no real
@@ -128,7 +136,7 @@ single blank. `fields(text)` treats a run of blanks as one gap and never gives a
 `field(text, k, chars)`) is just the k-th of those pieces, or `null` when there is none or `text` is `null`. `to_integer(text)`, `to_real(text)` and
 `to_logical(text)` (`true`, `false`, `T`, `F`, `.true.`, `.false.`) give the value the text spells (blanks around
 it are ignored) or `null`: `to_integer("3.5")` is `null`, `to_real("3")` is `3.0`. Assigning that `null` to a
-plain `integer` or `real` stops the program, so a bad value is an error unless you give a fallback with `??`.
+plain `int` or `real` stops the program, so a bad value is an error unless you give a fallback with `??`.
 The `to_` functions also accept `null` and give `null`, so `to_integer(field(read_line(), 1))` is one line.
 
 `stop` ends the program; `stop 3` ends it with exit code 3.
@@ -186,7 +194,7 @@ and `close` use it:
 - A failed `open`, or `read_line` on a closed file or one opened for writing, stops the program with a message.
   `try_open(name, mode)` returns a `file?` that is `null` when the file cannot be opened, and
   `exists("name")` says whether a file is there.
-- A file value is a handle, not a number: it cannot be mixed up with an integer, it can be passed to
+- A file value is a handle, not a number: it cannot be mixed up with an int, it can be passed to
   a procedure or kept in a module variable, and using it after `close` (or before `open`) is an error.
   Files still open when the program ends are closed for you.
 - Text files read or written one line at a time only; there is no binary or direct access yet.
@@ -218,7 +226,7 @@ like Fortran's `F8.2`. Integer division by zero and turning NaN into an integer 
 ## Constants
 
     const real :: golden = 1.6180339887
-    const integer[3] :: primes = [2, 3, 5]
+    const int[3] :: primes = [2, 3, 5]
 
 `pi` is always there (3.141592653589793, a `real`; `real32 :: x = pi` rounds it). A program that declares its
 own `pi` gets its own, so older code keeps working. A `const` needs a value and can never be assigned, used as a `do` variable, or
@@ -342,7 +350,7 @@ where the mask is true and `b` where it is not, element by element (`merge(v, 0,
 array or a single value, `a` and `b` must have the same type). `pack(a, mask)` is the elements of `a` where the mask is
 true, down the columns, as a one-dimensional array (`pack(v, v > 0)`; a single `true` keeps everything). `maxloc(v)` and
 `minloc(v)` are the position (counting from 1) of the first largest or smallest element of a one-dimensional array of
-numbers or strings; unlike Fortran they give a plain integer, not a one-element array. For a matrix, `maxloc(m)` gives
+numbers or strings; unlike Fortran they give a plain int, not a one-element array. For a matrix, `maxloc(m)` gives
 the subscripts as an array (`[row, col]`), and `maxloc(m, 1)` / `maxloc(m, 2)` give one position per column / per row.
 A last argument of `true` (`maxloc(v, 1, true)`, `findloc(v, x, 1, true)`) picks the last of equal elements instead of the
 first, Fortran's `back=`; a `dim` of 0 means the whole array, so `maxloc(m, 0, true)` is the whole-matrix answer.
@@ -356,7 +364,7 @@ string, a logical and a number is an error rather than `false`.
 adds down each column (one answer per column) and `sum(m, 2)` along each row, as in Fortran; for a one-dimensional
 array `dim` is 1 and the answer is a single value.
 
-Whole numbers can be taken apart bit by bit, in the width of the number (`integer` 32 bits, `int64` 64, and so
+Whole numbers can be taken apart bit by bit, in the width of the number (`int` 64 bits, `int32` 32, and so
 on): `iand`, `ior`, `ieor` and `bitnot` (Fortran's `not`, which is a keyword here), `ishft(i, n)` (left for a positive
 `n`, right with zeros for a negative one), `shiftl`, `shiftr` (zeros come in) and `shifta` (the sign bit comes in),
 `btest(i, pos)`, `ibset`, `ibclr`, `ibits(i, pos, len)`, `popcnt`, `leadz`, `trailz` and `bit_size`. Bits count
@@ -402,7 +410,7 @@ with a plain `exit`.
 
 Choose between values without a chain of `if`s. Case values are literals or
 `const` names; ranges use `lo:hi`, `:hi` or `lo:`. The selector may be an
-integer, string or logical (not real).
+int, string or logical (not real).
 
     select case grade
       case 90:100
@@ -461,7 +469,7 @@ Arrays whose size is only known at run time are declared `allocatable` with one 
 dimension (the number of colons is the rank), given a size with `allocate`, and freed with
 `deallocate`:
 
-    allocatable integer[] :: a
+    allocatable int[] :: a
     allocatable real[,] :: m
     n = 5
     println(allocated(a))          ! false
@@ -480,7 +488,7 @@ scalar value is only accepted once the array is allocated. A fixed-size array mu
 cannot themselves be `allocatable`, so a callee cannot allocate its caller's array. A leftover
 allocation is freed at the end of its scope.
 
-A module can hold an allocatable array too (`public allocatable integer[] :: data`). Because every
+A module can hold an allocatable array too (`public allocatable int[] :: data`). Because every
 importer sees it, allocating or freeing it is a write and says so with `@`, in a subroutine
 (a function cannot): `allocate @data[n]`, `deallocate @data`, `@data[i] = x`.
 Reading needs nothing special. `allocate` on a local array never takes `@`.
@@ -490,8 +498,8 @@ Reading needs nothing special. `allocate` on a local array never takes `@`.
 A function can return an array whose length is only known when it runs. Write `[]` after the element type in
 the result (a comma for each extra dimension: `[,]` is two dimensions) and `return` an array:
 
-    function frequencies(integer :: n) -> integer[]
-      allocatable integer[] :: out
+    function frequencies(int :: n) -> int[]
+      allocatable int[] :: out
       allocate out[n]
       do i = 1, n
         out[i] = i - 1
@@ -499,7 +507,7 @@ the result (a comma for each extra dimension: `[,]` is two dimensions) and `retu
       return out
     end function
 
-    allocatable integer[] :: f
+    allocatable int[] :: f
     f = frequencies(8)              ! allocates f, as with split
     println(sum(frequencies(4)))
 
@@ -524,7 +532,7 @@ field per line, with no default values:
     println(p.x + q.y, p)
 
 - A record is a value: assigning one, passing it, or returning it copies it, so two variables never
-  share fields. Records can hold other records and fixed-size array fields (`integer[3] :: tags`,
+  share fields. Records can hold other records and fixed-size array fields (`int[3] :: tags`,
   with a literal size), and you can make arrays of records (`point[10] :: pts`).
 - Fields start at their type's default value (see Declarations), nested records and array fields
   included, so `point :: p` is a usable zero point. A field may declare its own default with a
@@ -532,7 +540,7 @@ field per line, with no default values:
   record constructors, and built-in functions such as `sqrt`; not variables or your own functions):
 
       record config
-        integer :: count = 5
+        int :: count = 5
         real :: scale = 1.0
         logical :: verbose
       end record
@@ -664,10 +672,10 @@ so variables with those names still work.
 
 ## Optional values
 
-A plain `integer`, `real`, `logical`, `string` or record always holds a value. Add `?` to the type
+A plain `int`, `real`, `logical`, `string` or record always holds a value. Add `?` to the type
 and the variable may instead be absent (`null`):
 
-    integer? :: n                       ! starts as null
+    int? :: n                       ! starts as null
     println(present(n), n == null)         ! false true
     n = 4
     println(n ?? 10)                       ! 4; `a ?? b` is a, or b when a is null
@@ -681,9 +689,9 @@ and the variable may instead be absent (`null`):
   to another optional parameter. `??` is the loosest operator (`n ?? 0 + 1` is `n ?? (0 + 1)`),
   chains left to right, and only evaluates its right side when the left is null.
 - `in` parameters may be optional, and such arguments can be left off the end of a call
-  (`step_or()` for `function step_or(integer? :: step)`); they arrive as `null`. Only trailing ones can be left
+  (`step_or()` for `function step_or(int? :: step)`); they arrive as `null`. Only trailing ones can be left
   off; to skip one in the middle, pass `null`.
-- A function may return `-> integer?` to say "no result" (`return null`).
+- A function may return `-> int?` to say "no result" (`return null`).
 - Record fields can be optional (`address? :: home`); they start as `null`. Reading a field
   through a null record is an error (`p.home.city` when `p.home` is null). A record still cannot
   contain itself, even optionally.
@@ -694,12 +702,12 @@ and the variable may instead be absent (`null`):
 A map looks values up by key; a set remembers which members it has. Keys and members are integers or strings,
 and a map's values are single values (numbers, strings, logicals). They start empty and grow by themselves:
 
-    map[string, integer] :: age
+    map[string, int] :: age
     set[string] :: seen
 
     age["ann"] = 31                    ! insert, or replace the value of an existing key
     println(age["ann"])                ! 31; a key that is not there is an error
-    println(get(age, "bob") ?? 0)      ! get gives integer? (null when missing), so ?? supplies a default
+    println(get(age, "bob") ?? 0)      ! get gives int? (null when missing), so ?? supplies a default
     println(has(age, "ann"), size(age))
     call remove(@age, "ann")           ! removing a key that is not there is an error: test with has first
 
@@ -712,7 +720,7 @@ and a map's values are single values (numbers, strings, logicals). They start em
   `cycle` and labels work as in any `do`:
 
       string :: name
-      integer :: years
+      int :: years
       do name, years in age
         println(name, years)
       end do
@@ -723,7 +731,7 @@ and a map's values are single values (numbers, strings, logicals). They start em
   members), for when you want the whole list at once, to sort it or to index it.
 - `println(age)` shows `{ann: 31}` and a set `{x, y}`. Counting words: `count[w] = (get(count, w) ?? 0) + 1`.
 - Assigning copies, like an array: after `b = a`, changing `b` leaves `a` alone. A declaration can start from a
-  copy (`map[string, integer] :: b = a`). `==` and `/=` compare two maps (or two sets) of the same type by
+  copy (`map[string, int] :: b = a`). `==` and `/=` compare two maps (or two sets) of the same type by
   contents, in any order: the same keys with equal values, or the same members. They cannot be ordered with `<`, or used in arithmetic.
 - A literal builds a whole collection in one go: `age = {"ann": 31, "bob": 27}` for a map, `seen = {"x", "y"}`
   for a set, and `{}` for an empty one (it is a map or a set, whichever the variable is). A literal takes the type
@@ -739,15 +747,15 @@ and a map's values are single values (numbers, strings, logicals). They start em
   `call add(@m, k)`), and an `out` one starts empty. A result is copied into the variable it is assigned to. A
   record field starts empty and is used like a variable (`b.stock["pen"] = 3`, `call add(@b.tags, "x")`);
   copying a record copies its maps and sets too. They also work in a callback's signature
-  (`function(map[string, integer]) -> integer :: f`).
+  (`function(map[string, int]) -> int :: f`).
 - One entry of a map can be passed to an `inout` or `out` parameter: `call bump(@count[w])` changes that entry
   (`inout` needs the key to exist; `out` creates it). Two entries with different keys are fine in one call; the
   same entry twice is refused as aliasing.
-- A module can hold a map or a set as a module variable (`public map[string, integer] :: hits`). It starts empty,
+- A module can hold a map or a set as a module variable (`public map[string, int] :: hits`). It starts empty,
   and the usual module-variable rules apply: a subroutine changes it with `@hits[k] = v` or `call add(@seen, x)`,
   a function may only read it, and other code imports it with `use`.
 - A map's value can also be a set or an array: `map[string, set[string]]` (a graph, or words grouped by letter)
-  or `map[string, integer[]]` (`integer[,]` for a matrix). A missing outer key is an error, as always, so
+  or `map[string, int[]]` (`int[,]` for a matrix). A missing outer key is an error, as always, so
   store one first and then change it in place:
 
       map[string, set[string]] :: groups
@@ -767,7 +775,7 @@ and a map's values are single values (numbers, strings, logicals). They start em
   for these maps (it would be an array of sets); loop with `do k in keys(m)`. A map cannot hold maps or
   optional values, and a set's members stay single values.
 - A map or set can be `const`, with a literal or another collection as its value
-  (`const map[string, integer] :: limits = {"a": 1, "b": 2}`, also `public const` in a module). It can be read,
+  (`const map[string, int] :: limits = {"a": 1, "b": 2}`, also `public const` in a module). It can be read,
   looped over and copied, but not assigned to, added to or removed from, or passed as `inout` or `out`.
   `allocatable` makes no sense (a collection is always there), so it is refused.
 - Not supported yet: arrays of them and an optional one. See `examples/collections.bor`, and
@@ -785,8 +793,8 @@ Which to use:
 
 A subroutine changes the caller's variables through `out` / `inout` parameters:
 
-    subroutine swap(inout integer :: a, inout integer :: b)
-      integer :: t
+    subroutine swap(inout int :: a, inout int :: b)
+      int :: t
       t = a
       @a = b
       @b = t
@@ -812,17 +820,17 @@ Parameters default to `in` and cannot be assigned. Functions only take
 A function can give back more than one value. List the results in the header, `return` that many values, and
 unpack them at the call:
 
-    function divmod(integer :: a, integer :: b) -> (integer :: quotient, integer :: remainder)
+    function divmod(int :: a, int :: b) -> (int :: quotient, int :: remainder)
       return a / b, mod(a, b)
     end function
 
-    integer :: q
-    integer :: r
+    int :: q
+    int :: r
     (q, r) = divmod(17, 5)            ! q is 3, r is 2
     (q, _) = divmod(100, 7)           ! `_` throws a result away: only the quotient
 
-- The names in the result list are documentation (they can be left off: `-> (integer, real)`) and are not
-  compared. At least two results; for one, write `-> integer` as before.
+- The names in the result list are documentation (they can be left off: `-> (int, real)`) and are not
+  compared. At least two results; for one, write `-> int` as before.
 - The unpacking is the only place that can receive several results: `x = divmod(1, 1)`, `println(divmod(1, 1))`,
   an argument, or a call on its own line are errors that tell you to unpack. It needs exactly as many targets
   as the function has results, and the same variable cannot appear twice. `boreas check` and the editor report
@@ -832,8 +840,8 @@ unpack them at the call:
   assignment (an array result into an `allocatable` target allocates it).
 - A target the caller sees (an `out` / `inout` parameter or a module variable) carries its own `@`, exactly
   as a single assignment does: `(@quotient, rest) = divmod(n, 5)`. A function cannot write a module variable.
-- Results can be any type: numbers, strings, records, arrays (`-> (real[] :: values, integer :: n)`) or optional
-  (`integer?`). They work for functions in records and in interfaces (a record fits when the result types
+- Results can be any type: numbers, strings, records, arrays (`-> (real[] :: values, int :: n)`) or optional
+  (`int?`). They work for functions in records and in interfaces (a record fits when the result types
   match in order, names aside): `(lo, hi) = s.bounds()`.
 - A callback's signature can list several results too (see Procedure parameters below). Not supported:
   `return g()` to pass on another function's results, and subroutines (which keep `out` / `inout`). See
@@ -849,7 +857,7 @@ parameter names are optional documentation:
       total = total + f(a + i * h) * h        ! call it like any function
     end function
 
-    subroutine run_all(subroutine(string, inout integer) :: report, inout integer :: n)
+    subroutine run_all(subroutine(string, inout int) :: report, inout int :: n)
       call report("done", @n)
     end subroutine
 
@@ -901,7 +909,7 @@ A module can also hold variables. They keep their value between calls, and every
 to one is marked with `@`, the same mark that marks a write to an `out` parameter:
 
     module counter
-      public integer :: hits = 0
+      public int :: hits = 0
 
       public subroutine hit()
         @hits = hits + 1
@@ -1019,11 +1027,12 @@ report on stderr. Translations that change meaning are flagged, never silent:
   before they are read, convert without a note.
 - Kinds become fixed-width types: `real` and `real(4)` are `real32` (Fortran's default real is single
   precision), `real(8)`, `real(kind=8)`, `real*8` and `double precision` are `real`, `integer(1/2/4/8)`
-  are `int8`/`int16`/`integer`/`int64`. Kind constants work (`integer, parameter :: dp = kind(1.0d0)`,
+  are `int8`/`int16`/`int32`/`int` (Fortran's default integer is 32 bits, so it becomes `int32`: the same arithmetic,
+  wrap-around included). Kind constants work (`integer, parameter :: dp = kind(1.0d0)`,
   `selected_real_kind(15)`, `selected_int_kind(9)`, `use iso_fortran_env`), also as literal suffixes
   (`1.0_dp`, `5_int64`). Single-precision literals that are not exact (`0.1`) become `real32(0.1)`, since
   Fortran rounds them to single; `real(x)` is `real32(x)` (or the real part, for a complex `x`),
-  `real(x, dp)` is `real64(x)`, `int(x, 8)` is `int64(x)`. `real(16)` and `integer(16)` are TODOs.
+  `real(x, dp)` is `real64(x)`, `int(x, 8)` is `int(x)`, and a bare `int(x)` is `int32(x)`. `real(16)` and `integer(16)` are TODOs.
 - `complex`, `complex(kind=8)`, `complex*16` and `double complex` become `complex`; a literal
   `(re, im)` becomes `cmplx(re, im)`; `dcmplx`, `dimag`, `dconjg`, `cabs`, `csqrt`, `cexp`, ... map to
   the generic functions.
@@ -1151,7 +1160,7 @@ output, which Fortran prints with nine digits, within half a single-precision st
 It prints "verified: ... (N values compared)" and exits 0 on a match. On a
 mismatch it shows the first differing value from each program and exits 1.
 Common causes are integer arithmetic that wraps around in Fortran but stops with an error in Boreas
-(use `+%`/`*%`), single-precision library functions that differ in the last digit on another platform, an expression
+(use `+%`/`*%` on `int32` values), single-precision library functions that differ in the last digit on another platform, an expression
 mixing single and double precision, and constructs reported as TODO. Exit status 2
 means it could not verify (gfortran missing, the original does not compile, or
 it timed out).

@@ -6,21 +6,21 @@ from boreas.names import undeclared_names
 from boreas.interp import Interp
 
 DEFS = """record counter
-  integer :: n = 0
-  subroutine grow(inout self, integer :: by)
+  int :: n = 0
+  subroutine grow(inout self, int :: by)
     @self.n = self.n + by
   end subroutine
 end record
 interface grower
-  subroutine grow(inout self, integer :: by)
+  subroutine grow(inout self, int :: by)
 end interface
 record tally is grower
-  integer :: n = 0
-  subroutine grow(inout self, integer :: by)
+  int :: n = 0
+  subroutine grow(inout self, int :: by)
     @self.n = self.n + by
   end subroutine
 end record
-subroutine apply(subroutine(inout integer) :: cb, inout integer :: n)
+subroutine apply(subroutine(inout int) :: cb, inout int :: n)
   call cb(%s)
 end subroutine
 """

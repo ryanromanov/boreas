@@ -1,7 +1,7 @@
 ! A function can give back several values. List them in the result and
 ! unpack them into variables at the call. `_` throws a value away.
 
-function divmod(integer :: a, integer :: b) -> (integer :: quotient, integer :: remainder)
+function divmod(int :: a, int :: b) -> (int :: quotient, int :: remainder)
   return a / b, mod(a, b)
 end function
 
@@ -19,8 +19,8 @@ record span
 end record
 
 ! A target that reaches the caller carries its own `@`, as in any assignment.
-subroutine report(integer :: n, out integer :: quotient)
-  integer :: rest
+subroutine report(int :: n, out int :: quotient)
+  int :: rest
   (@quotient, rest) = divmod(n, 5)
   println("left over", rest)
 end subroutine
@@ -30,7 +30,7 @@ function newton(function(real :: x) -> (real :: value, real :: slope) :: f, real
   real :: x = guess
   real :: v
   real :: d
-  integer :: i
+  int :: i
   do i = 1, 30
     (v, d) = f(x)
     x = x - v / d
@@ -43,8 +43,8 @@ function parabola(real :: x) -> (real :: value, real :: slope)
 end function
 
 program demo
-  integer :: q
-  integer :: r
+  int :: q
+  int :: r
   (q, r) = divmod(17, 5)
   println(q, r)                      ! 3 2
 
@@ -60,7 +60,7 @@ program demo
   (lo, hi) = s.bounds()
   println(lo, hi)                    ! 2.0 5.0
 
-  integer :: x
+  int :: x
   call report(23, @x)                 ! left over 3
   println(x)                         ! 4
 

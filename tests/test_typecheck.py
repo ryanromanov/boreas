@@ -18,19 +18,20 @@ end record
 function twice(real :: x) -> real
   return x * 2.0
 end function
-function pair(integer :: a) -> (integer :: q, integer :: r)
+function pair(int :: a) -> (int :: q, int :: r)
   return a, a
 end function
 """
-DECLS = """  integer :: i = 1
+DECLS = """  int :: i = 1
   int64 :: big = 5
   int8 :: small = 1
+  int32 :: n32 = 1
   real :: x = 1.0
   real32 :: s = 1.0
   complex :: z = cmplx(1.0, 2.0)
   logical :: ok = true
   string :: t = "a"
-  integer[3] :: a = [1, 2, 3]
+  int[3] :: a = [1, 2, 3]
   real[2, 2] :: m = [1.0, 2.0; 3.0, 4.0]
   real[3] :: r = [1.0, 2.0, 3.0]
   string[2] :: w = ["a", "b"]
@@ -51,35 +52,35 @@ def type_of(expr):
 
 CASES = [
     # literals and variables
-    ("1", "integer"), ("3000000000", "int64"), ("2.5", "real"), ('"a"', "string"), ("true", "logical"),
-    ("i", "integer"), ("big", "int64"), ("small", "int8"), ("s", "real32"), ("z", "complex"), ("pi", "real"),
-    ("a", "integer[]"), ("m", "real[,]"), ("p", "point"), ("opt", "real?"),
-    # arithmetic: the wider kind wins, a real beats an integer, a single stays single next to a literal
-    ("i + 1", "integer"), ("i + big", "int64"), ("i + small", "integer"), ("i + x", "real"), ("i / 2", "integer"),
+    ("1", "int"), ("3000000000", "int"), ("2.5", "real"), ('"a"', "string"), ("true", "logical"),
+    ("i", "int"), ("big", "int"), ("small", "int8"), ("s", "real32"), ("z", "complex"), ("pi", "real"),
+    ("a", "int[]"), ("m", "real[,]"), ("p", "point"), ("opt", "real?"),
+    # arithmetic: the wider kind wins, a real beats an int, a single stays single next to a literal
+    ("i + 1", "int"), ("i + big", "int"), ("i + small", "int"), ("i + x", "real"), ("i / 2", "int"),
     ("i + 2.5", "real"), ("s * 2.0", "real32"), ("2.0 * s", "real32"), ("s * x", "real"), ("s + i", "real32"),
-    ("z * 2", "complex"), ("-i", "integer"), ("not ok", "logical"), ("i ** 2", "integer"), ("x ** 2", "real"),
-    ('t + "b"', "string"), ("i +% 1", "integer"),
+    ("z * 2", "complex"), ("-i", "int"), ("not ok", "logical"), ("i ** 2", "int"), ("x ** 2", "real"),
+    ('t + "b"', "string"), ("i +% 1", "int"),
     # comparisons and logic
     ("i < 2", "logical"), ("a > 1", "logical[]"), ("m == m", "logical[,]"), ("ok and i > 1", "logical"),
     # arrays: elementwise, subscripts, slices
-    ("a * 2", "integer[]"), ("a + r", "real[]"), ("m * 2.0", "real[,]"), ("a[1]", "integer"), ("m[1, 2]", "real"),
-    ("m[1, :]", "real[]"), ("m[:, :]", "real[,]"), ("a[1:2]", "integer[]"), ("t[1:2]", "string"), ("t[1]", "string"),
-    ("w[1]", "string"), ("[1, 2, 3]", "integer[]"), ("[1.0, 2.0]", "real[]"), ("[1, 2; 3, 4]", "integer[,]"),
-    ("[(i * 2 do i = 1, 3)]", "integer[]"),
+    ("a * 2", "int[]"), ("a + r", "real[]"), ("m * 2.0", "real[,]"), ("a[1]", "int"), ("m[1, 2]", "real"),
+    ("m[1, :]", "real[]"), ("m[:, :]", "real[,]"), ("a[1:2]", "int[]"), ("t[1:2]", "string"), ("t[1]", "string"),
+    ("w[1]", "string"), ("[1, 2, 3]", "int[]"), ("[1.0, 2.0]", "real[]"), ("[1, 2; 3, 4]", "int[,]"),
+    ("[(i * 2 do i = 1, 3)]", "int[]"),
     # records
     ("p.x", "real"), ("p.v", "real[]"), ("p.v[2]", "real"), ("p.norm()", "real"), ("ps[1].x", "real"),
     ("point(x = 1.0)", "point"),
     # built-in functions
-    ("sqrt(x)", "real"), ("sqrt(s)", "real32"), ("sqrt(i)", "real"), ("sqrt(r)", "real[]"), ("abs(i)", "integer"),
-    ("abs(z)", "real"), ("abs(a)", "integer[]"), ("mod(i, 2)", "integer"), ("real(i)", "real"), ("int(x)", "integer"),
-    ("int64(i)", "int64"), ("real32(x)", "real32"), ("max(i, 2)", "integer"), ("max(a, 2)", "integer[]"),
-    ("max(i, x)", "unknown"), ("size(a)", "integer"), ("shape(m)", "integer[]"), ("len(t)", "integer"),
-    ("sum(a)", "integer"), ("sum(r)", "real"), ("sum(m, 1)", "real[]"), ("maxval(r)", "real"), ("any(a > 1)", "logical"),
-    ("any(m > 1.0, 1)", "logical[]"), ("count(a > 1)", "integer"), ("maxloc(a)", "integer"), ("maxloc(m)", "integer[]"),
-    ("matmul(m, m)", "real[,]"), ("matmul(m, r[1:2])", "real[]"), ("dot_product(a, a)", "integer"),
+    ("sqrt(x)", "real"), ("sqrt(s)", "real32"), ("sqrt(i)", "real"), ("sqrt(r)", "real[]"), ("abs(i)", "int"),
+    ("abs(z)", "real"), ("abs(a)", "int[]"), ("mod(i, 2)", "int"), ("real(i)", "real"), ("int(x)", "int"),
+    ("int64(i)", "int"), ("real32(x)", "real32"), ("max(i, 2)", "int"), ("max(a, 2)", "int[]"),
+    ("max(i, x)", "unknown"), ("size(a)", "int"), ("shape(m)", "int[]"), ("len(t)", "int"),
+    ("sum(a)", "int"), ("sum(r)", "real"), ("sum(m, 1)", "real[]"), ("maxval(r)", "real"), ("any(a > 1)", "logical"),
+    ("any(m > 1.0, 1)", "logical[]"), ("count(a > 1)", "int"), ("maxloc(a)", "int"), ("maxloc(m)", "int[]"),
+    ("matmul(m, m)", "real[,]"), ("matmul(m, r[1:2])", "real[]"), ("dot_product(a, a)", "int"),
     ("transpose(m)", "real[,]"), ("flatten(m)", "real[]"), ("norm2(r)", "real"), ("upper(t)", "string"),
-    ("split(t, \" \")", "string[]"), ("contains(t, \"a\")", "logical"), ("iand(i, 3)", "integer"),
-    ("btest(i, 0)", "logical"), ("random()", "real"), ("to_integer(t)", "integer?"), ("huge(1)", "integer"),
+    ("split(t, \" \")", "string[]"), ("contains(t, \"a\")", "logical"), ("iand(i, 3)", "int"),
+    ("btest(i, 0)", "logical"), ("random()", "real"), ("to_integer(t)", "int?"), ("huge(1)", "int"),
     # user functions, also applied to an array
     ("twice(x)", "real"), ("twice(r)", "real[]"), ("twice(i)", "real"),
     # optional values

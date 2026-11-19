@@ -51,7 +51,7 @@ class DataStatementTests(unittest.TestCase):
         from boreas.fortran import convert
         text, findings = convert(src)
         self.assertEqual(len(todos(findings)), 0)
-        self.assertIn("public integer :: n = 0", text)             # called twice: the state moves to a module
+        self.assertIn("public int32 :: n = 0", text)             # called twice: the state moves to a module
         self.assertEqual(run_bor(text), ["1", "2"])
 
 

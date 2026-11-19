@@ -28,7 +28,7 @@ class CheckTests(unittest.TestCase):
         self.assertNotIn("ran", p.stdout)
 
     def test_parse_error_has_line_and_column(self):
-        p, name = check("program t\n  integer :: i = 1\n  println(i +)\nend program\n")
+        p, name = check("program t\n  int :: i = 1\n  println(i +)\nend program\n")
         self.assertEqual(p.returncode, 1)
         self.assertTrue(p.stdout.startswith(f"{name}:3:14: expected an expression"), p.stdout)
 
@@ -37,7 +37,7 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(p.stdout.startswith(f"{name}:2:20: unexpected character"), p.stdout)
 
     def test_link_time_error_is_reported(self):
-        p, name = check("record r\n  integer :: a\n  integer :: a\nend record\n" + GOOD)
+        p, name = check("record r\n  int :: a\n  int :: a\nend record\n" + GOOD)
         self.assertEqual(p.returncode, 1)
         self.assertIn("has two fields called 'a'", p.stdout)
 

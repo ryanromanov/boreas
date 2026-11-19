@@ -132,7 +132,7 @@ class CallbackConversionTests(unittest.TestCase):
 
     def test_a_subroutine_callback_takes_its_intents_from_the_procedure_passed(self):
         text = self.check(TWICE)
-        self.assertIn("subroutine(inout integer :: k) :: cb", text)
+        self.assertIn("subroutine(inout int32 :: k) :: cb", text)
 
     def test_an_intrinsic_passed_to_a_callback_is_wrapped(self):
         text = self.check(INTEGRATE)

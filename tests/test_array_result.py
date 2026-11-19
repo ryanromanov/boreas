@@ -7,10 +7,10 @@ from boreas.parser import parse
 from boreas.printer import to_source
 from boreas.verify import same_output
 
-FREQ = """function frequencies(integer :: n) -> integer[]
-  allocatable integer[] :: out
+FREQ = """function frequencies(int :: n) -> int[]
+  allocatable int[] :: out
   allocate out[n]
-  integer :: i
+  int :: i
   do i = 1, n
     out[i] = i - 1
   end do
@@ -25,16 +25,16 @@ def program(funcs, body):
 
 class ArrayResultTests(unittest.TestCase):
     def test_assign_to_an_allocatable_and_use_in_expressions(self):
-        src = program(FREQ, "  allocatable integer[] :: f\n  f = frequencies(5)\n  println(f)\n"
+        src = program(FREQ, "  allocatable int[] :: f\n  f = frequencies(5)\n  println(f)\n"
                             "  println(sum(frequencies(4)), size(frequencies(0)))")
         self.assertEqual(run_bor(src), ["[0, 1, 2, 3, 4]", "6 0"])
 
     def test_assign_to_a_fixed_array_and_compute_with_it(self):
-        src = program(FREQ, "  integer[3] :: v\n  v = frequencies(3)\n  println(v, frequencies(3) + 1)")
+        src = program(FREQ, "  int[3] :: v\n  v = frequencies(3)\n  println(v, frequencies(3) + 1)")
         self.assertEqual(run_bor(src), ["[0, 1, 2] [1, 2, 3]"])
 
     def test_two_dimensions(self):
-        src = program("""function grid(integer :: n) -> real[,]
+        src = program("""function grid(int :: n) -> real[,]
   allocatable real[,] :: g
   allocate g[n, 2]
   g[1, 1] = 1.5
@@ -48,7 +48,7 @@ end function""", "  println(grid(2))")
 
     def test_strings_and_records(self):
         src = """record pt
-  integer :: x
+  int :: x
 end record
 function names() -> string[]
   return ["a", "bc"]
@@ -67,8 +67,8 @@ end program
         self.assertEqual(run_bor(src), ["[a, bc] 2 7"])
 
     def test_wrong_shape_of_result_is_an_error(self):
-        for ret, value, message in [("integer[]", "5", "must return a 1-dimensional integer array, not integer"),
-                                    ("integer[,]", "[1, 2]", "not a 1-dimensional array"),
+        for ret, value, message in [("int[]", "5", "must return a 1-dimensional int array, not int"),
+                                    ("int[,]", "[1, 2]", "not a 1-dimensional array"),
                                     ("real", "[1.0, 2.0]", "cannot assign array to real")]:
             with self.subTest(ret=ret):
                 src = program(f"function f() -> {ret}\n  return {value}\nend function", "  println(f())")
@@ -77,20 +77,20 @@ end program
                 self.assertIn(message, str(cm.exception))
 
     def test_returning_an_unallocated_array_is_an_error(self):
-        src = program("function f() -> integer[]\n  allocatable integer[] :: a\n  return a\nend function",
+        src = program("function f() -> int[]\n  allocatable int[] :: a\n  return a\nend function",
                       "  println(f())")
         with self.assertRaises(LangError) as cm:
             run_bor(src)
         self.assertIn("not allocated", str(cm.exception))
 
     def test_an_array_result_cannot_go_into_a_scalar(self):
-        src = program(FREQ, "  integer :: x = frequencies(3)")
+        src = program(FREQ, "  int :: x = frequencies(3)")
         with self.assertRaises(LangError):
             run_bor(src)
 
     def test_prints_back_the_same(self):
         src = program(FREQ, "  println(frequencies(2))")
-        self.assertIn("-> integer[]", to_source(parse(src), []))
+        self.assertIn("-> int[]", to_source(parse(src), []))
 
 
 class ArrayResultConversionTests(unittest.TestCase):
@@ -150,9 +150,9 @@ end program
 
     def test_the_three_fortran_shapes(self):
         text = self.check(self.SHAPES)
-        self.assertIn("function freq(integer :: n) -> integer[]", text)
+        self.assertIn("function freq(int32 :: n) -> int32[]", text)
         self.assertIn("function doubled(real32[] :: x) -> real32[]", text)
-        self.assertIn("function ident(integer :: n) -> real32[,]", text)
+        self.assertIn("function ident(int32 :: n) -> real32[,]", text)
         self.assertIn("allocate r", text)
 
     def test_a_function_that_changes_module_variables_and_returns_an_array_is_a_todo(self):

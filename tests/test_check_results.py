@@ -3,12 +3,12 @@ import os, sys, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 from boreas.cli import check_errors
 
-DEFS = ("function divmod(integer :: a, integer :: b) -> (integer :: q, integer :: r)\n  return a / b, mod(a, b)\nend function\n"
-        "function one(integer :: a) -> integer\n  return a\nend function\n")
+DEFS = ("function divmod(int :: a, int :: b) -> (int :: q, int :: r)\n  return a / b, mod(a, b)\nend function\n"
+        "function one(int :: a) -> int\n  return a\nend function\n")
 
 
 def messages(body, defs=DEFS):
-    return [(line, msg) for line, _, msg, _ in check_errors(defs + "program t\n  integer :: x\n  integer :: y\n"
+    return [(line, msg) for line, _, msg, _ in check_errors(defs + "program t\n  int :: x\n  int :: y\n"
                                                               + body + "\nend program\n")]
 
 
@@ -30,11 +30,11 @@ class MisuseTests(unittest.TestCase):
         self.assertEqual(len(messages("  divmod(7, 2)")), 1)
 
     def test_forwarding_a_return(self):
-        defs = DEFS + "function twice(integer :: a) -> (integer :: q, integer :: r)\n  return divmod(a, 1)\nend function\n"
+        defs = DEFS + "function twice(int :: a) -> (int :: q, int :: r)\n  return divmod(a, 1)\nend function\n"
         self.assertTrue(any("returns 2 results" in m for _, m in messages("", defs)))
 
     def test_the_wrong_number_of_targets(self):
-        self.assertEqual(messages("  integer :: z\n  (x, y, z) = divmod(7, 2)"),
+        self.assertEqual(messages("  int :: z\n  (x, y, z) = divmod(7, 2)"),
                          [(self.LINE + 1, "'divmod' returns 2 results, but 3 targets are listed")])
 
     def test_unpacking_a_function_with_one_result(self):
@@ -47,11 +47,11 @@ class MisuseTests(unittest.TestCase):
         self.assertEqual([m for _, m in found], ["'nope' is not declared"])
 
     def test_an_array_that_shares_the_name_is_not_a_call(self):
-        self.assertEqual(messages("  integer[3] :: divmod = [1, 2, 3]\n  x = divmod[1]"), [])
+        self.assertEqual(messages("  int[3] :: divmod = [1, 2, 3]\n  x = divmod[1]"), [])
 
     def test_a_function_in_a_module(self):
-        src = ("module m\n  public function pair(integer :: a) -> (integer :: p, integer :: q)\n    return a, a\n  end function\n"
-               "end module\nprogram t\n  use m: pair\n  integer :: x\n  x = pair(1)\nend program\n")
+        src = ("module m\n  public function pair(int :: a) -> (int :: p, int :: q)\n    return a, a\n  end function\n"
+               "end module\nprogram t\n  use m: pair\n  int :: x\n  x = pair(1)\nend program\n")
         self.assertTrue(any("returns 2 results" in e[2] for e in check_errors(src)))
 
 

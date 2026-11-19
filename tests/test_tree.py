@@ -27,30 +27,30 @@ def program(body, extra=""):
 
 # One undeclared name, `nope`, hidden inside each construct: the name check must find exactly that one.
 INSIDE = {
-    "assignment": "  integer :: x\n  x = nope",
-    "if": "  integer :: x = 1\n  if x == 1 then\n    println(nope)\n  end if",
-    "else": "  integer :: x = 1\n  if x == 1 then\n    println(x)\n  else\n    println(nope)\n  end if",
-    "do": "  integer :: i\n  do i = 1, nope\n    println(i)\n  end do",
-    "do body": "  integer :: i\n  do i = 1, 2\n    println(nope)\n  end do",
-    "do each": "  integer[3] :: a = [1, 2, 3]\n  integer :: v\n  do v in a\n    println(nope)\n  end do",
-    "do while": "  integer :: i = 0\n  do while i < nope\n    i = i + 1\n  end do",
-    "where": "  integer[2] :: a = [1, 2]\n  where a > nope then\n    a = 0\n  end where",
-    "where else": "  integer[2] :: a = [1, 2]\n  where a > 1 then\n    a = 0\n  elsewhere\n    a = nope\n  end where",
-    "select": "  integer :: x = 1\n  select case x\n  case 1\n    println(nope)\n  end select",
-    "select value": "  integer :: x = 1\n  select case x\n  case nope\n    println(1)\n  end select",
+    "assignment": "  int :: x\n  x = nope",
+    "if": "  int :: x = 1\n  if x == 1 then\n    println(nope)\n  end if",
+    "else": "  int :: x = 1\n  if x == 1 then\n    println(x)\n  else\n    println(nope)\n  end if",
+    "do": "  int :: i\n  do i = 1, nope\n    println(i)\n  end do",
+    "do body": "  int :: i\n  do i = 1, 2\n    println(nope)\n  end do",
+    "do each": "  int[3] :: a = [1, 2, 3]\n  int :: v\n  do v in a\n    println(nope)\n  end do",
+    "do while": "  int :: i = 0\n  do while i < nope\n    i = i + 1\n  end do",
+    "where": "  int[2] :: a = [1, 2]\n  where a > nope then\n    a = 0\n  end where",
+    "where else": "  int[2] :: a = [1, 2]\n  where a > 1 then\n    a = 0\n  elsewhere\n    a = nope\n  end where",
+    "select": "  int :: x = 1\n  select case x\n  case 1\n    println(nope)\n  end select",
+    "select value": "  int :: x = 1\n  select case x\n  case nope\n    println(1)\n  end select",
     "print": "  println(1, nope)",
     "stop": "  stop nope",
-    "generator": "  integer[3] :: a = [(nope do i = 1, 3)]",
-    "matrix literal": "  integer[2, 2] :: a = [1, 2; 3, nope]",
-    "array literal": "  integer[2] :: a = [1, nope]",
-    "map literal": '  map[string, integer] :: m = {"a": nope}',
-    "declaration": "  integer[nope] :: a",
-    "slice": "  integer[3] :: a = [1, 2, 3]\n  println(a[1:nope])",
-    "allocate": "  allocatable integer[] :: a\n  allocate a[nope]",
+    "generator": "  int[3] :: a = [(nope do i = 1, 3)]",
+    "matrix literal": "  int[2, 2] :: a = [1, 2; 3, nope]",
+    "array literal": "  int[2] :: a = [1, nope]",
+    "map literal": '  map[string, int] :: m = {"a": nope}',
+    "declaration": "  int[nope] :: a",
+    "slice": "  int[3] :: a = [1, 2, 3]\n  println(a[1:nope])",
+    "allocate": "  allocatable int[] :: a\n  allocate a[nope]",
     "call argument": "  call show(nope)",
-    "select expression": "  integer :: x = 1\n  integer :: y = select case x\n    case 1 -> nope\n    case default -> 0\n  end select",
+    "select expression": "  int :: x = 1\n  int :: y = select case x\n    case 1 -> nope\n    case default -> 0\n  end select",
 }
-SUBS = "subroutine show(integer :: x)\n  println(x)\nend subroutine\n"
+SUBS = "subroutine show(int :: x)\n  println(x)\nend subroutine\n"
 
 
 class InsideEveryConstructTests(unittest.TestCase):
@@ -65,7 +65,7 @@ class InsideEveryConstructTests(unittest.TestCase):
 
 
 class WalkerTests(unittest.TestCase):
-    SRC = ("program t\n  integer :: x = 1\n  integer :: i\n  if x == 1 then\n    println([1, 2; 3, 4])\n  end if\n"
+    SRC = ("program t\n  int :: x = 1\n  int :: i\n  if x == 1 then\n    println([1, 2; 3, 4])\n  end if\n"
            "  do i = 1, 3\n    call s(x)\n  end do\n  select case x\n  case 1\n    println(x)\n  end select\nend program\n")
 
     def test_statements_in_finds_nested_ones(self):

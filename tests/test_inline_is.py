@@ -102,7 +102,7 @@ class InlineIsTests(unittest.TestCase):
 
     def test_testing_something_that_is_not_a_record_is_an_error(self):
         with self.assertRaises(LangError) as cm:
-            run("  integer :: n = 3\n  if n is circle then\n    println(1)\n  end if")
+            run("  int :: n = 3\n  if n is circle then\n    println(1)\n  end if")
         self.assertIn("'is' needs a record or interface value", str(cm.exception))
 
     def test_an_unassigned_value_is_an_error(self):
@@ -115,7 +115,7 @@ class InlineIsTests(unittest.TestCase):
         body = """  scene :: sc
   sc.items[1] = circle(r = 2.0)
   sc.items[2] = rect(w = 1.0, h = 1.0)
-  integer :: i
+  int :: i
   do i = 1, 2
     if sc.items[i] is circle as c then
       println("circle", c.r)
@@ -133,7 +133,7 @@ class InlineIsTests(unittest.TestCase):
         self.assertEqual(to_source(parse(text)), text)
 
     def test_names_called_is_and_as_still_work(self):
-        self.assertEqual(run("  integer :: is = 1\n  integer :: as = 2\n  if is < as then\n    println(is + as)\n  end if"), ["3"])
+        self.assertEqual(run("  int :: is = 1\n  int :: as = 2\n  if is < as then\n    println(is + as)\n  end if"), ["3"])
 
     def test_an_is_test_cannot_be_combined_with_other_conditions(self):
         for cond in ("ok and f is circle as c", "not f is circle", "f is circle as c and c.r > 1.0"):

@@ -59,7 +59,7 @@ class SelectTypeTests(unittest.TestCase):
         self.assertEqual(run(body), ["10.0"])
 
     def test_break_and_exit_and_cycle(self):
-        body = ("  figure :: f = circle()\n  integer :: i\n  do i = 1, 3\n    select type f as p\n      case circle\n        if i == 2 then\n          cycle\n        end if\n"
+        body = ("  figure :: f = circle()\n  int :: i\n  do i = 1, 3\n    select type f as p\n      case circle\n        if i == 2 then\n          cycle\n        end if\n"
                 "        if i == 3 then\n          exit\n        end if\n        println(\"circle\", i)\n      case default\n    end select\n  end do\n"
                 "  select type f as p\n    case circle\n      println(\"a\")\n      break\n      println(\"b\")\n    case default\n  end select")
         self.assertEqual(run(body), ["circle 1", "a"])
