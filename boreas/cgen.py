@@ -160,8 +160,8 @@ class Compiler:
             elif kind is Assign:
                 root = s.target
                 if isinstance(root, Apply):
-                    if not root.bracket or any(isinstance(a, Slice) for a in root.args):
-                        self.refuse("an assignment to part of an array", s)
+                    if not root.bracket:
+                        self.refuse("an assignment to anything but a variable or an array element", s)
                 elif not isinstance(root, Var):
                     self.refuse("an assignment to anything but a variable or an array element", s)
                 if root.name in fixed:
@@ -189,6 +189,9 @@ class Compiler:
         f = self.unit.functions[s.name]
         self.check_call_args(f, s.args, s)
         roots = [getattr(a, "name", None) for a in s.args]
+        for a, (typ, pname, intent) in zip(s.args, f.params):
+            if intent in ("out", "inout") and isinstance(a, Apply) and any(isinstance(x, Slice) for x in a.args):
+                self.refuse(f"a section of '{a.name}' passed as {intent}", s)
         for (typ, pname, intent), root in zip(f.params, roots):
             if intent in ("out", "inout") and root in fixed:
                 self.refuse(f"the constant or parameter '{root}' passed as {intent}", s)
@@ -219,6 +222,8 @@ class Compiler:
             if id(e) not in strings:
                 self.refuse("text outside a print", e)
             return
+        if kind is Slice:                               # the parts of a section: checked as the expressions they are
+            return
         if kind not in (Num, Bool, Var, Unary, Binary, Apply, ArrayLit, MatrixLit):
             if kind is IsType:
                 self.refuse("a type test", e)
@@ -234,7 +239,7 @@ class Compiler:
         if kind is Apply:
             if e.chain:
                 self.refuse("a chained subscript", e)
-            if any(isinstance(a, Slice) for a in e.args):
+            if any(isinstance(a, Slice) for a in e.args) and not e.bracket:
                 self.refuse("part of an array", e)
             if e.bracket:
                 pass
@@ -514,7 +519,69 @@ class Compiler:
             off = f"(({idx[d]} - 1) + {arr}.shape[{d}] * {off})"
         return self.tmp("int64_t", off)
 
+    def section_plan(self, e):
+        """Evaluate and check the subscripts of the section `e` (one dimension at a time, as the interpreter does) and say what
+        each dimension picks: ("i", index) for a whole number, ("s", start, step, count) for a range."""
+        arr = self.vars[e.name][1]
+        rank, line = self.vars[e.name][0].rank, self.line
+        if e.name in self.allocs:
+            self.emit(f'rt_need_alloc({arr}.data, "{e.name}", {line});')
+        plan = []
+        for d, a in enumerate(e.args):
+            n = f"{arr}.shape[{d}]"
+            if isinstance(a, Slice):
+                step = self.tmp("int64_t", self.scalar(a.step, "int")) if a.step is not None else "INT64_C(1)"
+                if a.step is not None:
+                    self.emit(f"rt_check_step_nonzero({step}, {line});")
+                    if a.lo is None or a.hi is None:
+                        self.emit(f'rt_check_backwards({step}, "{e.name}", {n}, {line});')
+                lo = self.tmp("int64_t", self.scalar(a.lo, "int")) if a.lo is not None else "INT64_C(1)"
+                hi = self.tmp("int64_t", self.scalar(a.hi, "int")) if a.hi is not None else self.tmp("int64_t", n)
+                count = self.tmp("int64_t", f"rt_slice_count({lo}, {hi}, {step}, {n}, {d + 1}, {rank}, {1 if a.step is not None else 0}, {line})")
+                plan.append(("s", lo, step, count))
+            else:
+                i = self.tmp("int64_t", self.scalar(a, "int"))
+                self.emit(f"rt_check_index({i}, {n}, {d + 1}, {rank}, {line});")
+                plan.append(("i", i))
+        return plan
+
+    def section_loops(self, e, plan, body):
+        """Emit loops over the picked elements in the section's own column-major order; `body(source_offset, k)` writes
+        the statement for one element (`k` counts them from 0)."""
+        arr = self.vars[e.name][1]
+        strides, stride = [], "1"
+        for d in range(len(plan)):
+            strides.append(stride)
+            stride = f"({stride} * {arr}.shape[{d}])"
+        slices = [d for d, p in enumerate(plan) if p[0] == "s"]
+        fixed = " + ".join(f"({plan[d][1]} - 1) * {strides[d]}" for d, p in enumerate(plan) if p[0] == "i") or "0"
+        js = {d: self.loop_var() for d in slices}
+        k = self.loop_var()
+        self.emit(f"int64_t {k} = 0;")
+        for d in reversed(slices):                       # the last dimension is the outermost loop, the first the fastest
+            self.emit(f"for (int64_t {js[d]} = 0; {js[d]} < {plan[d][3]}; {js[d]}++) {{")
+            self.depth += 1
+        pos = " + ".join([f"({fixed})"] + [f"({plan[d][1]} + {js[d]} * {plan[d][2]} - 1) * {strides[d]}" for d in slices])
+        body(pos, k)
+        self.emit(f"{k}++;")
+        for _ in slices:
+            self.depth -= 1
+            self.emit("}")
+
+    def section(self, e):
+        t = self.vars[e.name][0]
+        plan = self.section_plan(e)
+        slices = [p for p in plan if p[0] == "s"]
+        res = self.tmp_array(t.kind, len(slices))
+        counts = [p[3] for p in slices] + ["1"] * (3 - len(slices))
+        self.emit(f"rt_alloc_{t.kind}(&{res}, {len(slices)}, {', '.join(counts)}, {self.line});")
+        arr = self.vars[e.name][1]
+        self.section_loops(e, plan, lambda pos, k: self.emit(f"{res}.data[{k}] = {arr}.data[{pos}];"))
+        return V(Type(t.kind, len(slices)), res)
+
     def element(self, e):
+        if any(isinstance(a, Slice) for a in e.args):
+            return self.section(e)
         t = self.vars[e.name][0]
         arr = self.vars[e.name][1]
         off = self.subscripts(e, arr)
@@ -807,6 +874,9 @@ class Compiler:
         line = self.line
         target = s.target
         t = self.vars[target.name][0]
+        if isinstance(target, Apply) and any(isinstance(a, Slice) for a in target.args):
+            self.assign_section(s, t)
+            return
         if isinstance(target, Apply):                                   # an element: its subscripts first
             lv = self.lvalue(target)
             self.emit(f"{lv} = {self.scalar(s.value, t.kind, f'line {line}')};")
@@ -839,6 +909,27 @@ class Compiler:
             return
         self.emit(f"rt_same_shape({name}.shape, {name}.rank, {v.atom}.shape, {v.atom}.rank, 1, {line});")
         self.copy_into(name, t.kind, v, line, f"line {line}")
+
+    def assign_section(self, s, t):
+        """`a[2:4, j] = value`: the section is worked out first, then the value, then the shapes must agree (a single
+        value fills the section)."""
+        line, target = self.line, s.target
+        plan = self.section_plan(target)
+        slices = [p for p in plan if p[0] == "s"]
+        v = self.value(s.value)
+        arr = self.vars[target.name][1]
+        what = f"line {line}"
+        if v.t.rank == 0:
+            atom = self.narrow(v.atom, v.t.kind, t.kind, line, what)
+            self.section_loops(target, plan, lambda pos, k: self.emit(f"{arr}.data[{pos}] = {atom};"))
+            return
+        self.n += 1
+        shape = f"sh{self.n}"
+        counts = ", ".join([p[3] for p in slices] + ["1"] * (3 - len(slices)))
+        self.emit(f"int64_t {shape}[3] = {{{counts}}};")
+        self.emit(f"rt_same_shape({shape}, {len(slices)}, {v.atom}.shape, {v.atom}.rank, 1, {line});")
+        x = lambda k: self.narrow(self.elem(v, k), v.t.kind, t.kind, line, what)
+        self.section_loops(target, plan, lambda pos, k: self.emit(f"{arr}.data[{pos}] = {x(k)};"))
 
     def st_allocate(self, s):
         line, t = self.line, self.vars[s.name][0]

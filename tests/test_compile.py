@@ -81,6 +81,24 @@ OUT_DEFS = {
 }
 
 FAILING = {
+    "section: index below the range": "  int[6] :: a\n  println(a[0:3])",
+    "section: end beyond the range": "  int[6] :: a\n  println(a[3:7])",
+    "section: with a step, out of range": "  int[6] :: a\n  println(a[1:9:2])",
+    "section: zero step": "  int[6] :: a\n  println(a[1:4:0])",
+    "section: negative step without both ends": "  int[6] :: a\n  println(a[3::-1])",
+    "section: out of range in the second dimension": "  int[2, 3] :: m\n  println(m[1, 2:5:2])",
+    "section: out of range in the first dimension": "  int[2, 3] :: m\n  println(m[1:3, 1])",
+    "section: whole number subscript out of range": "  int[2, 3] :: m\n  println(m[3, 1:2])",
+    "section: evaluated left to right": "  int[4] :: a\n  int :: k = 0\n  println(a[1 / k:2])",
+    "section: end evaluated after the start": "  int[4] :: a\n  println(a[7:1 / 0])",
+    "section: of an unallocated array": "  allocatable int[] :: a\n  println(a[1:2])",
+    "section: assigned to an unallocated array": "  allocatable int[] :: a\n  a[1:2] = 1",
+    "section assigned a value of the wrong length": "  int[6] :: a\n  a[2:4] = [1, 2]",
+    "section assigned a value of the wrong rank": "  int[2, 2] :: m\n  m[:, 1] = [1, 2, 3]",
+    "section target checked before the value": "  int[6] :: a\n  a[7:8] = 1 / 0",
+    "section value evaluated before the shapes are compared": "  int[6] :: a\n  a[2:4] = [1 / 0]",
+    "section assigned into int32 too large": "  int32[3] :: a\n  int :: big = 5000000000\n  a[1:2] = big",
+    "section of an array of real32 too large": "  real[2] :: big = 1.0e39\n  real32[4] :: a\n  a[1:2] = big",
     "unallocated: print": "  allocatable int[] :: a\n  println(a)",
     "unallocated: size": "  allocatable int[] :: a\n  println(size(a))",
     "unallocated: element read": "  allocatable int[] :: a\n  println(a[1 / 0])",
@@ -259,7 +277,8 @@ class RefusalTests(unittest.TestCase):
     def test_what_is_not_handled_is_refused_as_a_whole(self):
         self.refused(prog("  allocatable string[] :: a\n  println(1)"), "the declaration of 'a'")
         self.refused(prog("  int[2, 2, 2, 2] :: a\n  println(1)"), "the declaration of 'a'")
-        self.refused(prog("  int[3] :: a = [1, 2, 3]\n  println(a[1:2])"), "part of an array")
+        self.refused(prog("  int[3] :: a = [1, 2, 3]\n  call s(@a[1:2])", "subroutine s(inout int[] :: v)\n  @v[1] = 0\nend subroutine\n"),
+                     "a section of 'a' passed as inout")
         self.refused(prog("  real[3] :: a = [1.0, 2.0, 3.0]\n  int[3] :: b = [1, 2, 3]\n  println(matmul(a, b))"), "matmul()")
         self.refused(prog("  real32 :: x = 1.0\n  println(floor(x))"), "the function 'floor'")
         self.refused(prog("  real32 :: x = 1.0\n  int :: n = 2\n  println(n ** x)"), "a real32 power whose base is not a real32")
