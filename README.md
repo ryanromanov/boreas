@@ -954,8 +954,8 @@ A `real32` in a compiled program is worked out as the interpreter works it out: 
 single and a whole number, are done in double precision and rounded to single once (the same bits as single-precision
 hardware for two singles), `**` multiplies for a whole-number exponent and calls `powf` otherwise, `sin cos tan exp log
 log10` call the C library's `sinf`, `expf`, ... and `sqrt` is correctly rounded. `sum`, `product`, `dot_product` and
-`matmul` of `real32` values add in double precision and round once at the end, where gfortran adds in single precision at
-every step, so the last digits can differ from a Fortran program's. A `real32` prints as the shortest text that reads back
+`matmul` of `real32` values round to single at every step, left to right, as gfortran does (`sum` of ten `0.1` is
+`1.0000001`; sum into a `real` for more accuracy). A `real32` prints as the shortest text that reads back
 as the same single (`100.0`, `0.1`, `1e-05`).
 
 A compiled program prints exactly what the interpreter prints, and fails the way it fails: the same message on stderr

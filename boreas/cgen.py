@@ -641,10 +641,13 @@ class Compiler:
             self.emit(f"for (int64_t {k} = 1; {k} < {a.atom}.n; {k}++) if ({x} {'>' if name == 'maxval' else '<'} {best}) {best} = {x};")
             return V(Type(kind), best)
         if kind in ("real", "real32"):                      # plain multiplication or addition, one at a time from the left
-            acc = self.tmp("double", "1.0" if name == "product" else "0.0")      # (a real32 array in double, rounded once at
-            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {acc} {'*' if name == 'product' else '+'} {x};")  # the end)
-            if kind == "real32":
-                return V(Type(kind), self.tmp("float", f"rt_r32({acc}, {line})"))
+            op = '*' if name == 'product' else '+'
+            if kind == "real32":                             # every step rounded to single, as in Fortran
+                acc = self.tmp("float", "1.0f" if name == "product" else "0.0f")
+                self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = rt_r32((double){acc} {op} (double){x}, {line});")
+                return V(Type(kind), acc)
+            acc = self.tmp("double", "1.0" if name == "product" else "0.0")
+            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {acc} {op} {x};")
             return V(Type(kind), acc)
         wide = self.tmp("rt_i128", "1" if name == "product" else "0")   # exact, then checked once, like the interpreter
         op = "*" if name == "product" else "+"
@@ -661,11 +664,13 @@ class Compiler:
         if name == "dot_product":
             self.emit(f"rt_dot_shapes({a.atom}.shape, {b.atom}.shape, {line});")
             k = self.loop_var()
-            if kind in ("real", "real32"):
+            if kind == "real32":
+                acc = self.tmp("float", "0.0f")
+                self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = rt_r32((double){acc} + (double)rt_r32((double){a.atom}.data[{k}] * (double){b.atom}.data[{k}], {line}), {line});")
+                return V(Type(kind), acc)
+            if kind == "real":
                 acc = self.tmp("double", "0.0")
-                self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {acc} + (double){a.atom}.data[{k}] * (double){b.atom}.data[{k}];")
-                if kind == "real32":
-                    return V(Type(kind), self.tmp("float", f"rt_r32({acc}, {line})"))
+                self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {acc} + {a.atom}.data[{k}] * {b.atom}.data[{k}];")
                 return V(Type(kind), acc)
             wide = self.tmp("rt_i128", "0")
             self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {wide} = {wide} + (rt_i128){a.atom}.data[{k}] * {b.atom}.data[{k}];")
@@ -683,11 +688,15 @@ class Compiler:
         i, j, t = self.loop_var(), self.loop_var(), self.loop_var()
         self.emit(f"for (int64_t {j} = 0; {j} < {m}; {j}++) for (int64_t {i} = 0; {i} < {n}; {i}++) {{")
         self.depth += 1
-        term = f"(double){a.atom}.data[{i} + {t} * {n}] * (double){b.atom}.data[{t} + {j} * {kk}]"
-        if kind in ("real", "real32"):
+        term = f"{a.atom}.data[{i} + {t} * {n}] * {b.atom}.data[{t} + {j} * {kk}]"
+        if kind == "real32":
+            self.emit("float acc = 0.0f;")
+            self.emit(f"for (int64_t {t} = 0; {t} < {kk}; {t}++) acc = rt_r32((double)acc + (double)rt_r32((double){a.atom}.data[{i} + {t} * {n}] * (double){b.atom}.data[{t} + {j} * {kk}], {line}), {line});")
+            self.emit(f"{res}.data[{i} + {j} * {n}] = acc;")
+        elif kind == "real":
             self.emit("double acc = 0.0;")
             self.emit(f"for (int64_t {t} = 0; {t} < {kk}; {t}++) acc = acc + {term};")
-            self.emit(f"{res}.data[{i} + {j} * {n}] = " + (f"rt_r32(acc, {line});" if kind == "real32" else "acc;"))
+            self.emit(f"{res}.data[{i} + {j} * {n}] = acc;")
         else:
             self.emit("rt_i128 acc = 0;")
             self.emit(f"for (int64_t {t} = 0; {t} < {kk}; {t}++) acc = acc + (rt_i128){a.atom}.data[{i} + {t} * {n}] * {b.atom}.data[{t} + {j} * {kk}];")
