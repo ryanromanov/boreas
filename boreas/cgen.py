@@ -30,7 +30,8 @@ ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real",
               "int32", "int64"}
 ELEMENTAL2 = {"atan2", "sign", "modulo", "dim"}
 CONSTANTS = {"huge", "epsilon", "tiny"}
-BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS
+ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "cshift"}
+BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
                "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
                "acosh": "acoshf", "erf": "erff", "erfc": "erfcf"}
@@ -279,6 +280,8 @@ class Compiler:
                 self.refuse(f"{name}() of anything but two single values", e)
             if name == "modulo" and self.unit.ieee:
                 self.refuse("modulo() in a file that says `use ieee`", e)
+        elif name in ARRAY_FUNCTIONS:
+            self.check_array_function(e, ranks)
         elif name in CONSTANTS:
             if len(e.args) != 1 or ranks[0] != 0 or (name != "huge" and self.types[id(e.args[0])].kind not in ("real", "real32")):
                 self.refuse(f"{name}() of anything but a single real{' or whole number' if name == 'huge' else ''}", e)
@@ -301,6 +304,46 @@ class Compiler:
             self.refuse(f"{name}() of an array", e)
         if name in ("mod", "min", "max", "int", "sign", "modulo", "dim", "atan2", "atan") and any(self.types[id(a)].kind in ("logical",) for a in e.args):
             self.refuse(f"{name}() of a logical", e)
+
+    def merge_kind(self, e):
+        """The kind merge(a, b, mask) gives, or None when a and b differ (a real literal next to a real32 is a real32, a
+        whole-number literal next to an int32 an int32, as anywhere in a call)."""
+        a, b = e.args[0], e.args[1]
+        ka, kb = self.types[id(a)].kind, self.types[id(b)].kind
+        if ka == kb:
+            return ka
+        for lit, other, kl, ko in ((a, b, ka, kb), (b, a, kb, ka)):
+            if isinstance(lit, Num) and (kl, ko) in (("real", "real32"), ("int", "int32")):
+                return ko
+        return None
+
+    def check_array_function(self, e, ranks):
+        name, ts = e.name, [self.types[id(a)] for a in e.args]
+        out = self.types[id(e)]
+        if name == "reshape":
+            if len(e.args) != 2 or not isinstance(e.args[1], ArrayLit) or ranks[0] < 1 or not 1 <= out.rank <= MAX_RANK \
+                    or ts[1].kind not in ("int", "int32"):
+                self.refuse("reshape() of anything but an array and a shape written out as a list of whole numbers (at most three)", e)
+        elif name == "transpose":
+            if len(e.args) != 1 or ranks[0] != 2:
+                self.refuse("transpose() of anything but a matrix", e)
+        elif name in ("flatten", "shape"):
+            if len(e.args) != 1 or ranks[0] < 1:
+                self.refuse(f"{name}() of anything but an array", e)
+        elif name == "merge":
+            if len(e.args) != 3 or ts[2].kind != "logical" or self.merge_kind(e) is None:
+                self.refuse("merge() of values of different types", e)
+        elif name in ("any", "all", "count"):
+            if len(e.args) != 1 or ranks[0] < 1 or ts[0].kind != "logical":
+                self.refuse(f"{name}() of anything but a whole array of logicals", e)
+        elif name in ("maxloc", "minloc"):
+            if len(e.args) != 1 or ranks[0] != 1 or ts[0].kind == "logical":
+                self.refuse(f"{name}() of anything but a vector", e)
+        elif name == "cshift":
+            if len(e.args) not in (2, 3) or ranks[0] not in (1, 2) or ranks[1] != 0 or ts[1].kind not in ("int", "int32"):
+                self.refuse("cshift() of anything but a vector or matrix and a whole-number shift", e)
+            if len(e.args) == 3 and not (isinstance(e.args[2], Num) and isinstance(e.args[2].value, int)):
+                self.refuse("cshift() with a dimension that is not a literal", e)
 
     # -- the generated text -----------------------------------------------------------------------------------------
     def emit(self, text):
@@ -711,6 +754,94 @@ class Compiler:
             return "real", f'rt_log({r}, {name}, "{name}", {was_int}, {line})'
         return "real", f'rt_math1("{name}", {name}({r}), {r}, {was_int}, {line})'
 
+    def array_function(self, e, vals, line):
+        name = e.name
+        out = self.types[id(e)]
+        a = vals[0]
+        if name == "reshape":
+            shp = vals[1]
+            r = out.rank
+            kind = a.t.kind
+            dims = [self.tmp("int64_t", self.cast(f"{shp.atom}.data[{d}]", shp.t.kind, "int")) for d in range(r)]
+            self.n += 1
+            sh = f"rs{self.n}"
+            self.emit(f"int64_t {sh}[3] = {{{', '.join(dims + ['1'] * (3 - r))}}};")
+            self.emit(f"rt_reshape_check({sh}, {r}, {a.atom}.n, {line});")
+            res = self.tmp_array(kind, r)
+            self.emit(f"rt_alloc_{kind}(&{res}, {r}, {sh}[0], {sh}[1], {sh}[2], {line});")
+            k = self.loop_var()
+            self.emit(f"for (int64_t {k} = 0; {k} < {res}.n; {k}++) {res}.data[{k}] = {self.elem(a, k)};")
+            return V(Type(kind, r), res)
+        if name in ("transpose", "flatten", "shape"):
+            kind = "int" if name == "shape" else a.t.kind
+            if name == "shape":
+                res = self.tmp_array("int", 1)
+                self.emit(f"rt_alloc_int(&{res}, 1, {a.t.rank}, 1, 1, {line});")
+                for d in range(a.t.rank):
+                    self.emit(f"{res}.data[{d}] = {a.atom}.shape[{d}];")
+                return V(Type("int", 1), res)
+            res = self.tmp_array(kind, 1 if name == "flatten" else 2)
+            if name == "flatten":
+                self.emit(f"rt_alloc_{kind}(&{res}, 1, {a.atom}.n, 1, 1, {line});")
+                k = self.loop_var()
+                self.emit(f"for (int64_t {k} = 0; {k} < {res}.n; {k}++) {res}.data[{k}] = {self.elem(a, k)};")
+                return V(Type(kind, 1), res)
+            self.emit(f"rt_alloc_{kind}(&{res}, 2, {a.atom}.shape[1], {a.atom}.shape[0], 1, {line});")
+            i, j = self.loop_var(), self.loop_var()
+            src = self.elem(V(a.t, a.atom, a.src), f"({i} + {j} * {a.atom}.shape[0])")
+            self.emit(f"for (int64_t {j} = 0; {j} < {a.atom}.shape[1]; {j}++) for (int64_t {i} = 0; {i} < {a.atom}.shape[0]; {i}++) "
+                      f"{res}.data[{j} + {i} * {a.atom}.shape[1]] = {src};")
+            return V(Type(kind, 2), res)
+        if name in ("any", "all", "count"):
+            k = self.loop_var()
+            if name == "count":
+                acc = self.tmp("int64_t", "0")
+                self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) if ({a.atom}.data[{k}]) {acc}++;")
+                return V(Type("int"), acc)
+            acc = self.tmp("bool", "false" if name == "any" else "true")
+            test = f"{a.atom}.data[{k}]" if name == "any" else f"!{a.atom}.data[{k}]"
+            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) if ({test}) {{ {acc} = {'true' if name == 'any' else 'false'}; break; }}")
+            return V(Type("logical"), acc)
+        if name in ("maxloc", "minloc"):
+            k = self.loop_var()
+            self.emit(f'rt_check_nonempty({a.atom}.n, "{name}", {line});')
+            best = self.tmp("int64_t", "0")
+            op = ">" if name == "maxloc" else "<"
+            x, bx = self.elem(a, k), self.elem(a, best)
+            self.emit(f"for (int64_t {k} = 1; {k} < {a.atom}.n; {k}++) if ({x} {op} {bx}) {best} = {k};")
+            return V(Type("int"), self.tmp("int64_t", f"{best} + 1"))
+        if name == "merge":
+            b, mask = vals[1], vals[2]
+            kind = self.merge_kind(e)
+            arrays = [v for v in vals if v.t.rank > 0]
+            if not arrays:
+                return V(Type(kind), self.tmp(CSCALAR[kind], f"({mask.atom} ? {self.cast(a.atom, a.t.kind, kind)} : {self.cast(b.atom, b.t.kind, kind)})"))
+            if len(arrays) == 2:
+                self.emit(f"rt_same_shape({arrays[0].atom}.shape, {arrays[0].atom}.rank, {arrays[1].atom}.shape, {arrays[1].atom}.rank, 0, {line});")
+            elif len(arrays) == 3:
+                self.emit(f"rt_same_shape3({', '.join(f'{v.atom}.shape, {v.atom}.rank' for v in arrays)}, {line});")
+            res = self.array_like(arrays[0], kind)
+            k = self.loop_var()
+            pick = lambda v: self.cast(self.elem(v, k) if v.t.rank > 0 else v.atom, v.t.kind, kind)
+            m = f"{mask.atom}.data[{k}]" if mask.t.rank > 0 else mask.atom
+            self.emit(f"for (int64_t {k} = 0; {k} < {res}.n; {k}++) {res}.data[{k}] = {m} ? {pick(a)} : {pick(b)};")
+            return V(Type(kind, arrays[0].t.rank), res)
+        if name == "cshift":
+            shift = self.cast(vals[1].atom, vals[1].t.kind, "int")
+            dim = e.args[2].value if len(e.args) == 3 else 1
+            if not 1 <= dim <= a.t.rank:
+                self.emit(f'rt_fail({line}, "cshift(): dimension must be 1..{a.t.rank}");')
+                return V(a.t, a.atom, a.src)
+            kind = a.t.kind
+            res = self.array_like(V(a.t, a.atom), kind)
+            n = f"{a.atom}.shape[{dim - 1}]"
+            stride = "1" if dim == 1 else f"{a.atom}.shape[0]"
+            k = self.loop_var()
+            src = self.elem(V(a.t, a.atom, a.src), f"rt_cshift_source({k}, {shift}, {n}, {stride})")
+            self.emit(f"if ({n} > 0) for (int64_t {k} = 0; {k} < {res}.n; {k}++) {res}.data[{k}] = {src};")
+            return V(Type(kind, a.t.rank), res)
+        raise NotCompiled(f"{name}()", line)
+
     def constant(self, e):
         """huge(x), epsilon(x), tiny(x): a constant of the kind of x (which is still evaluated)."""
         name, kind = e.name, self.types[id(e.args[0])].kind
@@ -786,6 +917,8 @@ class Compiler:
             self.emit(f"for (int64_t {k} = 0; {k} < {res}.n; {k}++) {res}.data[{k}] = {expr};")
             self.emit("rt_shown_override = NULL;")
             return V(Type(kind_out, v.t.rank), res)
+        if name in ARRAY_FUNCTIONS:
+            return self.array_function(e, vals, line)
         if name == "size":
             a = vals[0]
             if len(vals) == 1:

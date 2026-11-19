@@ -107,6 +107,14 @@ MATH_CASES = {
 }
 
 FAILING = {
+    'array function: reshape_bad': '  int[6] :: v = [1, 2, 3, 4, 5, 6]\n  println(reshape(v, [4, 2]))',
+    'array function: reshape_neg': '  int[6] :: v = [1, 2, 3, 4, 5, 6]\n  int :: n = -2\n  println(reshape(v, [n, 3]))',
+    'array function: merge_shape': '  int[3] :: a = 1\n  int[2] :: b = 2\n  logical :: m = true\n  println(merge(a, b, m))',
+    'array function: merge_shape2': '  int[3] :: a = 1\n  logical[2] :: m\n  println(merge(a, 0, m))',
+    'array function: maxloc_empty': '  int[0] :: a\n  println(maxloc(a))',
+    'array function: cshift_dim': '  int[2, 3] :: m = [1, 2, 3; 4, 5, 6]\n  println(cshift(m, 1, 3))',
+    'array function: merge of three shapes': '  int[5] :: a = 1\n  int[3] :: b = 2\n  logical[2] :: m\n  println(merge(a, b, m))',
+
     "section: index below the range": "  int[6] :: a\n  println(a[0:3])",
     "section: end beyond the range": "  int[6] :: a\n  println(a[3:7])",
     "section: with a step, out of range": "  int[6] :: a\n  println(a[1:9:2])",

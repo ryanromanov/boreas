@@ -1,0 +1,44 @@
+! Array functions: reshape, transpose, flatten, shape, merge, any, all, count, maxloc, minloc, cshift.
+program arrayfns
+  int[6] :: reshape_v = [1, 2, 3, 4, 5, 6]
+  real[4] :: reshape_x = [1.5, 2.5, 3.5, 4.5]
+  println(reshape(reshape_v, [2, 3]), reshape(reshape_v, [3, 2]), reshape(reshape_v, [6]), reshape(reshape_x, [2, 2]), reshape(reshape_v, [1, 2, 3]), reshape([1, 2, 3, 4], [2, 2]), shape(reshape(reshape_v, [3, 2])))
+  int[2, 3] :: reshape_m = reshape(reshape_v, [2, 3])
+  println(reshape_m, size(reshape_m), reshape(reshape_m, [3, 2]) * 2, sum(reshape(reshape_v, [2, 3])))
+  real[2, 3] :: transpose_m = [1.0, 2.0, 3.0; 4.0, 5.0, 6.0]
+  int32[3, 1] :: transpose_c = reshape([1, 2, 3], [3, 1])
+  println(transpose(transpose_m), transpose(transpose(transpose_m)), transpose(transpose_c), matmul(transpose_m, transpose(transpose_m)))
+  int[2, 3] :: flatten_m = [1, 2, 3; 4, 5, 6]
+  real32[2, 2] :: flatten_r = [1.5, 2.5; 3.5, 4.5]
+  println(flatten(flatten_m), flatten(flatten_r), flatten([1, 2, 3]), size(flatten(flatten_m)))
+  int[2, 3] :: shape_m
+  real[4] :: shape_v
+  int[2, 3, 4] :: shape_c
+  println(shape(shape_m), shape(shape_v), shape(shape_c), shape(shape_m) * 2, sum(shape(shape_c)))
+  int[4] :: merge_a = [1, 2, 3, 4]
+  int[4] :: merge_b = [10, 20, 30, 40]
+  logical[4] :: merge_m = [true, false, true, false]
+  real :: merge_x = 1.5
+  println(merge(merge_a, merge_b, merge_m), merge(merge_a, 0, merge_m), merge(5, merge_b, merge_m), merge(1.5, 2.5, true), merge(1, 2, false), merge(merge_a, merge_b, merge_a > 2), merge(merge_x, -merge_x, merge_m))
+  real32[2] :: merge_r = [1.5, 2.5]
+  println(merge(merge_r, 0.0, [false, true]), merge(true, false, true))
+  logical[4] :: anyall_m = [true, false, true, false]
+  logical[3] :: anyall_f = false
+  logical[0] :: anyall_none
+  int[4] :: anyall_a = [1, 2, 3, 4]
+  println(any(anyall_m), all(anyall_m), count(anyall_m), any(anyall_f), all(anyall_f), count(anyall_f), any(anyall_none), all(anyall_none), count(anyall_none), count(anyall_a > 2), any(anyall_a == 3), all(anyall_a > 0), count(reshape(anyall_m, [2, 2])))
+  int[5] :: maxloc_a = [3, 9, 2, 9, 1]
+  real[4] :: maxloc_x = [1.5, -2.5, 7.5, 7.5]
+  real32[3] :: maxloc_y = [0.5, 0.25, 0.75]
+  int32[3] :: maxloc_z = [4, 4, 1]
+  println(maxloc(maxloc_a), minloc(maxloc_a), maxloc(maxloc_x), minloc(maxloc_x), maxloc(maxloc_y), minloc(maxloc_z), maxloc(maxloc_z), maxloc_a[maxloc(maxloc_a)])
+  int[5] :: cshift_a = [1, 2, 3, 4, 5]
+  int[2, 3] :: cshift_m = [1, 2, 3; 4, 5, 6]
+  int :: cshift_k = -7
+  println(cshift(cshift_a, 1), cshift(cshift_a, -1), cshift(cshift_a, 0), cshift(cshift_a, 5), cshift(cshift_a, cshift_k), cshift(cshift_a, 1000000000000))
+  println(cshift(cshift_m, 1), cshift(cshift_m, 1, 1), cshift(cshift_m, -1, 2), cshift(cshift_m, 2, 2))
+  int[6] :: reshape3_v = [1, 2, 3, 4, 5, 6]
+  println(reshape(reshape3_v, [2, 2, 2]))
+  int[0] :: reshape_zero_v
+  println(reshape(reshape_zero_v, [0, 3]))
+end program

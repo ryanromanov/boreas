@@ -550,6 +550,9 @@ class Checker:
         if name in VALUE_DEPENDENT:
             self.value_dependent.append((e.line, f"{name}() gives an int or an int32 depending on its value"))
             return UNKNOWN
+        if name == "reshape" and len(arg_nodes) == 2 and isinstance(arg_nodes[1], ArrayLit) and arg_nodes[1].items \
+                and args[0].known and args[0].is_array:
+            return Type(args[0].kind, len(arg_nodes[1].items), False, args[0].name)     # the shape is written out: its length is the rank
         rule = BUILTIN_RULES.get(name)
         if rule is not None and all(a.known for a in args):
             try:

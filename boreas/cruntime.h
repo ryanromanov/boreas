@@ -641,3 +641,46 @@ static inline int64_t rt_dim_int(int64_t a, int64_t b, int bits, int line) {
     return (int64_t)d;
 }
 static inline double rt_dim_real(double a, double b) { double d = a - b; return 0.0 > d ? 0.0 : d; }
+
+/* ---- array functions ------------------------------------------------------------------------------------------- */
+static inline void rt_reshape_check(const int64_t *want, int rank, int64_t have, int line) {
+    int64_t prod = 1;
+    for (int d = 0; d < rank; d++) if (want[d] < 0) rt_fail(line, "reshape(): shape must be non-negative integers");
+    for (int d = 0; d < rank; d++) prod *= want[d];
+    if (prod != have) {
+        char t[80];
+        rt_shape_text(t, want, rank);
+        rt_fail(line, "reshape(): %lld elements cannot fill shape %s", (long long)have, t);
+    }
+}
+static inline void rt_check_nonempty(int64_t n, const char *name, int line) {
+    if (n == 0) rt_fail(line, "%s(): the array is empty", name);
+}
+static inline int64_t rt_cshift_source(int64_t p, int64_t shift, int64_t n, int64_t stride) {
+    int64_t c = (p / stride) % n;
+    int64_t s = ((shift % n) + n) % n;
+    return p + (((c + s) % n) - c) * stride;
+}
+/* three arrays that must share a shape (merge): the message names the two smallest different shapes, as the interpreter does */
+static int rt_shape_less(const int64_t *a, int ra, const int64_t *b, int rb) {
+    for (int d = 0; d < ra && d < rb; d++) if (a[d] != b[d]) return a[d] < b[d];
+    return ra < rb;
+}
+static int rt_shape_equal(const int64_t *a, int ra, const int64_t *b, int rb) {
+    if (ra != rb) return 0;
+    for (int d = 0; d < ra; d++) if (a[d] != b[d]) return 0;
+    return 1;
+}
+static void rt_same_shape3(const int64_t *a, int ra, const int64_t *b, int rb, const int64_t *c, int rc, int line) {
+    if (rt_shape_equal(a, ra, b, rb) && rt_shape_equal(a, ra, c, rc)) return;
+    const int64_t *s[3] = {a, b, c};
+    int r[3] = {ra, rb, rc};
+    int lo = 0;
+    for (int i = 1; i < 3; i++) if (rt_shape_less(s[i], r[i], s[lo], r[lo])) lo = i;
+    int next = -1;
+    for (int i = 0; i < 3; i++)
+        if (!rt_shape_equal(s[i], r[i], s[lo], r[lo]) && (next < 0 || rt_shape_less(s[i], r[i], s[next], r[next]))) next = i;
+    char x[80], y[80];
+    rt_shape_text(x, s[lo], r[lo]); rt_shape_text(y, s[next], r[next]);
+    rt_fail(line, "array shape mismatch: %s vs %s", x, y);
+}
