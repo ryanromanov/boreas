@@ -3416,3 +3416,8 @@ class Interp:
                                 f"'{name}': a {f.params[n][2]} parameter of an interface type can change the value, "
                                 f"not what kind of record it is")
             self.write(ref, result, s.line)
+
+
+if os.environ.get("BOREAS_TYPE_ORACLE"):                 # development only: check the type checker against this interpreter
+    from .typecheck import install_oracle
+    install_oracle(Interp, os.environ["BOREAS_TYPE_ORACLE"])

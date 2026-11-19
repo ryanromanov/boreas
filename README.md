@@ -366,7 +366,7 @@ and `bessel_jn(n, x)`, `bessel_yn(n, x)` are the Bessel functions, from the same
 `norm2(x)` is the length of a real array (the square root of the sum of its squares). `spread(source, dim, n)` repeats
 `source` (a single value or an array) `n` times along a new dimension `dim`: `spread([1, 2, 3], 1, 2)` is two rows of
 `[1, 2, 3]`. `findloc(v, x)` is the position of the first element equal to `x`, or 0 (down the columns of a matrix, giving
-`[row, col]`, or `[0, 0]` when there is none; `findloc(m, x, 1)` is one row per column). Fortran's `back` option is not supported.
+`[row, col]`, or `[0, 0]` when there is none; `findloc(m, x, 1)` is one row per column).
 `lbound(a)` and `ubound(a)` are the lowest and highest subscript of every dimension (`lbound` is always 1, since
 Boreas arrays start at 1), and `lbound(a, k)` / `ubound(a, k)` give one dimension.
 
