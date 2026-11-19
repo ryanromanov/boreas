@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("int", "int32", "real", "logical")
 CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "logical": "bool"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "int", "size",
-            "maxval", "minval", "sum", "product"}
+            "maxval", "minval", "sum", "product", "matmul", "dot_product"}
 ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real"}
 WRITERS = {"int": "rt_write_int", "int32": "rt_write_int", "real": "rt_write_real", "logical": "rt_write_bool",
            "string": "rt_write_str"}
@@ -247,8 +247,15 @@ class Compiler:
         elif name in ("maxval", "minval", "sum", "product"):
             if len(e.args) != 1 or ranks[0] < 1:
                 self.refuse(f"{name}() of anything but a whole array", e)
-            if name == "sum" and self.types[id(e.args[0])].kind == "real":
-                self.refuse("sum of reals (waiting for a decision on the order of summation)", e)
+        elif name in ("matmul", "dot_product"):
+            ts = [self.types[id(a)] for a in e.args]
+            ok = len(ts) == 2 and ts[0].kind == ts[1].kind and ts[0].kind in ("real", "int")
+            if name == "dot_product":
+                ok = ok and ts[0].rank == 1 and ts[1].rank == 1
+            else:
+                ok = ok and ts[0].rank in (1, 2) and ts[1].rank in (1, 2)
+            if not ok:
+                self.refuse(f"{name}() of anything but two real or two int arrays of the right rank", e)
         elif any(r != 0 for r in ranks):
             self.refuse(f"{name}() of an array", e)
         if name in ("mod", "min", "max", "int") and any(self.types[id(a)].kind in ("logical",) for a in e.args):
@@ -553,6 +560,8 @@ class Compiler:
             return V(Type("int"), self.tmp("int64_t", f"{a.atom}.shape[{d - 1}]"))
         if name in ("maxval", "minval", "sum", "product"):
             return self.reduction(name, vals[0], line)
+        if name in ("matmul", "dot_product"):
+            return self.products(name, vals[0], vals[1], line)
         kinds = [v.t.kind for v in vals]
         atoms = [v.atom for v in vals]
         was = [1 if k in ("int", "int32") else 0 for k in kinds]
@@ -589,9 +598,9 @@ class Compiler:
             best = self.tmp(ct, f"{a.atom}.data[0]")
             self.emit(f"for (int64_t {k} = 1; {k} < {a.atom}.n; {k}++) if ({x} {'>' if name == 'maxval' else '<'} {best}) {best} = {x};")
             return V(Type(kind), best)
-        if kind == "real":                                  # product of reals: plain multiplication in order
-            acc = self.tmp("double", "1.0")
-            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {acc} * {x};")
+        if kind == "real":                                  # plain multiplication or addition, one at a time from the left
+            acc = self.tmp("double", "1.0" if name == "product" else "0.0")
+            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {acc} {'*' if name == 'product' else '+'} {x};")
             return V(Type(kind), acc)
         wide = self.tmp("rt_i128", "1" if name == "product" else "0")   # exact, then checked once, like the interpreter
         op = "*" if name == "product" else "+"
@@ -599,6 +608,48 @@ class Compiler:
         limit = "INT64_MIN, INT64_MAX" if kind == "int" else "INT32_MIN, INT32_MAX"
         self.emit(f'rt_check_range({wide}, {limit}, "{name}", {1 if kind == "int" else 32}, {line});')
         return V(Type(kind), self.tmp(ct, f"({ct}){wide}"))
+
+    def products(self, name, a, b, line):
+        """dot_product and matmul of two real arrays (added one at a time from the left, as the interpreter does) or of two
+        int arrays (worked out exactly, checked once per element)."""
+        kind = a.t.kind
+        ct = CSCALAR[kind]
+        if name == "dot_product":
+            self.emit(f"rt_dot_shapes({a.atom}.shape, {b.atom}.shape, {line});")
+            k = self.loop_var()
+            if kind == "real":
+                acc = self.tmp("double", "0.0")
+                self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {acc} + {a.atom}.data[{k}] * {b.atom}.data[{k}];")
+                return V(Type(kind), acc)
+            wide = self.tmp("rt_i128", "0")
+            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {wide} = {wide} + (rt_i128){a.atom}.data[{k}] * {b.atom}.data[{k}];")
+            self.emit(f'rt_check_range({wide}, INT64_MIN, INT64_MAX, "dot_product", 1, {line});')
+            return V(Type(kind), self.tmp(ct, f"({ct}){wide}"))
+        n, kk, m = (self.tmp("int64_t", x) for x in (
+            f"({a.atom}.rank == 2 ? {a.atom}.shape[0] : 1)",
+            f"({a.atom}.rank == 2 ? {a.atom}.shape[1] : {a.atom}.shape[0])",
+            f"({b.atom}.rank == 2 ? {b.atom}.shape[1] : 1)"))
+        self.emit(f"rt_matmul_check({kk}, ({b.atom}.rank == 2 ? {b.atom}.shape[0] : {b.atom}.shape[0]), {line});")
+        rank = 2 if a.t.rank == 2 and b.t.rank == 2 else 1
+        res = self.tmp_array(kind, rank)
+        shape = (f"{n}, {m}, 1" if rank == 2 else (f"{n}, 1, 1" if a.t.rank == 2 else f"{m}, 1, 1"))
+        self.emit(f"rt_alloc_{kind}(&{res}, {rank}, {shape}, {line});")
+        i, j, t = self.loop_var(), self.loop_var(), self.loop_var()
+        self.emit(f"for (int64_t {j} = 0; {j} < {m}; {j}++) for (int64_t {i} = 0; {i} < {n}; {i}++) {{")
+        self.depth += 1
+        term = f"{a.atom}.data[{i} + {t} * {n}] * {b.atom}.data[{t} + {j} * {kk}]"
+        if kind == "real":
+            self.emit("double acc = 0.0;")
+            self.emit(f"for (int64_t {t} = 0; {t} < {kk}; {t}++) acc = acc + {term};")
+            self.emit(f"{res}.data[{i} + {j} * {n}] = acc;")
+        else:
+            self.emit("rt_i128 acc = 0;")
+            self.emit(f"for (int64_t {t} = 0; {t} < {kk}; {t}++) acc = acc + (rt_i128){a.atom}.data[{i} + {t} * {n}] * {b.atom}.data[{t} + {j} * {kk}];")
+            self.emit(f'rt_check_range(acc, INT64_MIN, INT64_MAX, "matmul", 1, {line});')
+            self.emit(f"{res}.data[{i} + {j} * {n}] = (int64_t)acc;")
+        self.depth -= 1
+        self.emit("}")
+        return V(Type(kind, rank), res)
 
     # -- statements ---------------------------------------------------------------------------------------------------
     def block(self, body):

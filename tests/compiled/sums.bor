@@ -1,0 +1,15 @@
+! sum, dot_product and matmul add one at a time from the left, in the interpreter and in the compiled program.
+program sums
+  real[10] :: a = 0.1
+  real[3] :: u = [1.5, 2.5, 3.5]
+  real[3] :: v = [0.1, 0.2, 0.3]
+  real[2, 3] :: m = [1.0, 2.0, 3.0; 4.0, 5.0, 6.0]
+  real[3, 2] :: n = [0.5, 1.5; 2.5, 3.5; 4.5, 5.5]
+  int[3] :: p = [2, 3, 4]
+  int[2, 2] :: q = [1, 2; 3, 4]
+  real[0] :: none
+  println(sum(a), sum(u), sum(v), sum(none), product(none), sum([1.0e100, 1.0, -1.0e100]))
+  println(dot_product(a, a), dot_product(u, v), dot_product(p, p))
+  println(matmul(m, n), matmul(n, m), matmul(q, q), matmul(m, u), matmul(v, n))
+  println(sum(matmul(m, n)), sum(a * a), sum(q))
+end program

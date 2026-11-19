@@ -364,7 +364,8 @@ argument wins; a real literal next to a `real32` is a `real32`, in a call as in 
 Functions of numbers (`sqrt`, `abs`, `floor`, `sum`, ...) refuse logicals and strings, and `==` or `/=` between a
 string, a logical and a number is an error rather than `false`.
 
-`sum`, `product`, `maxval`, `minval`, `any`, `all` and `count` take a second argument `dim` for a matrix: `sum(m, 1)`
+`sum` adds from the left, one element at a time, on every Python and in compiled programs, as Fortran does (the sum of a
+real array is never compensated). `sum`, `product`, `maxval`, `minval`, `any`, `all` and `count` take a second argument `dim` for a matrix: `sum(m, 1)`
 adds down each column (one answer per column) and `sum(m, 2)` along each row, as in Fortran; for a one-dimensional
 array `dim` is 1 and the answer is a single value.
 
@@ -943,9 +944,9 @@ A module variable can be `allocatable`; see Allocatable arrays above.
 The compiler handles the numeric core of the language so far: `int`, `int32`, `real` and `logical` values and arrays of
 them (up to three dimensions, element by element or whole: `a = b * 2.0 + c`, bounds checked), `if`, `do`, `do while`,
 `exit`, `cycle`, `stop`, `return`, `print` and `println`, and functions and subroutines whose parameters are single
-values or arrays, passed `in` or (in subroutines) `inout`; also `size`, `maxval`, `minval`, `product`, and `sum` of
-whole numbers. A program that uses anything else (records, strings, modules, `out` parameters, `real32`, sections such
-as `a[1:3]`, allocatable arrays, `sum`/`matmul` of reals, ...) is refused as a whole, with a message that names the
+values or arrays, passed `in` or (in subroutines) `inout`; also `size`, `maxval`, `minval`, `sum`, `product`,
+`dot_product` and `matmul` (two real or two int arrays). A program that uses anything else (records, strings, modules, `out` parameters, `real32`, sections such
+as `a[1:3]`, allocatable arrays, ...) is refused as a whole, with a message that names the
 construct and its line ("not supported by the compiler yet: an allocatable array (line 3)"): run it with the
 interpreter instead, or wait for the next slice. Nothing is ever compiled halfway.
 
