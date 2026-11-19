@@ -944,10 +944,12 @@ A module variable can be `allocatable`; see Allocatable arrays above.
 The compiler handles the numeric core of the language so far: `int`, `int32`, `real`, `real32` and `logical` values and arrays of
 them (up to three dimensions, element by element or whole: `a = b * 2.0 + c`, bounds checked), `if`, `do`, `do while`,
 `exit`, `cycle`, `stop`, `return`, `print` and `println`, and functions and subroutines whose parameters are single
-values or arrays, passed `in` or (in subroutines) `inout`; also `size`, `maxval`, `minval`, `sum`, `product`,
+values or arrays, passed `in`, `inout` or `out` (the last two in subroutines); allocatable arrays (`allocate`, `deallocate`,
+`allocated`, and `a = <array>` resizing them); array sections (`a[2:4]`, `m[:, 1]`, `a[8:1:-2]`, read and assigned, and as
+`in` arguments); also `size`, `maxval`, `minval`, `sum`, `product`,
 `dot_product` and `matmul` (two real, two real32 or two int arrays). A program that uses anything else (records, strings,
-modules, `out` parameters, sections such as `a[1:3]`, allocatable arrays, ...) is refused as a whole, with a message that
-names the construct and its line ("not supported by the compiler yet: an allocatable array (line 3)"): run it with the
+modules, functions that return arrays, ...) is refused as a whole, with a message that
+names the construct and its line ("not supported by the compiler yet: a record (line 3)"): run it with the
 interpreter instead, or wait for the next slice. Nothing is ever compiled halfway.
 
 A `real32` in a compiled program is worked out as the interpreter works it out: `+ - * /` between singles, or between a
