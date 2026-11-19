@@ -181,7 +181,12 @@ class Real32Tests(unittest.TestCase):
 
     def test_printing_uses_the_shortest_text_that_reads_back(self):
         self.assertEqual(one("real32(0.1), real32(1.0), real32(3.14159265), real32(1.0e10), real32(1.5e-7)"),
-                         "0.1 1.0 3.1415927 1e+10 1.5e-07")
+                         "0.1 1.0 3.1415927 10000000000.0 1.5e-07")
+
+    def test_a_whole_real32_prints_as_a_real_does(self):
+        # it used to print 1e+02 for 100.0
+        self.assertEqual(one("real32(100.0), real32(1000.0), real32(100000.0), real32(1.0e20), real32(0.0001), real32(1.0e-5)"),
+                         "100.0 1000.0 100000.0 1e+20 0.0001 1e-05")
 
     def test_real32_functions_return_real32(self):
         self.assertEqual(one("sqrt(real32(2.0))"), "1.4142135")

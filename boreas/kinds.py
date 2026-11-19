@@ -180,9 +180,7 @@ def shortest32(x):
         text = f"{x:.{digits}g}"
         if _round32(float(text)) == x:
             break
-    if "e" not in text and "." not in text:
-        text += ".0"
-    return text
+    return repr(float(text))        # written as a real is: 100.0, 1e-05, 1e+20 (not 1e+02)
 
 
 def make_int(kind, value, what="value"):
