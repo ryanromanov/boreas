@@ -10,8 +10,8 @@ every expression the interpreter evaluates is compared with its static type (see
 import json
 import os
 from . import types as T
-from .parser import (Apply, ArrayLit, Bool, Binary, Call, Case, Decl, Do, FieldAccess, Gen, IsType, MatrixLit, NamedArg,
-                     Null, Num, SelectExpr, SelectType, Slice, Str, Unary, Var)
+from .parser import (Apply, ArrayLit, Assign, Bool, Binary, Call, Case, Decl, Do, DoWhile, FieldAccess, Gen, If, IsType,
+                     MatrixLit, NamedArg, Null, Num, Return, SelectExpr, SelectType, Slice, Str, Unary, Var, is_optional)
 from .tree import STATEMENTS, children, statements_in, walk
 from .types import (COMPLEX, INT, INT32, LOGICAL, NULL, REAL, REAL32, STRING, UNKNOWN, Type, parse, promote)
 from .kinds import LO32, HI32
@@ -247,6 +247,11 @@ class Checker:
         self.types = {}                 # id(node) -> Type
         self.value_dependent = []       # (line, what): expressions whose type depends on a value
         self.keep = []                  # the nodes, so that their ids stay valid
+        self.errors = []                # (line, col, message, length): mistakes the checker is sure of
+        self.where = {}                 # error -> the statement it was found in
+        self.line = 0                   # the line of the statement being looked at
+        self.stmt = None                # ... and the statement itself
+        self.func = None                # the function being looked at
         self.procs = {}                 # callback parameter name -> its ProcType (per procedure)
 
     # -- procedures ---------------------------------------------------------
@@ -255,7 +260,9 @@ class Checker:
         for f in self.all_functions():
             scope = interp.scopes.get(id(f))
             if scope is not None:
+                self.func = f
                 self.procedure(f.params, f.body, scope)
+        self.func = None
         if u.program is not None and interp.program_scope is not None:
             self.procedure([], u.program.body, interp.program_scope)
         return self
@@ -302,8 +309,11 @@ class Checker:
                 env[node.var] = UNKNOWN
         self.scope = scope
         for s in statements_in(body):
+            self.line = getattr(s, "line", 0) or self.line
+            self.stmt = s
             for operand in self.operands(s):
                 self.expr(operand, env)
+            self.check_statement(s, env)
 
     @staticmethod
     def operands(s):
@@ -353,6 +363,8 @@ class Checker:
             t = self.expr(e.operand, env)
             if not t.known:
                 return UNKNOWN
+            if e.op == "not":
+                self.need_logical(t)
             return LOGICAL.with_rank(t.rank) if e.op == "not" else t.unwrapped()
         if k is Binary:
             return self.binary(e, env)
@@ -423,6 +435,7 @@ class Checker:
             lt = Type("int32", lt.rank)
         if lt.kind == "null" or rt.kind == "null":
             return LOGICAL if op in ("==", "/=") else UNKNOWN
+        self.check_operands(e, lt, rt)
         rank = self.broadcast(lt, rt)
         if op in ("==", "/=", "<", "<=", ">", ">=", "and", "or"):
             return Type("logical", rank)
@@ -510,11 +523,25 @@ class Checker:
                 return self.proc_result(name, args)
             if t.kind in ("map", "set"):
                 return UNKNOWN
+            if t.rank > 0 and e.bracket:
+                for a in arg_nodes:
+                    at = self.type_of_node(a)
+                    if not isinstance(a, Slice) and at.known and at.rank == 0 and at.kind in ("real", "real32", "complex",
+                                                                                              "string", "logical"):
+                        self.error("array index must be integer", e, len(name))
             return self.index_type(t, arg_nodes)
         if name in scope.records:
             return Type("record", 0, False, name)
         if name in scope.funcs:
+            if not scope.funcs[name].is_sub:
+                self.check_call(scope.funcs[name], arg_nodes, e)
             return self.call_result(scope.funcs[name], args)
+        from .interp import ELEMENTAL
+        if name in ELEMENTAL and name not in ("merge", "max", "min"):
+            for a in args:
+                if a.known and a.kind in ("string", "logical"):
+                    self.error(f"{name}(): needs numbers, got {a.kind}", e, len(name))
+                    break
         if name in VALUE_DEPENDENT:
             self.value_dependent.append((e.line, f"{name}() gives an int or an int32 depending on its value"))
             return UNKNOWN
@@ -572,16 +599,152 @@ class Checker:
             return UNKNOWN
         field = next((d for d in rdef.fields if d.name == e.field), None)
         if field is None:
+            if isinstance(e.base, Var) and e.field not in rdef.functions:
+                self.error(f"{bt.name} '{e.base.name}' has no field '{e.field}'", e)
             return UNKNOWN
         ft = self.decl_type(field, self.interp.owner.get(id(rdef), scope) if hasattr(self.interp, "owner") else scope)
         if e.args is not None and e.bracket:
             return self.index_type(ft, arg_nodes)
         return ft
 
+    # -- mistakes the checker is sure of -------------------------------------
+    def error(self, message, node=None, length=None):
+        line = getattr(node, "line", 0) or self.line
+        col = getattr(node, "col", 0) or None
+        item = (line, col, message, length)
+        if item not in self.errors:
+            self.errors.append(item)
+            self.where[item] = self.stmt
+
+    def need_logical(self, t, node=None):
+        if t.known and t.kind in T.NUMBERS + ("string", "file") and t.kind != "logical":
+            self.error(f"condition must be logical, got {t.kind}", node)
+
+    def check_operands(self, e, lt, rt):
+        op = e.op
+        if op in ("and", "or"):
+            self.need_logical(lt)
+            self.need_logical(rt)
+            return
+        if op in ("==", "/=", "<", "<=", ">", ">="):
+            def category(t):
+                return "string" if t.kind == "string" else "logical" if t.kind == "logical" else \
+                    "number" if t.kind in T.NUMBERS else None
+            a, b = category(lt), category(rt)
+            if a is None or b is None:
+                return
+            if a != b:
+                self.error(f"cannot compare {lt.kind} with {rt.kind} using '{op}'")
+            elif a == "logical" and op not in ("==", "/="):
+                self.error(f"logicals can be compared with == and /=, not '{op}'")
+            elif "complex" in (lt.kind, rt.kind) and op not in ("==", "/="):
+                self.error(f"complex numbers cannot be ordered with '{op}'; compare abs() or the parts")
+            return
+        if op in ("+", "-", "*", "/", "**", "+%", "-%", "*%"):
+            if op == "+" and lt.kind == "string" and rt.kind == "string":
+                return
+            for t in (lt, rt):
+                if t.kind in ("record", "interface"):
+                    self.error(f"records cannot be used with '{op}'; use their fields")
+                    return
+                if t.kind in ("string", "logical", "file"):
+                    self.error(f"operator '{op}' needs numbers, got {t.kind}")
+                    return
+
+    def assign_problem(self, target, value):
+        """Why `value` cannot be stored in `target` (a message like the interpreter's), or None when it can, or when the
+        checker is not sure (anything but numbers, text and logicals)."""
+        simple = T.NUMBERS + ("string", "logical")
+        if not (target.known and value.known) or target.kind not in simple or value.kind not in simple:
+            return None
+        if target.rank == 0 and value.rank > 0:
+            return f"cannot assign array to {target.kind}"
+        if target.rank < 0 or value.rank < 0:
+            return None
+        def category(t):
+            return "number" if t.kind in T.NUMBERS else t.kind
+        if category(target) != category(value):
+            return f"cannot assign {value.kind} to {target.kind}"
+        if target.kind in T.NUMBERS:
+            if value.kind == "complex" and target.kind != "complex":
+                return f"cannot assign complex to {target.kind}"
+            if value.kind in T.REALS and target.kind in T.INTEGERS:
+                return f"cannot assign {value.kind} to {target.kind}"
+        return None
+
+    def type_of_node(self, node):
+        return self.types.get(id(node), UNKNOWN)
+
+    def check_statement(self, s, env):
+        if isinstance(s, Assign):
+            problem = self.assign_problem(self.type_of_node(s.target), self.type_of_node(s.value))
+            if problem:
+                self.error(problem, s)
+        elif isinstance(s, Decl) and s.init is not None and not s.allocatable:
+            problem = self.assign_problem(env.get(s.name, UNKNOWN), self.type_of_node(s.init))
+            if problem:
+                self.error(problem, s)
+        elif isinstance(s, Return) and s.value is not None and self.func is not None and self.func.ret is not None \
+                and not hasattr(self.func.ret, "types"):
+            ret = parse(self.func.ret, self.scope)
+            problem = self.assign_problem(ret, self.type_of_node(s.value))
+            if problem:
+                self.error(f"function {self.func.name}: {problem}", s)
+        elif isinstance(s, DoWhile):
+            self.need_logical(self.type_of_node(s.cond), s)
+        elif isinstance(s, If):
+            for cond, _ in s.branches:
+                if not isinstance(cond, IsType):
+                    self.need_logical(self.type_of_node(cond), s)
+        elif isinstance(s, Call) and s.receiver is None and s.name in self.scope.funcs and s.name not in env:
+            f = self.scope.funcs[s.name]
+            if f.is_sub:
+                self.check_call(f, s.args, s)
+
+    def check_call(self, f, args, node):
+        """A call of the user procedure `f`: how many arguments, and whether each one can be passed."""
+        if any(isinstance(a, NamedArg) for a in args):
+            return
+        most = len(f.params)
+        least = most
+        while least and is_optional(f.params[least - 1][0]):
+            least -= 1
+        if not least <= len(args) <= most:
+            count = str(most) if least == most else f"{least} to {most}"
+            self.error(f"{f.name} expects {count} arguments, got {len(args)}", node)
+            return
+        scope = self.interp.scopes.get(id(f), self.scope)
+        for (typ, pname, intent), a in zip(f.params, args):
+            if not isinstance(typ, str):
+                continue
+            ptype, atype = parse(typ, scope), self.type_of_node(a)
+            if not (ptype.known and atype.known):
+                continue
+            if intent in ("out", "inout"):
+                if ptype.kind in T.SCALAR_KINDS and atype.kind in T.SCALAR_KINDS and ptype.rank >= 0 and atype.rank >= 0 \
+                        and (ptype.kind != atype.kind or ptype.rank != atype.rank) and not ptype.optional:
+                    from .printer import expr as text
+                    try:
+                        shown = text(a.expr if hasattr(a, "expr") else a)
+                    except Exception:
+                        shown = pname
+                    self.error(f"argument '{pname}' is {ptype.unwrapped()} but '{shown}' is {atype}", node)
+            elif ptype.rank == 0 and atype.rank > 0:
+                continue                                   # a function of single values runs once per element
+            else:
+                problem = self.assign_problem(ptype, atype)
+                if problem:
+                    self.error(f"argument '{pname}': {problem}", node)
+
 
 def infer(unit, interp):
     """The Checker for a linked program."""
     return Checker(unit, interp).run()
+
+
+def type_errors(unit, interp):
+    """The mistakes of type the checker is sure of, as (line, col, message, length), like `undeclared_names`."""
+    return infer(unit, interp).errors
 
 
 # -- checking the checker against the interpreter -----------------------------
@@ -677,5 +840,20 @@ def install_oracle(interp_class, path):
         with open(path, "a") as out:
             out.write(json.dumps({"counts": counts, "untyped": untyped}) + "\n")
 
-    interp_class.__init__, interp_class.eval = init, evaluate
+    original_run = interp_class.run_program
+
+    def run_program(self):
+        code = original_run(self)             # no error: so any mistake the checker reports here is suspect
+        checker = getattr(self, "checker", None)
+        if checker is not None:
+            from .printer import stmts
+            for item in checker.errors:
+                try:
+                    text = " / ".join(x.strip() for x in stmts([checker.where[item]], 0))
+                except Exception:
+                    text = "?"
+                record({"false_positive?": item[2], "line": item[0], "statement": text[:120]})
+        return code
+
+    interp_class.__init__, interp_class.eval, interp_class.run_program = init, evaluate, run_program
     atexit.register(summary)

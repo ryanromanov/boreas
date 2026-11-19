@@ -32,7 +32,14 @@ def check_errors(src):
     its line and col are None when it does not carry them; its length is always None."""
     try:
         unit = parse(src)
-        return undeclared_names(unit, Interp(unit, lambda *a: None))
+        interp = Interp(unit, lambda *a: None)
+        errors = undeclared_names(unit, interp)
+        try:
+            from .typecheck import type_errors
+            errors = sorted(errors + type_errors(unit, interp), key=lambda err: (err[0] or 0, err[1] or 0))
+        except Exception:                      # the type check never stops the check of names
+            pass
+        return errors
     except LangError as e:
         m = re.match(r"line (\d+): (.*)", str(e), re.S)
         return [(int(m.group(1)) if m else None, e.col, m.group(2) if m else str(e), None)]
