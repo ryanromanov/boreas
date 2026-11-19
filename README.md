@@ -947,7 +947,10 @@ them (up to three dimensions, element by element or whole: `a = b * 2.0 + c`, bo
 values or arrays, passed `in`, `inout` or `out` (the last two in subroutines); allocatable arrays (`allocate`, `deallocate`,
 `allocated`, and `a = <array>` resizing them); array sections (`a[2:4]`, `m[:, 1]`, `a[8:1:-2]`, read and assigned, and as
 `in` arguments); also `size`, `maxval`, `minval`, `sum`, `product`,
-`dot_product` and `matmul` (two real, two real32 or two int arrays). A program that uses anything else (records, strings,
+`dot_product` and `matmul` (two real, two real32 or two int arrays), the inverse and hyperbolic trigonometric functions, `atan2`,
+`erf`, `floor`, `ceiling`, `nint`, `aint`, `anint`, `sign`, `modulo`, `dim`, `int32`, `int64`, `real64`, `huge`, `epsilon`, `tiny`,
+and `reshape` (with the shape written out), `transpose`, `flatten`, `shape`, `merge`, `any`, `all`, `count`, `maxloc`,
+`minloc` and `cshift`. A program that uses anything else (records, strings,
 modules, functions that return arrays, ...) is refused as a whole, with a message that
 names the construct and its line ("not supported by the compiler yet: a record (line 3)"): run it with the
 interpreter instead, or wait for the next slice. Nothing is ever compiled halfway.

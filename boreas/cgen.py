@@ -593,8 +593,7 @@ class Compiler:
             self.emit(f'rt_need_alloc({arr}.data, "{e.name}", {line});')
         plan = []
         if len(e.args) != rank:
-            self.emit(f'rt_fail({line}, "\'{e.name}\' has {rank} dimension(s) but {len(e.args)} subscript(s) were given");')
-            return plan
+            raise NotCompiled(f"a section of '{e.name}' with the wrong number of subscripts", line)
         for d, a in enumerate(e.args):
             n = f"{arr}.shape[{d}]"
             if isinstance(a, Slice):

@@ -109,7 +109,6 @@ MATH_CASES = {
 FAILING = {
     "too few subscripts": "  int[2, 3] :: m\n  println(m[1])",
     "too many subscripts": "  int[3] :: m\n  m[1, 2] = 0",
-    "too few subscripts in a section": "  int[2, 3] :: m\n  println(m[1:2])",
     "too few subscripts, array not allocated": "  allocatable int[,] :: m\n  println(m[1])",
     'array function: reshape_bad': '  int[6] :: v = [1, 2, 3, 4, 5, 6]\n  println(reshape(v, [4, 2]))',
     'array function: reshape_neg': '  int[6] :: v = [1, 2, 3, 4, 5, 6]\n  int :: n = -2\n  println(reshape(v, [n, 3]))',
@@ -327,6 +326,7 @@ class RefusalTests(unittest.TestCase):
                      "a section of 'a' passed as inout")
         self.refused(prog("  real[3] :: a = [1.0, 2.0, 3.0]\n  int[3] :: b = [1, 2, 3]\n  println(matmul(a, b))"), "matmul()")
         self.refused(prog("  real :: a = 1.0\n  println(hypot(a, a))"), "the function 'hypot'")
+        self.refused(prog("  int[2, 3] :: m\n  println(m[1:2])"), "wrong number of subscripts")
         self.refused("use ieee\n" + prog("  println(modulo(5, 3))"), "modulo() in a file that says `use ieee`")
         self.refused(prog("  real32 :: x = 1.0\n  int :: n = 2\n  println(n ** x)"), "a real32 power whose base is not a real32")
         self.refused(prog("  string :: s = \"a\"\n  println(s)"), "the declaration of 's' (string)")
