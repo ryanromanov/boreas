@@ -107,6 +107,10 @@ MATH_CASES = {
 }
 
 FAILING = {
+    "too few subscripts": "  int[2, 3] :: m\n  println(m[1])",
+    "too many subscripts": "  int[3] :: m\n  m[1, 2] = 0",
+    "too few subscripts in a section": "  int[2, 3] :: m\n  println(m[1:2])",
+    "too few subscripts, array not allocated": "  allocatable int[,] :: m\n  println(m[1])",
     'array function: reshape_bad': '  int[6] :: v = [1, 2, 3, 4, 5, 6]\n  println(reshape(v, [4, 2]))',
     'array function: reshape_neg': '  int[6] :: v = [1, 2, 3, 4, 5, 6]\n  int :: n = -2\n  println(reshape(v, [n, 3]))',
     'array function: merge_shape': '  int[3] :: a = 1\n  int[2] :: b = 2\n  logical :: m = true\n  println(merge(a, b, m))',

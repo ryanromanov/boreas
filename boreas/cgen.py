@@ -571,6 +571,9 @@ class Compiler:
         rank = self.vars[e.name][0].rank
         if e.name in self.allocs:                      # checked before the subscripts are evaluated
             self.emit(f'rt_need_alloc({arr}.data, "{e.name}", {self.line});')
+        if len(e.args) != rank:                        # the interpreter stops here, before any subscript is evaluated
+            self.emit(f'rt_fail({self.line}, "\'{e.name}\' has {rank} dimension(s) but {len(e.args)} subscript(s) were given");')
+            return "0"
         idx = []
         for d, a in enumerate(e.args):
             i = self.tmp("int64_t", self.scalar(a, "int"))
@@ -589,6 +592,9 @@ class Compiler:
         if e.name in self.allocs:
             self.emit(f'rt_need_alloc({arr}.data, "{e.name}", {line});')
         plan = []
+        if len(e.args) != rank:
+            self.emit(f'rt_fail({line}, "\'{e.name}\' has {rank} dimension(s) but {len(e.args)} subscript(s) were given");')
+            return plan
         for d, a in enumerate(e.args):
             n = f"{arr}.shape[{d}]"
             if isinstance(a, Slice):
