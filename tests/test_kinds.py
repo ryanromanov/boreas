@@ -189,7 +189,12 @@ class Real32Tests(unittest.TestCase):
         self.assertAlmostEqual(float(one("sin(real32(1.0))")), 0.84147098, places=7)
 
     def test_mixed_function_arguments_are_real64(self):
-        self.assertEqual(one("atan2(real32(1.0), 1.0)"), repr(__import__("math").atan2(f32(1.0), 1.0)))
+        self.assertEqual(one("atan2(real32(1.0), d)", "  real :: d = 1.0\n"),
+                         repr(__import__("math").atan2(f32(1.0), 1.0)))
+
+    def test_a_real_literal_next_to_a_real32_argument_is_a_real32(self):
+        self.assertEqual(one("atan2(real32(1.0), 1.0)"), "0.7853982")
+        self.assertEqual(one("max(real32(1.5), 2.0)"), "2.0")
 
     def test_limits(self):
         self.assertEqual(one("huge(real32(1.0))"), "3.4028235e+38")

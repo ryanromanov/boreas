@@ -84,9 +84,10 @@ by their size:
 - Conversion functions: `int8(x)`, `int16(x)`, `int32(x)`, `int(x)` / `int64(x)` (truncate and check
   the range), `real32(x)`, `real64(x)` / `real(x)`. `huge`, `epsilon` and `tiny` work for every kind.
 - Single precision is slower than double: each result is rounded and tagged with its width.
-- **Whole numbers from reals.** `floor`, `ceiling` and `nint` give an `int64` when the answer does not fit in 32
-  bits, so `int32 :: n = floor(1.0e10)` stops with "does not fit in int32" and `int :: n = floor(1.0e10)`
-  works. A NaN or an answer beyond 64 bits is an error.
+- **Whole numbers from reals.** `floor`, `ceiling` and `nint` give an `int` for a `real` and an `int32` for a `real32`
+  (the width follows the argument, as `sqrt` does), so `floor(1.0e10)` is fine and `int32 :: n = floor(1.0e10)` stops
+  with "does not fit in int32". A NaN or an answer beyond 64 bits is an error. For a 32-bit result from a `real`,
+  write `int32(floor(x))`.
 - **Real overflow is an error too.** `1.0e308 * 10.0` stops the program ("too large for a real") unless the file
   says `use ieee`; so does a negative number to a fractional power (`(-8.0) ** (1.0 / 3.0)`, which has no real
   answer: write `cmplx(-8.0, 0.0) ** (1.0 / 3.0)` for the complex root).
@@ -306,7 +307,8 @@ line ends in `then`, so a variable called `where` still works.
 
 An array literal can contain one-dimensional arrays, which are spliced in: with `x = [1, 2, 3]`, `[x, 4]` is
 `[1, 2, 3, 4]` and `[0, x, x]` is `[0, 1, 2, 3, 1, 2, 3]`. A nested array is not a matrix: `[[1, 2], [3, 4]]` is
-`[1, 2, 3, 4]`.
+`[1, 2, 3, 4]`. Numbers of different kinds in a literal are all the widest of them (`[1, 2.5]` is `[1.0, 2.5]`),
+and a literal next to an `int32` or a `real32` takes that kind, as in an operation.
 
 A **matrix literal** has `;` between its rows: `[1, 2, 3; 4, 5, 6]` is two rows of three, written the way the matrix
 reads. Every row needs the same number of values (anything else is an error), the values are single numbers, strings
@@ -357,6 +359,8 @@ first, Fortran's `back=`; a `dim` of 0 means the whole array, so `maxloc(m, 0, t
 
 `max(a, b, ...)` and `min(a, b, ...)` take two or more numbers or two or more strings (not a mix, and not
 logicals), and work element by element when one is an array: `max(v, 0.0)` raises every negative element to 0.0.
+Mixed numbers widen to the widest kind, so `max(3, 2.5)` is `3.0` and the answer's type never depends on which
+argument wins; a real literal next to a `real32` is a `real32`, in a call as in an operation.
 Functions of numbers (`sqrt`, `abs`, `floor`, `sum`, ...) refuse logicals and strings, and `==` or `/=` between a
 string, a logical and a number is an error rather than `false`.
 
@@ -688,6 +692,7 @@ and the variable may instead be absent (`null`):
   `x == null`, `x /= null`), give it a fallback (`x ?? y`), store it, print it (`null`) and pass it
   to another optional parameter. `??` is the loosest operator (`n ?? 0 + 1` is `n ?? (0 + 1)`),
   chains left to right, and only evaluates its right side when the left is null.
+  A number on the right takes the kind of the optional on the left: `real32? :: x` with `x ?? 0.5` is a `real32`.
 - `in` parameters may be optional, and such arguments can be left off the end of a call
   (`step_or()` for `function step_or(int? :: step)`); they arrive as `null`. Only trailing ones can be left
   off; to skip one in the middle, pass `null`.

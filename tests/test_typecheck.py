@@ -74,7 +74,7 @@ CASES = [
     ("sqrt(x)", "real"), ("sqrt(s)", "real32"), ("sqrt(i)", "real"), ("sqrt(r)", "real[]"), ("abs(i)", "int"),
     ("abs(z)", "real"), ("abs(a)", "int[]"), ("mod(i, 2)", "int"), ("real(i)", "real"), ("int(x)", "int"),
     ("int64(i)", "int"), ("real32(x)", "real32"), ("max(i, 2)", "int"), ("max(a, 2)", "int[]"),
-    ("max(i, x)", "unknown"), ("size(a)", "int"), ("shape(m)", "int[]"), ("len(t)", "int"),
+    ("max(i, x)", "real"), ("max(s, 2.0)", "real32"), ("max(i, small)", "int"), ("max(\"a\", \"b\")", "string"), ("size(a)", "int"), ("shape(m)", "int[]"), ("len(t)", "int"),
     ("sum(a)", "int"), ("sum(r)", "real"), ("sum(m, 1)", "real[]"), ("maxval(r)", "real"), ("any(a > 1)", "logical"),
     ("any(m > 1.0, 1)", "logical[]"), ("count(a > 1)", "int"), ("maxloc(a)", "int"), ("maxloc(m)", "int[]"),
     ("matmul(m, m)", "real[,]"), ("matmul(m, r[1:2])", "real[]"), ("dot_product(a, a)", "int"),
@@ -84,9 +84,10 @@ CASES = [
     # user functions, also applied to an array
     ("twice(x)", "real"), ("twice(r)", "real[]"), ("twice(i)", "real"),
     # optional values
-    ("opt ?? 0.5", "real"), ("opt ?? s", "unknown"),
-    # decided by the value, so not typed yet
-    ("floor(x)", "unknown"), ("nint(x)", "unknown"), ("ceiling(r)", "unknown"),
+    ("opt ?? 0.5", "real"), ("opt ?? s", "real"), ("opt ?? 1", "real"),
+    # the type follows the argument's width; the kinds of mixed numbers widen
+    ("floor(x)", "int"), ("floor(s)", "int32"), ("nint(x)", "int"), ("ceiling(r)", "int[]"), ("nint(s)", "int32"),
+    ("[i, x]", "real[]"), ("[n32, 1]", "int32[]"), ("[s, 0.5]", "real32[]"), ("[a, 2]", "int[]"), ("[1, 2.5; 3, 4]", "real[,]"),
 ]
 
 
@@ -105,13 +106,10 @@ class TypeOfTests(unittest.TestCase):
     def test_unknown_is_never_an_error(self):
         self.assertEqual(type_of("nonsense_name"), "unknown")
 
-    def test_types_that_depend_on_values_are_listed(self):
-        unit = parse(DEFS + "program t\n" + DECLS + "  println(floor(x), nint(x), opt ?? s)\nend program\n")
+    def test_no_type_depends_on_a_value_any_more(self):
+        unit = parse(DEFS + "program t\n" + DECLS + "  println(floor(x), nint(x), opt ?? s, max(i, x), [i, x])\nend program\n")
         checker = infer(unit, Interp(unit, lambda s: None))
-        what = " ".join(w for _, w in checker.value_dependent)
-        self.assertIn("floor()", what)
-        self.assertIn("nint()", what)
-        self.assertIn("??", what)
+        self.assertEqual(checker.value_dependent, [])
 
 
 class OracleTests(unittest.TestCase):
