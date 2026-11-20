@@ -61,8 +61,8 @@ def f_name(name):
 
 
 def all_functions(c):
-    """Every procedure of the program: the plain ones, then the functions of the records."""
-    return [*c.unit.functions.values(), *c.methods.values()]
+    """Every procedure of the program: the plain ones, the modules' ones, then the functions of the records."""
+    return [*c.unit.functions.values(), *[f for m in c.unit.modules.values() for f in m.functions.values()], *c.methods.values()]
 
 
 OPT = "opt__"      # the name an optional value's type goes by in C: r_opt__int, r_opt__string, r_opt__address, ...
@@ -142,6 +142,9 @@ class Compiler:
         self.cnames = {}                # id(Function) -> the C name it is compiled under
         self.ifaces = {}                # the interfaces the program defines: name -> InterfaceDef
         self.members = {}               # interface name -> the records that fit it (a value of the interface holds one, tagged 1, 2, ...)
+        self.scope = None               # what the procedure being written can see: its own and imported procedures, constants, variables
+        self.globals = {}               # id(slot) -> (C name, Type, initial value, name): the module constants and variables in use
+        self.bad_globals = set()        # names in scope that are constants or variables of a kind not handled
         self.typevars = set()           # the names a select type or `is` gives to its copy
         self.tvars = {}                 # id(Case or IsType) -> (C name, Type) of that copy (declared at the start of the function)
         self.selects = []               # the select types being written (innermost last): their `break` labels
@@ -169,12 +172,12 @@ class Compiler:
 
     @staticmethod
     def fopt(fd):
-        return fd.type.endswith("?")
+        return isinstance(fd.type, str) and fd.type.endswith("?")
 
     @staticmethod
     def fbase(fd):
         """The type of a field without its `?`."""
-        return fd.type[:-1] if fd.type.endswith("?") else fd.type
+        return fd.type[:-1] if isinstance(fd.type, str) and fd.type.endswith("?") else fd.type
 
     def ftype(self, fd):
         """The name a field's type goes by in the C text: the type, or opt__<type> for an optional one."""
@@ -186,17 +189,90 @@ class Compiler:
         kind = "record" if base in self.records else "interface" if base in self.ifaces else base
         return Type(kind, 0, self.fopt(fd), base if kind in ("record", "interface") else "")
 
+    def module_items(self, attr):
+        """The records (or interfaces) of the program and of its modules, together: a name may belong to only one."""
+        out = dict(getattr(self.unit, attr))
+        for mod in self.unit.modules.values():
+            for name, x in getattr(mod, attr).items():
+                if name in out and out[name] is not x:
+                    self.refuse(f"two {attr} called '{name}'", line=getattr(x, "line", None))
+                out[name] = x
+        return out
+
+    def set_scope(self, f):
+        """From now on write the procedure `f` (None: the program), with what it can see."""
+        self.scope = self.interp.scopes.get(id(f)) if f is not None else self.interp.program_scope
+        self.bad_globals = {name for name, slot in (self.scope.consts.items() if self.scope is not None else ())
+                            if self.global_for(name, slot) is None}
+
+    def visible(self, name, node=None):
+        """A record or interface can be named here only if this procedure (or the program) defines or imported it: anything else
+        is the interpreter's run-time error 'unknown type'."""
+        base = name[:-1] if name.endswith("?") else name
+        base = base[:-2] if base.endswith("[]") else base
+        if (base in self.records or base in self.ifaces) and self.scope is not None and \
+                base not in self.scope.records and base not in self.scope.interfaces:
+            self.refuse(f"the record or interface '{base}', which is not defined or imported here", node)
+
+    def fn(self, name):
+        """The procedure `name` stands for in the procedure being written (its own, or one it imported)."""
+        return self.scope.funcs.get(name) if self.scope is not None else self.unit.functions.get(name)
+
+    def global_for(self, name, slot):
+        """The C variable for a module constant or variable (a slot shared by every procedure that sees it), or None when it is
+        of a kind the compiler does not handle."""
+        key = id(slot)
+        if key in self.globals:
+            return self.globals[key]
+        typ, value, is_array = slot[0], slot[1], slot[2]
+        t = self.param_type(typ) if isinstance(typ, str) and not is_array else None
+        ok = t is not None and t.rank == 0 and not t.optional and (t.kind in KINDS or t.kind == "string")
+        if ok:
+            ok = (t.kind == "string" and isinstance(value, str) and all(0 < ord(ch) < 128 for ch in value)) or \
+                 (t.kind == "logical" and type(value) is bool) or \
+                 (t.kind in ("int", "int32") and isinstance(value, int) and not isinstance(value, bool)) or \
+                 (t.kind in ("real", "real32") and isinstance(value, float) and value - value == 0)
+        g = (f"g{len(self.globals)}_{name}", t, value, name) if ok else None
+        self.globals[key] = g
+        return g
+
+    def global_init(self, g):
+        cname, t, v, _ = g
+        if t.kind == "string":
+            return f"rt_str_set(&{cname}, RT_LIT({c_string(v)}), 0);"
+        if t.kind == "logical":
+            lit = "true" if v else "false"
+        elif t.kind == "int":
+            lit = f"INT64_C({int(v)})"
+        elif t.kind == "int32":
+            lit = f"((int32_t){int(v)})"
+        elif t.kind == "real":
+            lit = repr(float(v))
+        else:
+            lit = f"((float){float(v)!r})"
+        return f"{cname} = {lit};"
+
+    def globals_code(self):
+        out = []
+        for g in self.globals.values():
+            if g is not None:
+                out.append(f"static {CSCALAR[g[1].kind]} {g[0]}{' = {0}' if g[1].kind == 'string' else ''};")
+        return out
+
     def check_records(self):
         """The records of the program: single numbers and logicals and other records only (no functions, arrays or
         text in them yet). Fills `self.records` and `self.rec_order` (fields before the records that hold them)."""
-        todo = dict(self.unit.records)
+        todo = self.module_items("records")
+        self.all_ifaces = self.module_items("interfaces")
         for name, r in todo.items():
             for fname, f in r.functions.items():
                 self.methods[(name, fname)] = f
                 self.cnames[id(f)] = f"f_{name}__{fname}"
             for fd in r.fields:
+                if not isinstance(fd.type, str):                            # a map or set field
+                    self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type})", line=fd.line)
                 base = self.fbase(fd)
-                iface = base in self.unit.interfaces
+                iface = base in self.all_ifaces
                 if fd.allocatable or (base not in KINDS and base != "string" and base not in todo and not iface):
                     self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type})", line=fd.line)
                 if self.fopt(fd) and (iface or fd.dims is not None or fd.init is not None):
@@ -232,7 +308,7 @@ class Compiler:
     def check_interfaces(self):
         """An interface value holds one of the records that fit the interface (tagged by its place in the list); its functions
         are called by looking at the tag. Only functions that return one value or nothing are handled."""
-        for name, idef in self.unit.interfaces.items():
+        for name, idef in self.all_ifaces.items():
             self.ifaces[name] = idef
             self.deep[name] = True
             self.members[name] = [r for r in self.rec_order if not conformance(self.records[r], idef)]
@@ -348,8 +424,6 @@ class Compiler:
 
     def check(self):
         u = self.unit
-        if u.modules:
-            self.refuse("modules")
         if u.program is None:
             self.refuse("a file without a program")
         self.check_records()
@@ -359,6 +433,9 @@ class Compiler:
             raise NotCompiled(f"the program has a type error ({message})", line)
         for f in u.functions.values():
             self.cnames[id(f)] = f_name(f.name)
+        for mod in u.modules.values():
+            for f in mod.functions.values():
+                self.cnames[id(f)] = f"f_{mod.name}__{f.name}"
         for f in all_functions(self):
             if f.ret is not None:
                 rt = self.param_type(f.ret)
@@ -371,6 +448,13 @@ class Compiler:
                 if intent in ("out", "inout") and f.ret is not None:
                     self.refuse(f"{intent} parameter '{name}' of the function '{f.name}'")
         for f in [*all_functions(self), None]:
+            self.set_scope(f)
+            if f is not None:
+                for typ, _, _ in f.params:
+                    if isinstance(typ, str):
+                        self.visible(typ, None)
+                if isinstance(f.ret, str):
+                    self.visible(f.ret, None)
             self.check_body((f.body if f else u.program.body), f)
 
     def param_type(self, typ):
@@ -430,6 +514,7 @@ class Compiler:
     def check_type_name(self, name, node):
         if name not in self.records and name not in self.ifaces:
             self.refuse(f"a select type or `is` naming '{name}'", node)
+        self.visible(name, node)
 
     def check_select_type(self, s):
         self.check_type_subject(s.subject, s)
@@ -445,6 +530,8 @@ class Compiler:
         self.check_type_name(e.type, e)
 
     def check_body(self, body, f):
+        self.locals_of_body = {p[1] for p in f.params} if f is not None else set()
+        self.locals_of_body |= {d.name for d in statements_in(body) if isinstance(d, Decl)}
         self.opt_ok = set()                                    # the nodes that may be an optional value (what is done with it is handled)
         self.typevars = {n.var for n in walk(body) if isinstance(n, SelectType) and n.var} | \
                         {n.var for n in walk(body) if isinstance(n, IsType) and n.var}
@@ -458,6 +545,10 @@ class Compiler:
             if kind is Return:
                 if f is None or (s.value is None) != (f.ret is None):
                     self.refuse("a return that does not match its procedure", s)
+                if s.value is None:                              # a plain `return` in a subroutine
+                    continue
+                if not isinstance(f.ret, str):
+                    self.refuse("a return of several values", s)
                 self.opt_ok.add(id(s.value))
                 if f.ret.endswith("?") or self.is_optional_value(s.value):
                     self.check_store(s.value, self.param_type(f.ret), s)
@@ -485,6 +576,9 @@ class Compiler:
                 if t is None:
                     what = "allocatable " if s.allocatable else ""
                     self.refuse(f"the declaration of '{s.name}' ({what}{s.type})", s)
+                self.visible(s.type, s)
+                if s.name in self.scope.consts:                  # a module constant or variable of that name is already declared
+                    self.refuse(f"a declaration of '{s.name}', a name imported here", s)
                 if s.init is not None:
                     self.opt_ok.add(id(s.init))
                 if t.optional and s.init is not None:
@@ -531,6 +625,15 @@ class Compiler:
                     self.refuse(f"an assignment to the constant or parameter '{root.name}'", s)
                 if root.name in self.typevars:
                     self.refuse(f"an assignment to '{root.name}', the copy a select type or `is` made", s)
+                if root.name not in self.locals_of_body and root.name not in self.scope.consts:
+                    self.refuse(f"an assignment to '{root.name}', which is not declared", s)
+                if root.name in self.scope.consts and root.name not in self.locals_of_body and self.scope.consts[root.name][3] == "const":
+                    self.refuse(f"an assignment to the constant '{root.name}'", s)
+                if root.name in self.bad_globals and root.name not in self.locals_of_body:
+                    self.refuse(f"the module variable '{root.name}' (of a kind not handled)", s)
+                if root.name in self.scope.consts and root.name not in self.locals_of_body:       # a module variable: written with `@`
+                    if (self.scope.consts[root.name][3] == "module") != s.update:
+                        self.refuse(f"an assignment to '{root.name}' with the wrong `@` mark", s)
                 tt = self.vars_type(root.name, body, f)
                 if tt is not None and (tt.optional or self.is_optional_value(s.value)):
                     if isinstance(root, Apply):
@@ -709,7 +812,7 @@ class Compiler:
     def call_target(self, s):
         """The procedure a call statement runs and its arguments (a record's function gets the record first, as `self`)."""
         if s.receiver is None:
-            return self.unit.functions.get(s.name), list(s.args)
+            return self.fn(s.name), list(s.args)
         rt = self.types.get(id(s.receiver))
         if rt is None or not isrec(rt) or rt.rank != 0:
             return None, []
@@ -751,6 +854,8 @@ class Compiler:
         return getattr(a, "name", None)
 
     def decl_type(self, d):
+        if not isinstance(d.type, str):                                     # a map or set
+            return None
         if d.type.endswith("?"):                                            # `int? :: n`, `address? :: home`
             base = d.type[:-1]
             if d.dims is not None or d.allocatable or d.const:
@@ -794,6 +899,8 @@ class Compiler:
             if not all(0 < ord(ch) < 128 for ch in e.value):
                 self.refuse("text with a character outside ASCII", e)
             return
+        if kind in (Var, Apply) and e.name in self.bad_globals and e.name not in self.locals_of_body and (kind is Var or e.bracket):
+            self.refuse(f"the module constant or variable '{e.name}' (of a kind not handled)", e)
         if kind is Slice:                               # the parts of a section: checked as the expressions they are
             return
         if kind in (Case, Arm):                         # a case of a select (checked with the statement or expression)
@@ -906,11 +1013,12 @@ class Compiler:
                         if x is not None and (xt is None or xt.rank != 0 or xt.kind not in ("int", "int32")):
                             self.refuse("a text index that is not a whole number", e)
             elif e.name in self.records:
+                self.visible(e.name, e)
                 self.opt_ok.update(id(a.value if isinstance(a, NamedArg) else a) for a in e.args)
                 self.check_constructor(e)
-            elif e.name in self.unit.functions:
+            elif self.fn(e.name) is not None:
                 self.opt_ok.update(id(a) for a in e.args)
-                self.check_call_args(self.unit.functions[e.name], e.args, e)
+                self.check_call_args(self.fn(e.name), e.args, e)
             elif e.name not in BUILTINS:
                 self.refuse(f"the function '{e.name}'", e)
             elif e.name == "present":
@@ -1686,8 +1794,8 @@ class Compiler:
             return self.element(e)
         if e.name in self.records:
             return self.constructor(e)
-        if e.name in self.unit.functions:
-            return self.call_function(self.unit.functions[e.name], e.args, line)
+        if self.fn(e.name) is not None:
+            return self.call_function(self.fn(e.name), e.args, line)
         return self.builtin(e)
 
     def string_part(self, e):
@@ -2661,6 +2769,13 @@ class Compiler:
     # -- whole functions -------------------------------------------------------------------------------------------
     def declare_vars(self, params, body):
         self.vars = {}
+        self.bad_globals = set()
+        for name, slot in (self.scope.consts.items() if self.scope is not None else ()):      # module constants and variables
+            g = self.global_for(name, slot)
+            if g is None:
+                self.bad_globals.add(name)
+            else:
+                self.vars[name] = (g[1], g[0])
         self.outs = set()                                   # out parameters that are single values (they start unassigned)
         self.allocs = self.allocs_of(body, None)
         for typ, name, intent in params:
@@ -2739,6 +2854,7 @@ class Compiler:
 
     def function(self, f):
         self.func = f
+        self.set_scope(f)
         self.declare_vars(f.params, f.body)
         rt = self.param_type(f.ret) if f.ret else None
         head = f"static {cscalar(rt) if rt else 'void'} {self.cnames[id(f)]}({self.c_params(f)})"
@@ -2964,6 +3080,7 @@ class Compiler:
             defs.append(text)
         self.func = None
         prog = self.unit.program
+        self.set_scope(None)
         self.lines, self.depth, self.line, self.arrays = [], 1, 0, []
         self.declare_vars([], prog.body)
         self.local_declarations([], prog.body)
@@ -2971,7 +3088,8 @@ class Compiler:
         self.emit("fn_end: ;")
         self.emit("fflush(stdout);")
         self.emit("return 0;")
-        main = ["int main(void) {"] + self.lines + ["}"]
+        inits = [f"    {self.global_init(g)}" for g in self.globals.values() if g is not None]
+        main = ["int main(void) {"] + inits + self.lines + ["}"]
         runtime = open(os.path.join(HERE, "cruntime.h")).read()
         flags = []
         if self.release:
@@ -2979,12 +3097,19 @@ class Compiler:
         if self.unit.ieee:
             flags.append("#define BOREAS_IEEE 1")
         iprotos, ibodies = self.interface_code()
-        return "\n".join(["/* generated by `boreas emit-c`: do not edit */"] + flags + [runtime] + self.type_code() + protos
+        return "\n".join(["/* generated by `boreas emit-c`: do not edit */"] + flags + [runtime] + self.type_code() + self.globals_code() + protos
                          + iprotos + ibodies + [""] + defs + [""] + main) + "\n"
 
 
 def compile_unit(unit, interp, release=False):
-    return Compiler(unit, interp, release).program()
+    try:
+        return Compiler(unit, interp, release).program()
+    except NotCompiled:
+        raise
+    except Exception as err:             # a program the compiler cannot make sense of is refused like any other (BOREAS_DEBUG shows why)
+        if os.environ.get("BOREAS_DEBUG"):
+            raise
+        raise NotCompiled(f"an internal error of the compiler ({type(err).__name__}: {err})") from None
 
 
 def find_compiler():
