@@ -147,6 +147,41 @@ static inline int64_t rt_mod(int64_t a, int64_t b, int line) {      /* mod(a, b)
     if (b == -1) return 0;
     return a % b;
 }
+/* Bit functions. A whole number travels as an int64_t; w is the width of its kind (32 or 64). The bits are worked on
+   as an unsigned pattern of that width, and the result is the signed value of the pattern. */
+static inline uint64_t rt_bu(int64_t x, int w) { return w == 32 ? (uint64_t)(uint32_t)x : (uint64_t)x; }
+static inline int64_t rt_bs(uint64_t u, int w) { return w == 32 ? (int64_t)(int32_t)(uint32_t)u : (int64_t)u; }
+static inline int64_t rt_iand(int64_t a, int64_t b, int w) { return rt_bs(rt_bu(a, w) & rt_bu(b, w), w); }
+static inline int64_t rt_ior(int64_t a, int64_t b, int w) { return rt_bs(rt_bu(a, w) | rt_bu(b, w), w); }
+static inline int64_t rt_ieor(int64_t a, int64_t b, int w) { return rt_bs(rt_bu(a, w) ^ rt_bu(b, w), w); }
+static inline int64_t rt_bitnot(int64_t a, int w) { return rt_bs(~rt_bu(a, w), w); }
+static inline int64_t rt_ishft(int64_t x, int64_t n, int w, int line) {
+    if (n < -w || n > w) rt_fail(line, "ishft(): the shift must be a whole number from -%d to %d", w, w);
+    uint64_t u = rt_bu(x, w);
+    return rt_bs(n >= 0 ? (n >= 64 ? 0 : u << n) : (-n >= 64 ? 0 : u >> -n), w);
+}
+static inline int64_t rt_shift(char dir, const char *name, int64_t x, int64_t n, int w, int line) {
+    if (n < 0 || n > w) rt_fail(line, "%s(): the shift must be a whole number from 0 to %d", name, w);
+    uint64_t u = rt_bu(x, w);
+    if (dir == 'l') return rt_bs(n >= 64 ? 0 : u << n, w);
+    if (dir == 'r') return rt_bs(n >= 64 ? 0 : u >> n, w);
+    return n >= w ? (x < 0 ? -1 : 0) : (x >> n);            /* shifta: the sign bit fills in */
+}
+static inline int rt_bpos(const char *name, int64_t pos, int w, int line) {
+    if (pos < 0 || pos >= w) rt_fail(line, "%s(): the bit position must be a whole number from 0 to %d", name, w - 1);
+    return (int)pos;
+}
+static inline bool rt_btest(int64_t x, int64_t pos, int w, int line) { return (rt_bu(x, w) >> rt_bpos("btest", pos, w, line)) & 1; }
+static inline int64_t rt_ibset(int64_t x, int64_t pos, int w, int line) { return rt_bs(rt_bu(x, w) | (1ULL << rt_bpos("ibset", pos, w, line)), w); }
+static inline int64_t rt_ibclr(int64_t x, int64_t pos, int w, int line) { return rt_bs(rt_bu(x, w) & ~(1ULL << rt_bpos("ibclr", pos, w, line)), w); }
+static inline int64_t rt_ibits(int64_t x, int64_t pos, int64_t len, int w, int line) {
+    int p = rt_bpos("ibits", pos, w, line);
+    if (len < 0 || len > w - p) rt_fail(line, "ibits(): the length must be a whole number from 0 to %d", w - p);
+    return rt_bs((rt_bu(x, w) >> p) & (len >= 64 ? ~0ULL : (1ULL << len) - 1), w);
+}
+static inline int64_t rt_popcnt(int64_t x, int w) { return __builtin_popcountll(rt_bu(x, w)); }
+static inline int64_t rt_leadz(int64_t x, int w) { uint64_t u = rt_bu(x, w); return u == 0 ? w : __builtin_clzll(u) - (64 - w); }
+static inline int64_t rt_trailz(int64_t x, int w) { uint64_t u = rt_bu(x, w); return u == 0 ? w : __builtin_ctzll(u); }
 static int64_t rt_ipow(int64_t a, int64_t b, int line) {
     if (b < 0) {
         if (a == 0) rt_fail(line, "zero cannot be raised to a negative integer power");
@@ -692,6 +727,62 @@ static void rt_same_shape3(const int64_t *a, int ra, const int64_t *b, int rb, c
 typedef struct { char *p; int64_t n; } rt_str;
 #define RT_LIT(s) ((rt_str){(char *)(s), (int64_t)(sizeof(s) - 1)})
 static inline const char *rt_cs(rt_str s) { return s.p ? s.p : ""; }
+/* to_integer, to_real, to_logical: the number or word the text spells (blanks around it are ignored), or nothing. */
+static bool rt_blank(char c) { return c == ' ' || (c >= 9 && c <= 13) || (c >= 28 && c <= 31); }
+static void rt_strip(rt_str s, const char **b, int64_t *n) {
+    const char *p = s.p ? s.p : ""; int64_t k = s.n;
+    while (k > 0 && rt_blank(p[0])) { p++; k--; }
+    while (k > 0 && rt_blank(p[k - 1])) k--;
+    *b = p; *n = k;
+}
+static bool rt_parse_int(rt_str s, int64_t *out) {
+    const char *p; int64_t n; rt_strip(s, &p, &n);
+    int64_t i = 0; bool neg = false;
+    if (n > 0 && (p[0] == '+' || p[0] == '-')) { neg = p[0] == '-'; i = 1; }
+    if (i >= n) return false;
+    uint64_t v = 0, lim = neg ? 9223372036854775808ULL : 9223372036854775807ULL;
+    for (; i < n; i++) {
+        if (p[i] < '0' || p[i] > '9') return false;
+        unsigned d = (unsigned)(p[i] - '0');
+        if (v > (lim - d) / 10) return false;              /* does not fit in an int */
+        v = v * 10 + d;
+    }
+    *out = neg ? (int64_t)(0 - v) : (int64_t)v;
+    return true;
+}
+static bool rt_parse_real(rt_str s, double *out) {
+    const char *p; int64_t n; rt_strip(s, &p, &n);
+    int64_t i = 0, a = 0, b = 0;
+    if (n > 0 && (p[0] == '+' || p[0] == '-')) i = 1;
+    while (i < n && p[i] >= '0' && p[i] <= '9') { i++; a++; }
+    if (i < n && p[i] == '.') { i++; while (i < n && p[i] >= '0' && p[i] <= '9') { i++; b++; } }
+    if (a == 0 && b == 0) return false;
+    if (i < n && (p[i] == 'e' || p[i] == 'E' || p[i] == 'd' || p[i] == 'D')) {
+        i++;
+        if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+        int64_t e = 0;
+        while (i < n && p[i] >= '0' && p[i] <= '9') { i++; e++; }
+        if (e == 0) return false;
+    }
+    if (i != n) return false;
+    char small[128], *buf = n < 128 ? small : (char *)malloc((size_t)n + 1);
+    if (!buf) rt_fail(0, "out of memory");
+    for (int64_t k = 0; k < n; k++) buf[k] = (p[k] == 'd' || p[k] == 'D') ? 'e' : p[k];
+    buf[n] = 0;
+    *out = strtod(buf, NULL);
+    if (buf != small) free(buf);
+    return true;
+}
+static bool rt_parse_logical(rt_str s, bool *out) {
+    const char *p; int64_t n; rt_strip(s, &p, &n);
+    char w[8];
+    if (n < 1 || n > 7) return false;
+    for (int64_t k = 0; k < n; k++) w[k] = (p[k] >= 'A' && p[k] <= 'Z') ? (char)(p[k] + 32) : p[k];
+    w[n] = 0;
+    if (!strcmp(w, "t") || !strcmp(w, ".t.") || !strcmp(w, "true") || !strcmp(w, ".true.")) { *out = true; return true; }
+    if (!strcmp(w, "f") || !strcmp(w, ".f.") || !strcmp(w, "false") || !strcmp(w, ".false.")) { *out = false; return true; }
+    return false;
+}
 static inline void rt_free_str(rt_str *s) { free(s->p); s->p = NULL; s->n = 0; }
 static rt_str rt_str_new(const char *p, int64_t n, int line) {
     rt_str r;

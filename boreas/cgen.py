@@ -25,7 +25,8 @@ from .types import Type, NULL
 HERE = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("int", "int32", "real", "real32", "logical")
 CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool", "string": "rt_str"}
-STRFUNCS = {"trim", "upper", "lower", "len", "len_trim", "repeat", "contains", "starts_with", "ends_with", "index"}
+CONVERSIONS = {"to_integer": "int", "to_real": "real", "to_logical": "logical"}      # text to an optional number or logical
+STRFUNCS = {"trim", "upper", "lower", "len", "len_trim", "repeat", "contains", "starts_with", "ends_with", "index"} | set(CONVERSIONS)
 FORMATFUNCS = {"text", "tf", "right", "left", "fixed", "scientific", "general"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
             "size", "maxval", "minval", "sum", "product", "matmul", "dot_product", "allocated", "present"}
@@ -33,10 +34,14 @@ ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real",
               "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "erf", "erfc", "floor", "ceiling", "nint", "aint", "anint",
               "int32", "int64"}
 ELEMENTAL2 = {"atan2", "sign", "modulo", "dim"}
+BITFUNCS = {"iand": 2, "ior": 2, "ieor": 2, "bitnot": 1, "ishft": 2, "shiftl": 2, "shiftr": 2, "shifta": 2, "btest": 2,
+            "ibset": 2, "ibclr": 2, "ibits": 3, "popcnt": 1, "leadz": 1, "trailz": 1, "bit_size": 1}   # name -> number of arguments
 CONSTANTS = {"huge", "epsilon", "tiny"}
+SPECIALS = {"nan", "infinity"}                       # take nothing, give a real
+FLOATTESTS = {"isnan", "isinf"}
 ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "cshift"}
 BUILTINS |= STRFUNCS | FORMATFUNCS
-BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS
+BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
                "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
                "acosh": "acoshf", "erf": "erff", "erfc": "erfcf"}
@@ -339,10 +344,13 @@ class Compiler:
             note(f.ret)
             for typ, _, _ in f.params:
                 note(typ)
+        own = {f.name for f in all_functions(self)}
         for f in [*all_functions(self), None]:
             for n in _walk(f.body if f else self.unit.program.body):
                 if isinstance(n, Decl):
                     note(n.type)
+                elif isinstance(n, Apply) and n.name in CONVERSIONS and n.name not in own:
+                    bases.add(CONVERSIONS[n.name])
         return sorted(bases)
 
     def order_types(self):
@@ -1073,7 +1081,8 @@ class Compiler:
         kinds = [self.types[id(a)].kind if self.types.get(id(a)) is not None and self.types[id(a)].rank == 0 else None for a in e.args]
         shapes = {"trim": ["string"], "upper": ["string"], "lower": ["string"], "len": ["string"], "len_trim": ["string"],
                   "repeat": ["string", ("int", "int32")], "contains": ["string", "string"], "starts_with": ["string", "string"],
-                  "ends_with": ["string", "string"], "index": ["string", "string"]}[name]
+                  "ends_with": ["string", "string"], "index": ["string", "string"],
+                  "to_integer": ["string"], "to_real": ["string"], "to_logical": ["string"]}[name]
         if name == "index" and len(e.args) == 3:
             shapes = shapes + ["logical"]
         if len(kinds) != len(shapes) or any(k is None or k not in ((w,) if isinstance(w, str) else w) for k, w in zip(kinds, shapes)):
@@ -1120,6 +1129,17 @@ class Compiler:
                 self.refuse("modulo() in a file that says `use ieee`", e)
         elif name in ARRAY_FUNCTIONS:
             self.check_array_function(e, ranks)
+        elif name in SPECIALS:
+            if e.args:
+                self.refuse(f"{name}() with arguments", e)
+        elif name in FLOATTESTS:
+            if len(e.args) != 1 or ranks[0] != 0 or self.types[id(e.args[0])].kind not in ("int", "int32", "real", "real32"):
+                self.refuse(f"{name}() of anything but a single number", e)
+        elif name in BITFUNCS:
+            if len(e.args) != BITFUNCS[name] or any(r != 0 for r in ranks):
+                self.refuse(f"{name}() of anything but {BITFUNCS[name]} single value{'s' if BITFUNCS[name] > 1 else ''}", e)
+            if any(self.types[id(a)].kind not in ("int", "int32") for a in e.args):
+                self.refuse(f"{name}() of anything but whole numbers", e)
         elif name in CONSTANTS:
             if len(e.args) != 1 or ranks[0] != 0 or (name != "huge" and self.types[id(e.args[0])].kind not in ("real", "real32")):
                 self.refuse(f"{name}() of anything but a single real{' or whole number' if name == 'huge' else ''}", e)
@@ -1845,6 +1865,12 @@ class Compiler:
         """trim, upper, lower, repeat, len, len_trim, contains, starts_with, ends_with, index of text."""
         name, line = e.name, self.line
         v = [self.value(a) for a in e.args]
+        if name in CONVERSIONS:
+            t = Type(CONVERSIONS[name], 0, True)
+            ct = cscalar(t)
+            r = self.tmp(ct, f"(({ct}){{0}})")
+            self.emit(f"{r}.has = rt_parse_{'int' if name == 'to_integer' else name[3:]}({v[0].atom}, &{r}.v);")
+            return V(t, r)
         if name in ("trim", "upper", "lower"):
             return V(Type("string"), self.tmp_str(f"rt_str_{name}({v[0].atom}, {line})"))
         if name == "repeat":
@@ -2028,6 +2054,32 @@ class Compiler:
             raise NotCompiled(f"{name}() of a {kind}", self.line)
         return V(Type(kind), self.tmp(CSCALAR[kind], text))
 
+    def bit_function(self, name, vals, line):
+        """iand, ishft, btest, popcnt ...: the bits of a whole number, of the width of its kind (the wider kind of the
+        two for iand, ior and ieor)."""
+        ks = [v.t.kind for v in vals]
+        kind = "int" if name in ("iand", "ior", "ieor") and "int" in ks else ks[0]
+        w = 32 if kind == "int32" else 64
+        a = [self.cast(v.atom, k, "int") for v, k in zip(vals, ks)]
+        if name in ("iand", "ior", "ieor"):
+            code = f"rt_{name}({a[0]}, {a[1]}, {w})"
+        elif name == "bitnot":
+            code = f"rt_bitnot({a[0]}, {w})"
+        elif name == "ishft":
+            code = f"rt_ishft({a[0]}, {a[1]}, {w}, {line})"
+        elif name in ("shiftl", "shiftr", "shifta"):
+            code = f"rt_shift('{name[5]}', \"{name}\", {a[0]}, {a[1]}, {w}, {line})"
+        elif name == "btest":
+            return V(Type("logical"), self.tmp("bool", f"rt_btest({a[0]}, {a[1]}, {w}, {line})"))
+        elif name in ("ibset", "ibclr"):
+            code = f"rt_{name}({a[0]}, {a[1]}, {w}, {line})"
+        elif name == "ibits":
+            code = f"rt_ibits({a[0]}, {a[1]}, {a[2]}, {w}, {line})"
+        else:                                                   # popcnt, leadz, trailz, bit_size: a plain int
+            code = {"bit_size": f"(void){a[0]}, (int64_t){w}"}.get(name, f"rt_{name}({a[0]}, {w})")
+            return V(Type("int"), self.tmp("int64_t", f"({code})"))
+        return V(Type(kind), self.tmp(CSCALAR[kind], f"({CSCALAR[kind]}){code}"))
+
     def elemental2(self, name, e, vals, line):
         """atan2, sign, modulo and dim of two single values."""
         (a, b), kinds = vals, [v.t.kind for v in vals]
@@ -2084,7 +2136,15 @@ class Compiler:
             return self.string_function(e)
         if name in FORMATFUNCS:
             return self.format_function(e)
-        vals = [self.value(a, exact=name in ("mod", "min", "max") or name in ELEMENTAL2) for a in e.args]
+        if name in SPECIALS:
+            return V(Type("real"), self.tmp("double", "NAN" if name == "nan" else "INFINITY"))
+        vals = [self.value(a, exact=name in ("mod", "min", "max") or name in ELEMENTAL2 or name in BITFUNCS) for a in e.args]
+        if name in FLOATTESTS:
+            if vals[0].t.kind in ("int", "int32"):
+                return V(Type("logical"), self.tmp("bool", f"((void){vals[0].atom}, false)"))
+            return V(Type("logical"), self.tmp("bool", f"{name}({vals[0].atom})"))
+        if name in BITFUNCS:
+            return self.bit_function(name, vals, line)
         if name in ELEMENTAL2:
             return self.elemental2(name, e, vals, line)
         if name in ELEMENTAL1:
