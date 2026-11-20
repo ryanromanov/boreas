@@ -1,0 +1,39 @@
+! text: joining, comparing, parts, trim/upper/lower/repeat/index, as parameters and results
+function shout(string :: s) -> string
+  return upper(s) + "!"
+end function
+
+function pad(string :: s, int :: n) -> string
+  string :: r = s
+  do while len(r) < n
+    r = r + "."
+  end do
+  return r
+end function
+
+subroutine add(inout string :: s, string :: t)
+  @s = s + t
+end subroutine
+
+program t
+  string :: a = "hello"
+  string :: b
+  string :: c = a + " " + "world"
+  println(a, b, c, len(c))
+  println(shout(a), pad("ab", 5), repeat("-", 6))
+  call add(@a, "!!")
+  println(a, a == "hello!!", a < "hello", a /= b)
+  println(a[1], a[2:4], a[:3], a[5:], len(a[3:2]))
+  println(trim("  x  ") + "|", len_trim("ab   "), upper(a), lower("ABC"))
+  println(index(c, "o"), index(c, "o", true), index(c, "zz"), contains(c, "wor"), starts_with(c, "he"), ends_with(c, "ld"))
+  if a == "hello!!" then
+    println("yes")
+  else if contains(a, "x") then
+    println("no")
+  end if
+  b = "x"
+  do while len(b) < 4
+    b = b + b
+  end do
+  println(b)
+end program t

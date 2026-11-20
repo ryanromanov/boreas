@@ -686,3 +686,88 @@ static void rt_same_shape3(const int64_t *a, int ra, const int64_t *b, int rb, c
     rt_shape_text(x, s[lo], r[lo]); rt_shape_text(y, s[next], r[next]);
     rt_fail(line, "array shape mismatch: %s vs %s", x, y);
 }
+
+/* ---- strings: ASCII text only (the compiler refuses anything else), NUL-terminated. A variable or a temporary owns
+   its buffer; a literal is a view that is never freed. Storing a string copies it. ---- */
+typedef struct { char *p; int64_t n; } rt_str;
+#define RT_LIT(s) ((rt_str){(char *)(s), (int64_t)(sizeof(s) - 1)})
+static inline const char *rt_cs(rt_str s) { return s.p ? s.p : ""; }
+static inline void rt_free_str(rt_str *s) { free(s->p); s->p = NULL; s->n = 0; }
+static rt_str rt_str_new(const char *p, int64_t n, int line) {
+    rt_str r;
+    r.p = (char *)malloc((size_t)n + 1);
+    if (!r.p) rt_fail(line, "out of memory");
+    if (n > 0) memcpy(r.p, p, (size_t)n);
+    r.p[n] = 0; r.n = n;
+    return r;
+}
+static void rt_str_set(rt_str *dst, rt_str src, int line) {
+    rt_str c = rt_str_new(rt_cs(src), src.n, line);
+    free(dst->p);
+    *dst = c;
+}
+static rt_str rt_str_cat(rt_str a, rt_str b, int line) {
+    rt_str r;
+    r.p = (char *)malloc((size_t)(a.n + b.n) + 1);
+    if (!r.p) rt_fail(line, "out of memory");
+    if (a.n > 0) memcpy(r.p, a.p, (size_t)a.n);
+    if (b.n > 0) memcpy(r.p + a.n, b.p, (size_t)b.n);
+    r.n = a.n + b.n; r.p[r.n] = 0;
+    return r;
+}
+/* the ordering of Python's strings: by code point, then by length (bytes, for ASCII) */
+static int rt_str_cmp(rt_str a, rt_str b) {
+    int64_t m = a.n < b.n ? a.n : b.n;
+    int c = m > 0 ? memcmp(a.p, b.p, (size_t)m) : 0;
+    if (c) return c < 0 ? -1 : 1;
+    return a.n < b.n ? -1 : a.n > b.n ? 1 : 0;
+}
+static void rt_write_string(rt_str s) { fputs(rt_cs(s), stdout); }
+static rt_str rt_str_upper(rt_str s, int line) {
+    rt_str r = rt_str_new(rt_cs(s), s.n, line);
+    for (int64_t i = 0; i < r.n; i++) if (r.p[i] >= 'a' && r.p[i] <= 'z') r.p[i] -= 32;
+    return r;
+}
+static rt_str rt_str_lower(rt_str s, int line) {
+    rt_str r = rt_str_new(rt_cs(s), s.n, line);
+    for (int64_t i = 0; i < r.n; i++) if (r.p[i] >= 'A' && r.p[i] <= 'Z') r.p[i] += 32;
+    return r;
+}
+static int64_t rt_len_trim(rt_str s) {
+    int64_t n = s.n;
+    while (n > 0 && s.p[n - 1] == ' ') n--;
+    return n;
+}
+static rt_str rt_str_trim(rt_str s, int line) { return rt_str_new(rt_cs(s), rt_len_trim(s), line); }
+static rt_str rt_str_repeat(rt_str s, int64_t k, int line) {
+    if (k < 0) rt_fail(line, "repeat(): the count must be a whole number of 0 or more, got %lld", (long long)k);
+    rt_str r;
+    r.p = (char *)malloc((size_t)(s.n * k) + 1);
+    if (!r.p) rt_fail(line, "out of memory");
+    for (int64_t i = 0; i < k; i++) if (s.n > 0) memcpy(r.p + i * s.n, s.p, (size_t)s.n);
+    r.n = s.n * k; r.p[r.n] = 0;
+    return r;
+}
+/* the first (or last) place `sub` occurs in `s`, counting from 1; 0 for none. An empty `sub` is found at 1 (at n+1 from the back). */
+static int64_t rt_str_index(rt_str s, rt_str sub, bool back) {
+    if (sub.n > s.n) return 0;
+    if (!back) {
+        for (int64_t i = 0; i + sub.n <= s.n; i++) if (sub.n == 0 || memcmp(s.p + i, sub.p, (size_t)sub.n) == 0) return i + 1;
+    } else {
+        for (int64_t i = s.n - sub.n; i >= 0; i--) if (sub.n == 0 || memcmp(s.p + i, sub.p, (size_t)sub.n) == 0) return i + 1;
+    }
+    return 0;
+}
+static bool rt_str_starts(rt_str s, rt_str sub) { return sub.n <= s.n && (sub.n == 0 || memcmp(s.p, sub.p, (size_t)sub.n) == 0); }
+static bool rt_str_ends(rt_str s, rt_str sub) { return sub.n <= s.n && (sub.n == 0 || memcmp(s.p + s.n - sub.n, sub.p, (size_t)sub.n) == 0); }
+/* s[i]: one character */
+static rt_str rt_str_char(rt_str s, int64_t i, int line) {
+    if (i < 1 || i > s.n) rt_fail(line, "index %lld out of bounds 1..%lld", (long long)i, (long long)s.n);
+    return rt_str_new(rt_cs(s) + i - 1, 1, line);
+}
+/* s[lo:hi], both ends given (the caller supplies 1 and the length for a missing one) */
+static rt_str rt_str_part(rt_str s, int64_t lo, int64_t hi, const char *name, int line) {
+    if (lo < 1 || hi > s.n || lo > hi + 1)
+        rt_fail(line, "substring %s[%lld:%lld] is outside the string (length %lld)", name, (long long)lo, (long long)hi, (long long)s.n);
+    return rt_str_new(rt_cs(s) + lo - 1, hi - lo + 1, line);
+}

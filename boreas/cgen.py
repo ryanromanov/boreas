@@ -23,7 +23,8 @@ from .types import Type
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("int", "int32", "real", "real32", "logical")
-CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool"}
+CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool", "string": "rt_str"}
+STRFUNCS = {"trim", "upper", "lower", "len", "len_trim", "repeat", "contains", "starts_with", "ends_with", "index"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
             "size", "maxval", "minval", "sum", "product", "matmul", "dot_product", "allocated"}
 ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real", "real32", "real64", "asin", "acos", "atan",
@@ -32,12 +33,13 @@ ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real",
 ELEMENTAL2 = {"atan2", "sign", "modulo", "dim"}
 CONSTANTS = {"huge", "epsilon", "tiny"}
 ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "cshift"}
+BUILTINS |= STRFUNCS
 BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
                "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
                "acosh": "acoshf", "erf": "erff", "erfc": "erfcf"}
 WRITERS = {"int": "rt_write_int", "int32": "rt_write_int", "real": "rt_write_real", "real32": "rt_write_real32",
-           "logical": "rt_write_bool", "string": "rt_write_str"}
+           "logical": "rt_write_bool", "string": "rt_write_string"}
 MAX_RANK = 3
 
 
@@ -119,6 +121,8 @@ class Compiler:
             return False
         if t.kind == "record":
             return t.rank == 0 and not t.optional and t.name in self.records
+        if t.kind == "string":
+            return t.rank == 0 and not t.optional
         return t.kind in KINDS and 0 <= t.rank <= MAX_RANK
 
     def check_records(self):
@@ -219,6 +223,8 @@ class Compiler:
         if typ in self.records:
             return Type("record", 0, False, typ)
         t = parse(typ, None)
+        if t.known and t.kind == "string" and t.rank == 0 and not t.optional:
+            return t
         if not t.known or t.kind not in KINDS or t.optional or not 0 <= t.rank <= MAX_RANK:
             return None
         return t
@@ -226,7 +232,7 @@ class Compiler:
     def check_body(self, body, f):
         self.allocs = self.allocs_of(body, f)
         self.skip = {id(x) for d in statements_in(body) if isinstance(d, Decl) and d.allocatable for x in d.dims}
-        strings = set()
+        strings = ()
         fixed = {name for typ, name, intent in f.params if intent == "in"} if f is not None else set()
         fixed |= {d.name for d in statements_in(body) if isinstance(d, Decl) and d.const}
         for s in statements_in(body):
@@ -280,10 +286,15 @@ class Compiler:
                     if isinstance(root, Apply):
                         self.refuse("a subscript on a record", s)
                     self.same_record(s.value, tt.name, s)
+                if tt is not None and tt.kind == "string":
+                    vt = self.types.get(id(s.value))
+                    if isinstance(root, Apply):
+                        self.refuse("an assignment to part of a text", s)
+                    if vt is None or vt.kind != "string" or vt.rank != 0:
+                        self.refuse("a value that is not text stored in a text", s)
             elif kind is Print:
                 if s.to is not None:
                     self.refuse("printing to a file", s)
-                strings |= {id(a) for a in s.args if isinstance(a, Str)}
             elif kind is Call:
                 f, args = self.call_target(s)
                 if f is None:
@@ -351,6 +362,10 @@ class Compiler:
     def check_call_args(self, f, args, node):
         for a, (typ, _, _) in zip(args, f.params):
             at, pt = self.types.get(id(a)), self.param_type(typ)
+            if pt is not None and (pt.kind == "string" or (at is not None and at.kind == "string")):
+                if at is None or at.kind != pt.kind or at.rank != pt.rank:
+                    self.refuse(f"the call of '{f.name}' with an argument that is not what the parameter takes", node)
+                continue
             if pt is not None and pt.kind == "record":
                 if at is None or at.kind != "record" or at.name != pt.name or at.rank != 0:
                     self.refuse(f"the call of '{f.name}' with an argument that is not a {pt.name}", node)
@@ -380,8 +395,8 @@ class Compiler:
                 self.refuse("a field passed as out", s)
             if intent == "inout" and isinstance(a, FieldAccess):
                 self.field_root(a, s)
-            if intent == "out" and (self.param_type(typ) or Type("int")).kind == "record":
-                self.refuse(f"a record passed as out", s)
+            if intent == "out" and (self.param_type(typ) or Type("int")).kind in ("record", "string"):
+                self.refuse("a record or text passed as out", s)
             if intent in ("out", "inout") and isinstance(a, Apply) and any(isinstance(x, Slice) for x in a.args):
                 self.refuse(f"a section of '{a.name}' passed as {intent}", s)
         for (typ, pname, intent), root in zip(f.params, roots):
@@ -399,6 +414,8 @@ class Compiler:
     def decl_type(self, d):
         if d.type in self.records:
             return None if d.dims is not None or d.allocatable or d.const else Type("record", 0, False, d.type)
+        if d.type == "string":
+            return None if d.dims is not None or d.allocatable or d.const else Type("string")
         if d.type not in KINDS:
             return None
         rank = len(d.dims) if d.dims is not None else 0
@@ -419,8 +436,8 @@ class Compiler:
         if kind in self.STATEMENTS:
             return
         if kind is Str:
-            if id(e) not in strings:
-                self.refuse("text outside a print", e)
+            if not all(0 < ord(ch) < 128 for ch in e.value):
+                self.refuse("text with a character outside ASCII", e)
             return
         if kind is Slice:                               # the parts of a section: checked as the expressions they are
             return
@@ -451,13 +468,20 @@ class Compiler:
                 xt = self.types.get(id(x))
                 if xt is not None and xt.kind == "record":
                     self.refuse(f"a record with the operator '{e.op}'", e)
+            kinds = {self.types[id(x)].kind if self.types.get(id(x)) is not None else None
+                     for x in ((e.operand,) if kind is Unary else (e.left, e.right))}
+            if "string" in kinds:                       # text: joined with +, compared; anything else is the checker's error
+                ok = kind is Binary and e.op in ("+", "==", "/=", "<", "<=", ">", ">=") and kinds == {"string"}
+                if not ok:
+                    self.refuse(f"text with the operator '{e.op}'", e)
         if kind is Unary and e.op not in ("-", "+", "not"):
             self.refuse(f"the operator '{e.op}'", e)
         if kind is Binary and e.op not in ("+", "-", "*", "/", "**", "==", "/=", "<", "<=", ">", ">=", "and", "or"):
             self.refuse(f"the operator '{e.op}'", e)
         if kind in (ArrayLit, MatrixLit):
             items = e.items if kind is ArrayLit else [x for row in e.rows for x in row]
-            if any(self.types.get(id(x)) is None or self.types[id(x)].rank != 0 for x in items) or not items:
+            if any(self.types.get(id(x)) is None or self.types[id(x)].rank != 0 or self.types[id(x)].kind == "string"
+                   for x in items) or not items:
                 self.refuse("an array literal of anything but single values", e)
         if kind is Apply:
             if e.chain:
@@ -465,7 +489,15 @@ class Compiler:
             if any(isinstance(a, Slice) for a in e.args) and not e.bracket:
                 self.refuse("part of an array", e)
             if e.bracket:
-                pass
+                rt = self.types.get(id(e))
+                if rt is not None and rt.kind == "string":                  # s[i] or s[lo:hi] of a text variable
+                    a = e.args[0] if len(e.args) == 1 else None
+                    if a is None or (isinstance(a, Slice) and a.step is not None):
+                        self.refuse("a part of a text written any other way than s[i] or s[lo:hi]", e)
+                    for x in ([a.lo, a.hi] if isinstance(a, Slice) else [a]):
+                        xt = self.types.get(id(x)) if x is not None else None
+                        if x is not None and (xt is None or xt.rank != 0 or xt.kind not in ("int", "int32")):
+                            self.refuse("a text index that is not a whole number", e)
             elif e.name in self.records:
                 self.check_constructor(e)
             elif e.name in self.unit.functions:
@@ -475,8 +507,8 @@ class Compiler:
             else:
                 for a in e.args:
                     at = self.types.get(id(a))
-                    if at is not None and at.kind == "record":
-                        self.refuse(f"a record as an argument of '{e.name}'", e)
+                    if at is not None and (at.kind == "record" or (at.kind == "string" and e.name not in STRFUNCS)):
+                        self.refuse(f"{'a record' if at.kind == 'record' else 'text'} as an argument of '{e.name}'", e)
                 self.check_builtin(e)
         t = self.types.get(id(e))
         if not self.kind_ok(t):
@@ -505,6 +537,19 @@ class Compiler:
             else:
                 self.fits(value, ft, f"the field '{fname}'", e)
 
+    def check_string_function(self, e):
+        """The text functions: the arguments must be exactly what the function takes (anything else is a run-time error
+        the compiler does not reproduce)."""
+        name = e.name
+        kinds = [self.types[id(a)].kind if self.types.get(id(a)) is not None and self.types[id(a)].rank == 0 else None for a in e.args]
+        shapes = {"trim": ["string"], "upper": ["string"], "lower": ["string"], "len": ["string"], "len_trim": ["string"],
+                  "repeat": ["string", ("int", "int32")], "contains": ["string", "string"], "starts_with": ["string", "string"],
+                  "ends_with": ["string", "string"], "index": ["string", "string"]}[name]
+        if name == "index" and len(e.args) == 3:
+            shapes = shapes + ["logical"]
+        if len(kinds) != len(shapes) or any(k is None or k not in ((w,) if isinstance(w, str) else w) for k, w in zip(kinds, shapes)):
+            self.refuse(f"{name}() of anything but what it takes", e)
+
     def check_builtin(self, e):
         name = e.name
         if name == "allocated":
@@ -512,6 +557,9 @@ class Compiler:
                 self.refuse("allocated() of anything but the name of an allocatable array", e)
             return
         ranks = [self.types[id(a)].rank for a in e.args]
+        if name in STRFUNCS:
+            self.check_string_function(e)
+            return
         if name == "atan" and len(e.args) == 2:
             if any(r != 0 for r in ranks):
                 self.refuse("atan() of an array and a second argument", e)
@@ -598,6 +646,31 @@ class Compiler:
         self.emit(f"{ctype_} {name} = {expr};")
         return name
 
+    def tmp_str(self, expr):
+        """A new text temporary that owns what `expr` gives, freed after the statement."""
+        self.n += 1
+        name = f"t{self.n}"
+        self.emit(f"rt_str {name} = {expr};")
+        self.temps.append(("str", name))
+        return name
+
+    def cond(self, e):
+        """The condition `e` as a C boolean variable. Its temporaries live (and are freed) in a block of their own, because
+        the conditions of an `elif` or a `do while` are evaluated in places the statement's own cleanup cannot reach."""
+        self.n += 1
+        name = f"c{self.n}"
+        self.emit(f"bool {name};")
+        self.emit("{")
+        self.depth += 1
+        saved, self.temps = self.temps, []
+        self.emit(f"{name} = {self.scalar(e, 'logical')};")
+        for k, t in self.temps:
+            self.emit(f"rt_free_{k}(&{t});")
+        self.temps = saved
+        self.depth -= 1
+        self.emit("}")
+        return name
+
     def tmp_array(self, kind, rank):
         """A new array temporary of the given kind and rank (allocated by the caller), freed after the statement."""
         self.n += 1
@@ -666,6 +739,8 @@ class Compiler:
             return V(Type("int"), f"INT64_C({e.value})")
         if t is Bool:
             return V(Type("logical"), "true" if e.value else "false")
+        if t is Str:
+            return V(Type("string"), f"RT_LIT({c_string(e.value)})")
         if t is Var:
             if e.name == "pi" and "pi" not in self.vars:         # the language's own, until a program declares one
                 return V(Type("real"), "3.141592653589793")
@@ -744,6 +819,10 @@ class Compiler:
         lv, rv = self.value(e.left, exact=True), self.value(e.right, exact=True)
         compare = op in ("==", "/=", "<", "<=", ">", ">=")
         logic = op in ("and", "or")
+        if lv.t.kind == "string":
+            if op == "+":
+                return V(Type("string"), self.tmp_str(f"rt_str_cat({lv.atom}, {rv.atom}, {line})"))
+            return V(Type("logical"), self.tmp("bool", f"(rt_str_cmp({lv.atom}, {rv.atom}) {'!=' if op == '/=' else op} 0)"))
         if lv.t.rank == 0 and rv.t.rank == 0:
             la, ra = lv.atom, rv.atom
             if logic:                                    # no short circuit: both sides are already computed
@@ -975,6 +1054,8 @@ class Compiler:
 
     def apply(self, e):
         line = self.line
+        if e.bracket and self.types[id(e)].kind == "string":
+            return self.string_part(e)
         if e.bracket:
             return self.element(e)
         if e.name in self.records:
@@ -983,6 +1064,37 @@ class Compiler:
             return self.call_function(self.unit.functions[e.name], e.args, line)
         return self.builtin(e)
 
+    def string_part(self, e):
+        """`s[i]` (one character) or `s[lo:hi]` (either end may be left off) of a text variable."""
+        line = self.line
+        base = self.vars[e.name][1]
+        a = e.args[0]
+        if not isinstance(a, Slice):
+            i = self.scalar(a, "int")
+            return V(Type("string"), self.tmp_str(f"rt_str_char({base}, {i}, {line})"))
+        lo = self.tmp("int64_t", self.scalar(a.lo, "int") if a.lo is not None else "INT64_C(1)")
+        hi = self.tmp("int64_t", self.scalar(a.hi, "int") if a.hi is not None else f"{base}.n")
+        return V(Type("string"), self.tmp_str(f'rt_str_part({base}, {lo}, {hi}, "{e.name}", {line})'))
+
+    def string_function(self, e):
+        """trim, upper, lower, repeat, len, len_trim, contains, starts_with, ends_with, index of text."""
+        name, line = e.name, self.line
+        v = [self.value(a) for a in e.args]
+        if name in ("trim", "upper", "lower"):
+            return V(Type("string"), self.tmp_str(f"rt_str_{name}({v[0].atom}, {line})"))
+        if name == "repeat":
+            return V(Type("string"), self.tmp_str(f"rt_str_repeat({v[0].atom}, {self.cast(v[1].atom, v[1].t.kind, 'int')}, {line})"))
+        if name == "len":
+            return V(Type("int"), self.tmp("int64_t", f"{v[0].atom}.n"))
+        if name == "len_trim":
+            return V(Type("int"), self.tmp("int64_t", f"rt_len_trim({v[0].atom})"))
+        if name == "contains":
+            return V(Type("logical"), self.tmp("bool", f"(rt_str_index({v[0].atom}, {v[1].atom}, false) > 0)"))
+        if name in ("starts_with", "ends_with"):
+            return V(Type("logical"), self.tmp("bool", f"rt_str_{'starts' if name == 'starts_with' else 'ends'}({v[0].atom}, {v[1].atom})"))
+        back = v[2].atom if len(v) == 3 else "false"
+        return V(Type("int"), self.tmp("int64_t", f"rt_str_index({v[0].atom}, {v[1].atom}, {back})"))
+
     def call_function(self, f, nodes, line):
         """A call of the function `f` (a record's function gets the record first) as a value."""
         if len(nodes) != len(f.params):
@@ -990,7 +1102,8 @@ class Compiler:
         args = self.call_args(f, nodes)
         self.emit(f'rt_call_in({line}, "{f.name}");')
         rt = self.param_type(f.ret)
-        result = self.tmp(cscalar(rt), f"{self.cnames[id(f)]}({', '.join(args)})")
+        call = f"{self.cnames[id(f)]}({', '.join(args)})"
+        result = self.tmp_str(call) if rt.kind == "string" else self.tmp(cscalar(rt), call)
         self.emit("rt_call_out();")
         return V(rt, result)
 
@@ -1191,6 +1304,8 @@ class Compiler:
             name = "atan2"
         if name in CONSTANTS:
             return self.constant(e)
+        if name in STRFUNCS:
+            return self.string_function(e)
         vals = [self.value(a, exact=name in ("mod", "min", "max") or name in ELEMENTAL2) for a in e.args]
         if name in ELEMENTAL2:
             return self.elemental2(name, e, vals, line)
@@ -1369,10 +1484,14 @@ class Compiler:
         line = self.line
         self.emit(f"if (decl_{s.name}) rt_fail({line}, \"'{s.name}' already declared\"); decl_{s.name} = true;")
         if t.rank == 0:
-            if s.init is not None:
+            if s.init is not None and t.kind == "string":
+                self.emit(f"rt_str_set(&{name}, {self.scalar(s.init, 'string')}, {line});")
+            elif s.init is not None:
                 self.emit(f"{name} = {self.scalar(s.init, t.kind, f'line {line}')};")
             elif t.kind == "record":
                 self.emit(f"{name} = d_{t.name}();")
+            elif t.kind == "string":
+                self.emit(f'rt_str_set(&{name}, RT_LIT(""), {line});')
             else:
                 self.emit(f"{name} = {'false' if t.kind == 'logical' else '0'};")
             return
@@ -1410,6 +1529,9 @@ class Compiler:
             self.emit(f"{lv} = {self.scalar(s.value, t.kind, f'line {line}')};")
             return
         name = self.vars[target.name][1]
+        if t.kind == "string":
+            self.emit(f"rt_str_set(&{name}, {self.scalar(s.value, 'string')}, {line});")
+            return
         if t.rank == 0:
             self.emit(f"{name} = {self.scalar(s.value, t.kind, f'line {line}')};")
             if target.name in self.outs:
@@ -1489,7 +1611,7 @@ class Compiler:
 
     def if_chain(self, branches, orelse):
         (cond, body), rest = branches[0], branches[1:]
-        c = self.scalar(cond, "logical")
+        c = self.cond(cond)
         self.emit(f"if ({c}) {{")
         self.depth += 1
         self.block(body)
@@ -1548,7 +1670,7 @@ class Compiler:
         self.depth += 1
         self.emit("{")
         self.depth += 1
-        c = self.scalar(s.cond, "logical")
+        c = self.cond(s.cond)
         self.emit(f"if (!{c}) goto exit{ident};")
         self.depth -= 1
         self.emit("}")
@@ -1578,7 +1700,10 @@ class Compiler:
     def st_return(self, s):
         if self.func is not None and self.func.ret is not None:
             rt = self.param_type(self.func.ret)
-            self.emit(f"ret = {self.scalar(s.value, rt.kind, f'function {self.func.name}')};")
+            if rt.kind == "string":
+                self.emit(f"rt_str_set(&ret, {self.scalar(s.value, 'string')}, {self.line});")
+            else:
+                self.emit(f"ret = {self.scalar(s.value, rt.kind, f'function {self.func.name}')};")
         self.emit("goto fn_end;")
 
     def st_stop(self, s):
@@ -1590,11 +1715,8 @@ class Compiler:
     def st_print(self, s):
         parts = []
         for a in s.args:
-            if isinstance(a, Str):
-                parts.append(("string", 0, c_string(a.value)))
-            else:
-                v = self.value(a)
-                parts.append(("rec:" + v.t.name if v.t.kind == "record" else v.t.kind, v.t.rank, v.atom if v.t.rank == 0 else v))
+            v = self.value(a)
+            parts.append(("rec:" + v.t.name if v.t.kind == "record" else v.t.kind, v.t.rank, v.atom if v.t.rank == 0 else v))
         for i, (kind, rank, atom) in enumerate(parts):
             if i:
                 self.emit("rt_write_sep();")
@@ -1664,7 +1786,10 @@ class Compiler:
                 seen.add(d.name)
                 t = self.vars[d.name][0]
                 self.emit(f"bool decl_{d.name} = false;")
-                if t.rank == 0:
+                if t.kind == "string":
+                    self.emit(f"rt_str {c_name(d.name)} = {{0}};")
+                    self.arrays.append(("str", c_name(d.name)))
+                elif t.rank == 0:
                     self.emit(f"{cscalar(t)} {c_name(d.name)};")
                 else:
                     self.emit(f"rt_{t.kind}_arr {c_name(d.name)} = {{0}};")
@@ -1677,7 +1802,7 @@ class Compiler:
         head = f"static {cscalar(rt) if rt else 'void'} {self.cnames[id(f)]}({self.c_params(f)})"
         self.lines, self.depth, self.line, self.arrays = [], 1, 0, []
         if rt:
-            start = f"d_{rt.name}()" if rt.kind == "record" else "false" if rt.kind == "logical" else "0"
+            start = f"d_{rt.name}()" if rt.kind == "record" else "{0}" if rt.kind == "string" else "false" if rt.kind == "logical" else "0"
             self.emit(f"{cscalar(rt)} ret = {start};")
             self.emit("int call_line = rt_call_line;")
         self.local_declarations(f.params, f.body)
