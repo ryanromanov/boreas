@@ -1,0 +1,34 @@
+! arrays of records: fixed size, elements and their fields, copies, literals, parameters
+record pt
+  real :: x = 1.5
+  string :: name = "a"
+end record
+
+function total(pt[] :: v) -> real
+  real :: s = 0.0
+  int :: i
+  do i = 1, size(v)
+    s = s + v[i].x
+  end do
+  return s
+end function
+
+subroutine fill(inout pt[] :: v)
+  int :: i
+  do i = 1, size(v)
+    @v[i].x = i * 2.0
+    @v[i].name = v[i].name + text(i)
+  end do
+end subroutine
+
+program t
+  pt[3] :: a
+  pt[3] :: b
+  call fill(@a)
+  b = a
+  a[1] = pt(9.0, "z")
+  println(a, b, total(a), total(b))
+  pt[2] :: c = [pt(1.0, "p"), pt(2.0, "q")]
+  c[2].name = c[1].name + c[2].name
+  println(c)
+end program
