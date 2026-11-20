@@ -2494,7 +2494,7 @@ class Interp:
     def is_reference(self, e, env):
         """Does this expression name storage (a variable, array element or field)?"""
         if isinstance(e, FieldAccess):
-            return self.is_reference(e.base, env)
+            return (e.args is None or e.bracket) and self.is_reference(e.base, env)       # (x.area() is a call, not storage)
         return isinstance(e, Var) or (isinstance(e, Apply) and e.name in env)
 
     def record_of(self, base, env, line, temp_ok=False):

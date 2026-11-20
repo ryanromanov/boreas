@@ -112,6 +112,10 @@ RECORD_DEFS_2 = 'record point\n  real :: x\n  real :: y = 2\nend record\nrecord 
 RECORD_CASES_2 = {'rec_to_real': '  point :: p\n  real :: x\n  x = p\n  println(x)', 'real_to_rec': '  point :: p\n  p = 3.0\n  println(p)', 'rec_to_other': '  point :: p\n  other :: o\n  o = p\n  println(o)', 'int_into_logical_field': '  point :: p\n  p.x = true\n  println(p)', 'real_into_int_field': '  other :: o\n  o.n = 2.5\n  println(o)', 'ctor_real_into_int': '  other :: o = other(2.5)\n  println(o)', 'ctor_too_many': '  point :: p = point(1.0, 2.0, 3.0)\n  println(p)', 'ctor_missing': '  other :: o = other()\n  println(o)', 'ctor_unknown_field': '  point :: p = point(z = 1.0)\n  println(p)', 'ctor_twice': '  point :: p = point(1.0, x = 2.0)\n  println(p)', 'no_such_field': '  point :: p\n  println(p.z)', 'alias': '  point :: p\n  call two(@p, @p.x)\n  println(p)', 'alias2': '  point :: p\n  call two(@p, p.x)\n  println(p)', 'recursion': '  println(fact(10), fact(20), fact(21))', 'flip': '  println(flip(flip(point(1.0, 5.0))))', 'op': '  point :: p\n  point :: q\n  println(p + q)', 'cmp': '  point :: p\n  point :: q\n  println(p == q)', 'neg': '  point :: p\n  println(-p)', 'abs_rec': '  point :: p\n  println(abs(p))', 'size_rec': '  point :: p\n  println(size(p))', 'field_of_call': '  println(flip(point(1.0, 2.0)).x)', 'index_rec': '  point :: p\n  println(p[1])', 'field_index': '  point :: p\n  println(p.x[1])', 'if_rec': '  point :: p\n  if p then\n    println(1)\n  end if', 'do_rec': '  point :: p\n  do p = 1, 3\n    println(1)\n  end do', 'redecl': '  point :: p\n  point :: p\n  println(p)', 'decl_diff_scope': '  point :: p = point(1.0, 2.0)\n  if p.x > 0.0 then\n    point :: q = flip(p)\n    println(q)\n  end if', 'assign_real32': '  point :: p\n  real32 :: r = 1.5\n  p.x = r\n  println(p)', 'int32_field_arith': '  point :: p\n  int32 :: k = 5\n  p.y = k\n  println(p)'}
 
 
+RECORD_DEFS_3 = 'record acc\n  int32 :: n = 0\n  real32 :: r = 0.5\n\n  subroutine add(inout self, int :: by)\n    @self.n = self.n + by\n  end subroutine\n\n  function plus(self, int32 :: k) -> int32\n    return self.n + k\n  end function\n\n  function half(self) -> real32\n    return self.r / 2.0\n  end function\n\n  function copy_with(self, int :: m) -> acc\n    return acc(m, self.r)\n  end function\n\n  function down(self, int :: k) -> int\n    if k <= 0 then\n      return 0\n    end if\n    return k + self.down(k - 1)\n  end function\n\n  function never(self) -> int\n    if self.n > 100 then\n      return 1\n    end if\n  end function\nend record\n\nfunction add(int :: a, int :: b) -> int\n  return a + b\nend function\n\nfunction total(acc :: a) -> int\n  return add(a.n, 1) + a.plus(2)\nend function\n'
+RECORD_CASES_3 = {'basic': '  acc :: a\n  call @a.add(5)\n  println(a.n, a.plus(3), a.half(), total(a))', 'overflow_method': '  acc :: a\n  call @a.add(2147483647)\n  call @a.add(1)\n  println(a)', 'plus_overflow': '  acc :: a\n  call @a.add(2147483647)\n  println(a.plus(1))', 'copy_with': '  acc :: a\n  acc :: b\n  b = a.copy_with(7)\n  println(a, b, b.copy_with(8).n)', 'chain': '  acc :: a\n  println(a.copy_with(3).copy_with(4).plus(1))', 'recursion': '  acc :: a\n  println(a.down(100))', 'deep': '  acc :: a\n  println(a.down(20000))', 'never': '  acc :: a\n  println(a.never())', 'never2': '  acc :: a\n  println(1)\n  println(a.never() + 1)', 'ieee_half': '  acc :: a\n  a.r = 3.0e38\n  println(a.half() * 4.0)', 'in_loop': '  acc :: a\n  int :: i\n  do i = 1, 10\n    call @a.add(i)\n  end do\n  println(a.n)', 'two_receivers': '  acc :: a\n  acc :: b\n  call @a.add(1)\n  call @b.add(a.plus(1))\n  println(a, b)', 'wrong_args': '  acc :: a\n  println(a.plus())', 'too_many': '  acc :: a\n  println(a.plus(1, 2))', 'no_method': '  acc :: a\n  println(a.nothing())', 'call_func': '  acc :: a\n  call a.plus(1)', 'unmarked': '  acc :: a\n  call a.add(1)', 'field_then_method': '  acc :: a\n  a.n = 5\n  println(a.half(), a.plus(a.n))'}
+
+
 FAILING = {
     "too few subscripts": "  int[2, 3] :: m\n  println(m[1])",
     "too many subscripts": "  int[3] :: m\n  m[1, 2] = 0",
@@ -235,7 +239,7 @@ class ErrorTests(unittest.TestCase):
                     same_as_interpreter(self, "use ieee\n" + prog(body))
 
     def test_records_behave_as_in_the_interpreter(self):
-        for defs, cases in ((RECORD_DEFS, RECORD_CASES), (RECORD_DEFS_2, RECORD_CASES_2)):
+        for defs, cases in ((RECORD_DEFS, RECORD_CASES), (RECORD_DEFS_2, RECORD_CASES_2), (RECORD_DEFS_3, RECORD_CASES_3)):
             for name, body in cases.items():
                 with self.subTest(name):
                     built = boreas("emit-c", self.write(prog(body, defs)))
@@ -371,6 +375,7 @@ class RefusalTests(unittest.TestCase):
     def test_calls_that_the_interpreter_rejects_are_refused(self):
         defs = "subroutine s(inout real[] :: x, real[] :: y)\n  @x[1] = 9.0\nend subroutine\n"
         self.refused(prog("  real[2] :: a = 1.0\n  call s(@a, a)", defs), "passed as inout and as another argument")
+        self.refused(prog("  int :: n = 1\n  call s(n)", "subroutine s(inout int :: k)\n  @k = 2\nend subroutine\n"), "the interpreter rejects")
         self.refused(prog("  const int :: n = 1\n  call t(@n)", "subroutine t(inout int :: k)\n  @k = 2\nend subroutine\n"),
                      "constant or parameter")
         self.refused("function g(int[] :: a) -> int[]\n  return a\nend function\nprogram t\nend program\n", "returns")

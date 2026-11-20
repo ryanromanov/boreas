@@ -115,6 +115,12 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("call swap(@x, &\n       @y)", new)
         self.assertEqual(len(changes), 1)
 
+    def test_a_call_of_a_records_function_can_be_an_argument_of_a_call_that_changes_something(self):
+        src = ("record acc\n  int :: n = 0\n  function plus(self, int :: k) -> int\n    return self.n + k\n  end function\n"
+               "  subroutine add(inout self, int :: by)\n    @self.n = self.n + by\n  end subroutine\nend record\n"
+               "program t\n  acc :: a\n  acc :: b\n  call @b.add(a.plus(1))\n  println(b.n)\nend program\n")
+        self.assertEqual(run_bor(src), ["1"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, Comment, Cycle, Deallocate, Decl, Do, DoWhile, Exit, FieldAccess, If, IsType,
                      MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var)
+from .effects import mark_problem
 from .tree import statements_in, walk
 from .typecheck import infer
 from .types import Type
@@ -53,6 +54,11 @@ def c_name(name):
 
 def f_name(name):
     return "f_" + name
+
+
+def all_functions(c):
+    """Every procedure of the program: the plain ones, then the functions of the records."""
+    return [*c.unit.functions.values(), *c.methods.values()]
 
 
 def ctype(t):
@@ -100,6 +106,8 @@ class Compiler:
         self.temps = []                 # array temporaries of the statement being written (freed after it)
         self.records = {}               # the record types the program defines (all of them are handled, or it is refused)
         self.rec_order = []             # their names, fields before the records that hold them
+        self.methods = {}               # (record name, function name) -> Function: a record's own functions
+        self.cnames = {}                # id(Function) -> the C name it is compiled under
 
     # -- refusing what is not handled ---------------------------------------------------------------------------
     def refuse(self, what, node=None, line=None):
@@ -118,8 +126,11 @@ class Compiler:
         text in them yet). Fills `self.records` and `self.rec_order` (fields before the records that hold them)."""
         todo = dict(self.unit.records)
         for name, r in todo.items():
-            if r.functions or r.implements:
-                self.refuse(f"record '{name}' with functions", line=r.line)
+            if r.implements:
+                self.refuse(f"record '{name}' used as an interface", line=r.line)
+            for fname, f in r.functions.items():
+                self.methods[(name, fname)] = f
+                self.cnames[id(f)] = f"f_{name}__{fname}"
             for fd in r.fields:
                 if fd.dims is not None or fd.allocatable or (fd.type not in KINDS and fd.type not in todo):
                     self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type})", line=fd.line)
@@ -164,6 +175,8 @@ class Compiler:
                 return f"{float(v)!r}f"
         elif fd.type == "real" and v == v and abs(v) < 1e300:
             return repr(v)
+        elif fd.type == "real32" and abs(v) <= 3.4028234663852886e38:       # rounded to single precision, as the interpreter does
+            return f"((float){v!r})"
         self.refuse(f"the default of field '{fd.name}'", line=fd.line)
 
     def supported(self, t, what, node=None):
@@ -183,6 +196,8 @@ class Compiler:
             line, _, message, _ = self.checker.errors[0]
             raise NotCompiled(f"the program has a type error ({message})", line)
         for f in u.functions.values():
+            self.cnames[id(f)] = f_name(f.name)
+        for f in all_functions(self):
             if f.ret is not None:
                 rt = self.param_type(f.ret)
                 if rt is None or rt.rank != 0:
@@ -193,7 +208,7 @@ class Compiler:
                     self.refuse(f"parameter '{name}' of '{f.name}' ({typ if isinstance(typ, str) else 'a procedure'})")
                 if intent in ("out", "inout") and f.ret is not None:
                     self.refuse(f"{intent} parameter '{name}' of the function '{f.name}'")
-        for f in [*u.functions.values(), None]:
+        for f in [*all_functions(self), None]:
             self.check_body((f.body if f else u.program.body), f)
 
     def param_type(self, typ):
@@ -270,8 +285,11 @@ class Compiler:
                     self.refuse("printing to a file", s)
                 strings |= {id(a) for a in s.args if isinstance(a, Str)}
             elif kind is Call:
-                if s.receiver is not None or s.name not in self.unit.functions:
+                f, args = self.call_target(s)
+                if f is None:
                     self.refuse(f"the call of '{s.name}'", s)
+                if mark_problem(f, s):
+                    self.refuse(f"a call of '{s.name}' that the interpreter rejects", s)
                 self.check_aliasing(s, fixed)
             else:
                 self.refuse(f"a {kind.__name__} statement", s)
@@ -304,6 +322,22 @@ class Compiler:
         if t is None or t.rank != 0 or t.kind not in self.FITS.get(kind, ()):
             self.refuse(f"a value that does not fit {what}", node)
 
+    @staticmethod
+    def is_method_call(e):
+        return isinstance(e, FieldAccess) and e.args is not None and not e.bracket
+
+    def field_source(self, e, node):
+        """What a chain of fields `a.b.c` read starts at: a variable (its name), or a call that gives a record."""
+        while isinstance(e, FieldAccess) and not self.is_method_call(e):
+            if e.args is not None or e.chain:
+                self.refuse("a field with subscripts", node)
+            e = e.base
+        if isinstance(e, Var):
+            return e.name
+        if self.is_method_call(e) or (isinstance(e, Apply) and not e.bracket):
+            return None
+        self.refuse("a field of an element", node)
+
     def field_root(self, e, node):
         """The variable a chain of fields `a.b.c` starts at (anything but a plain variable is refused)."""
         while isinstance(e, FieldAccess):
@@ -324,11 +358,24 @@ class Compiler:
             if at is None or pt is None or (at.rank != pt.rank) or (at.kind != pt.kind and at.rank > 0):
                 self.refuse(f"the call of '{f.name}' with an argument that is not what the parameter takes", node)
 
+    def call_target(self, s):
+        """The procedure a call statement runs and its arguments (a record's function gets the record first, as `self`)."""
+        if s.receiver is None:
+            return self.unit.functions.get(s.name), list(s.args)
+        rt = self.types.get(id(s.receiver))
+        if rt is None or rt.kind != "record" or rt.rank != 0:
+            return None, []
+        return self.methods.get((rt.name, s.name)), [s.receiver] + list(s.args)
+
     def check_aliasing(self, s, fixed=()):
-        f = self.unit.functions[s.name]
-        self.check_call_args(f, s.args, s)
-        roots = [self.root_name(a) for a in s.args]
-        for a, (typ, pname, intent) in zip(s.args, f.params):
+        f, args = self.call_target(s)
+        if len(args) != len(f.params):
+            self.refuse(f"a call of '{s.name}' with optional or missing arguments", s)
+        self.check_call_args(f, args, s)
+        roots = [self.root_name(a) for a in args]
+        for a, (typ, pname, intent) in zip(args, f.params):
+            if intent in ("out", "inout") and not isinstance(a, (Var, FieldAccess, Apply)):
+                self.refuse(f"a computed value passed as {intent}", s)
             if intent == "out" and isinstance(a, FieldAccess):
                 self.refuse("a field passed as out", s)
             if intent == "inout" and isinstance(a, FieldAccess):
@@ -379,8 +426,18 @@ class Compiler:
             return
         if kind is NamedArg:                            # `x = 1.0` in a record's constructor: its value is checked itself
             return
+        if kind is FieldAccess and e.args is not None and not e.bracket:          # x.area(): a record's function
+            bt = self.types.get(id(e.base))
+            f = self.methods.get((bt.name, e.field)) if bt is not None and bt.kind == "record" and bt.rank == 0 else None
+            if f is None or f.ret is None or len(e.args) + 1 != len(f.params) or e.chain:
+                self.refuse(f"the call of '{e.field}' on a record", e)
+            self.check_call_args(f, [e.base] + list(e.args), e)
+            t = self.types.get(id(e))
+            if not self.kind_ok(t):
+                self.refuse(f"a result of type {t if t is not None else 'unknown'}", e)
+            return
         if kind is FieldAccess:
-            self.field_root(e, e)
+            self.field_source(e, e)
             t = self.types.get(id(e))
             if not self.kind_ok(t) or t.rank != 0:
                 self.refuse(f"a field of type {t if t is not None else 'unknown'}", e)
@@ -623,8 +680,14 @@ class Compiler:
             return self.binary(e)
         if t is Apply:
             return self.apply(e)
+        if t is FieldAccess and e.args is not None:
+            bt = self.types[id(e.base)]
+            return self.call_function(self.methods[(bt.name, e.field)], [e.base] + list(e.args), self.line)
         if t is FieldAccess:
             ft = self.types[id(e)]
+            if self.field_source(e, e) is None:                    # a field of what a call gives
+                base = self.value(e.base)
+                return V(ft, self.tmp(cscalar(ft), f"{base.atom}.m_{e.field}"))
             return V(ft, self.tmp(cscalar(ft), self.field_lvalue(e)))
         if t in (ArrayLit, MatrixLit):
             return self.array_literal(e)
@@ -917,16 +980,19 @@ class Compiler:
         if e.name in self.records:
             return self.constructor(e)
         if e.name in self.unit.functions:
-            f = self.unit.functions[e.name]
-            if len(e.args) != len(f.params):
-                raise NotCompiled(f"a call of '{e.name}' with optional or missing arguments", line)
-            args = self.call_args(f, e.args)
-            self.emit(f'rt_call_in({line}, "{e.name}");')
-            rt = self.param_type(f.ret)
-            result = self.tmp(cscalar(rt), f"{f_name(e.name)}({', '.join(args)})")
-            self.emit("rt_call_out();")
-            return V(rt, result)
+            return self.call_function(self.unit.functions[e.name], e.args, line)
         return self.builtin(e)
+
+    def call_function(self, f, nodes, line):
+        """A call of the function `f` (a record's function gets the record first) as a value."""
+        if len(nodes) != len(f.params):
+            raise NotCompiled(f"a call of '{f.name}' with optional or missing arguments", line)
+        args = self.call_args(f, nodes)
+        self.emit(f'rt_call_in({line}, "{f.name}");')
+        rt = self.param_type(f.ret)
+        result = self.tmp(cscalar(rt), f"{self.cnames[id(f)]}({', '.join(args)})")
+        self.emit("rt_call_out();")
+        return V(rt, result)
 
     def elemental(self, name, x, kind, was_int, line):
         """The C expression of the one-argument function `name` of the single value `x` (of `kind`), and its result kind."""
@@ -1546,15 +1612,15 @@ class Compiler:
             self.emit("rt_write_nl();")
 
     def st_call(self, s):
-        f = self.unit.functions[s.name]
+        f, nodes = self.call_target(s)
         if f.ret is not None:
             raise NotCompiled(f"'{s.name}' is a function; use it in an expression", s.line)
-        if len(s.args) != len(f.params):
+        if len(nodes) != len(f.params):
             raise NotCompiled(f"a call of '{s.name}' with optional or missing arguments", s.line)
-        args = self.call_args(f, s.args)
+        args = self.call_args(f, nodes)
         after = self.after_call
         self.emit(f'rt_call_in({s.line}, "{s.name}");')
-        self.emit(f"{f_name(s.name)}({', '.join(args)});")
+        self.emit(f"{self.cnames[id(f)]}({', '.join(args)});")
         self.emit("rt_call_out();")
         for text in after:
             self.emit(text)
@@ -1608,7 +1674,7 @@ class Compiler:
         self.func = f
         self.declare_vars(f.params, f.body)
         rt = self.param_type(f.ret) if f.ret else None
-        head = f"static {cscalar(rt) if rt else 'void'} {f_name(f.name)}({self.c_params(f)})"
+        head = f"static {cscalar(rt) if rt else 'void'} {self.cnames[id(f)]}({self.c_params(f)})"
         self.lines, self.depth, self.line, self.arrays = [], 1, 0, []
         if rt:
             start = f"d_{rt.name}()" if rt.kind == "record" else "false" if rt.kind == "logical" else "0"
@@ -1656,7 +1722,7 @@ class Compiler:
     def program(self):
         self.check()
         protos, defs = [], []
-        for f in self.unit.functions.values():
+        for f in all_functions(self):
             proto, text = self.function(f)
             protos.append(proto)
             defs.append(text)
