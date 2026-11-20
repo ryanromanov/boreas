@@ -1,0 +1,43 @@
+! Maps and sets: counting words, the order entries were added in, copies, loops, parameters.
+function longest(map[string, int] :: lengths) -> int
+  int :: best = 0
+  string :: word
+  int :: n
+  do word, n in lengths
+    if n > best then
+      best = n
+    end if
+  end do
+  return best
+end function
+
+subroutine tally(inout map[string, int] :: count, string :: word)
+  @count[word] = (get(count, word) ?? 0) + 1
+end subroutine
+
+program maps
+  map[string, int] :: count
+  set[string] :: seen
+  string :: word
+  int :: n
+
+  call tally(@count, "pear")
+  call tally(@count, "fig")
+  call tally(@count, "pear")
+  call add(@seen, "pear")
+  call add(@seen, "fig")
+  call remove(@seen, "pear")
+  call add(@seen, "pear")                 ! goes to the end
+  println(count, seen, size(count), has(count, "fig"), get(count, "plum") ?? 0)
+
+  map[string, int] :: copy = count         ! a copy: changing it leaves count alone
+  copy["fig"] = 10
+  println(count == copy, count == {"pear": 2, "fig": 1}, longest(copy))
+
+  do word, n in count
+    println(word, n)
+  end do
+
+  map[int, logical] :: flags = {1: true, 2: false}
+  println(flags, keys(flags), values(flags))
+end program maps

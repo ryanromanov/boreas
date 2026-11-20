@@ -14,7 +14,7 @@ import shutil
 import sys
 import subprocess
 import tempfile
-from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, Comment, Cycle, Deallocate, Decl, Do, DoWhile, Exit, FieldAccess, If, IsType,
+from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, CollLit, Comment, Cycle, Deallocate, Decl, Do, DoEach, DoWhile, MapType, SetType, Exit, FieldAccess, If, IsType,
                      MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType, Select, SelectExpr, Arm, literal_value, NOT_LITERAL, Null)
 from .effects import mark_problem
 from .interp import conformance
@@ -40,15 +40,21 @@ CONSTANTS = {"huge", "epsilon", "tiny"}
 SPECIALS = {"nan", "infinity"}                       # take nothing, give a real
 FLOATTESTS = {"isnan", "isinf"}
 OTHERS = {"norm2"}
+COLLFUNCS = {"has", "get", "keys", "values"}        # of a map or set
 ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "findloc", "cshift", "lbound", "ubound", "pack", "spread"}
 BUILTINS |= STRFUNCS | FORMATFUNCS
-BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS | OTHERS
+BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS | OTHERS | COLLFUNCS
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
                "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
                "acosh": "acoshf", "erf": "erff", "erfc": "erfcf"}
 WRITERS = {"int": "rt_write_int", "int32": "rt_write_int", "real": "rt_write_real", "real32": "rt_write_real32",
            "logical": "rt_write_bool", "string": "rt_write_string"}
 MAX_RANK = 3
+COLLECTIONS = ("map", "set")
+KEYKINDS = {"int": 0, "string": 1}                          # the keys a compiled map or set can have, and the number the runtime knows each by
+VALKINDS = {"int": 0, "real": 1, "string": 2, "logical": 3}  # the values a compiled map can have
+CSCALAR.update(map="rt_map", set="rt_map")
+WRITERS.update(map="rt_write_collection", set="rt_write_collection")
 
 
 class NotCompiled(Exception):
@@ -167,6 +173,8 @@ class Compiler:
         """Is `t` a type the compiler handles: a single value or array of a number or logical, or one record?"""
         if t is None or not t.known:
             return False
+        if t.kind in COLLECTIONS:                        # a map or set of the kinds the runtime has
+            return t.rank == 0 and not t.optional and self.coll_ok(t)
         if t.optional:                                   # a single number, logical, text or record that may be absent
             return t.rank == 0 and (t.kind in KINDS or t.kind == "string" or
                                     (t.kind == "record" and t.name in self.records and not self.has_iface.get(t.name)))
@@ -175,6 +183,13 @@ class Compiler:
         if t.kind == "string":
             return t.rank == 0
         return t.kind in KINDS and 0 <= t.rank <= MAX_RANK
+
+    @staticmethod
+    def coll_ok(t):
+        """Is `t` a map or set the runtime has: whole-number or text keys, and whole-number, real, text or logical values?"""
+        if t.kind == "set":
+            return len(t.args) == 1 and t.args[0] in KEYKINDS
+        return len(t.args) == 2 and t.args[0] in KEYKINDS and t.args[1] in VALKINDS
 
     @staticmethod
     def fopt(fd):
@@ -352,6 +367,10 @@ class Compiler:
                     note(n.type)
                 elif isinstance(n, Apply) and n.name in CONVERSIONS and n.name not in own:
                     bases.add(CONVERSIONS[n.name])
+                elif isinstance(n, Apply) and n.name == "get" and not n.bracket and n.name not in own:
+                    gt = self.types.get(id(n))
+                    if gt is not None and gt.optional and (gt.kind in KINDS or gt.kind == "string"):
+                        bases.add(gt.kind)
         return sorted(bases)
 
     def order_types(self):
@@ -448,8 +467,8 @@ class Compiler:
         for f in all_functions(self):
             if f.ret is not None:
                 rt = self.param_type(f.ret)
-                if rt is None or rt.rank != 0:
-                    self.refuse(f"function '{f.name}' returns {f.ret if isinstance(f.ret, str) else 'several values'}")
+                if rt is None or rt.rank != 0 or rt.kind in COLLECTIONS:
+                    self.refuse(f"function '{f.name}' returns {f.ret if isinstance(f.ret, str) else str(f.ret) if isinstance(f.ret, (MapType, SetType)) else 'several values'}")
             for typ, name, intent in f.params:
                 pt = self.param_type(typ)
                 if pt is None:
@@ -469,6 +488,9 @@ class Compiler:
     def param_type(self, typ):
         """The Type of a parameter or result written `real`, `int[]`, `real[,]`, or None when it is not handled."""
         from .types import parse
+        if isinstance(typ, (MapType, SetType)):
+            t = parse(typ)
+            return t if self.coll_ok(t) else None
         if not isinstance(typ, str):
             return None
         if typ in self.records:
@@ -542,6 +564,14 @@ class Compiler:
         self.locals_of_body = {p[1] for p in f.params} if f is not None else set()
         self.locals_of_body |= {d.name for d in statements_in(body) if isinstance(d, Decl)}
         self.opt_ok = set()                                    # the nodes that may be an optional value (what is done with it is handled)
+        self.coll_ok_nodes = set()                             # the nodes that may be a map or set (what is done with it is handled)
+        self.vtypes = {}                                       # the type of each parameter and declared variable (None: not handled)
+        if f is not None:
+            for typ, pname, _ in f.params:
+                self.vtypes[pname] = self.param_type(typ)
+        for d in statements_in(body):
+            if isinstance(d, Decl) and d.name not in self.vtypes:
+                self.vtypes[d.name] = self.decl_type(d)
         self.typevars = {n.var for n in walk(body) if isinstance(n, SelectType) and n.var} | \
                         {n.var for n in walk(body) if isinstance(n, IsType) and n.var}
         self.allocs = self.allocs_of(body, f)
@@ -549,6 +579,7 @@ class Compiler:
         strings = ()
         fixed = {name for typ, name, intent in f.params if intent == "in"} if f is not None else set()
         fixed |= {d.name for d in statements_in(body) if isinstance(d, Decl) and d.const}
+        self.fixed_names = fixed
         for s in statements_in(body):
             kind = type(s)
             if kind is Return:
@@ -585,9 +616,14 @@ class Compiler:
                 if t is None:
                     what = "allocatable " if s.allocatable else ""
                     self.refuse(f"the declaration of '{s.name}' ({what}{s.type})", s)
-                self.visible(s.type, s)
+                if isinstance(s.type, str):
+                    self.visible(s.type, s)
                 if s.name in self.scope.consts:                  # a module constant or variable of that name is already declared
                     self.refuse(f"a declaration of '{s.name}', a name imported here", s)
+                if t.kind in COLLECTIONS:
+                    if s.init is not None:
+                        self.check_coll_value(s.init, t, s)
+                    continue
                 if s.init is not None:
                     self.opt_ok.add(id(s.init))
                 if t.optional and s.init is not None:
@@ -644,6 +680,16 @@ class Compiler:
                     if (self.scope.consts[root.name][3] == "module") != s.update:
                         self.refuse(f"an assignment to '{root.name}' with the wrong `@` mark", s)
                 tt = self.vars_type(root.name, body, f)
+                if tt is not None and tt.kind in COLLECTIONS:
+                    if isinstance(root, Apply):                  # age["ann"] = 31
+                        if tt.kind != "map" or len(root.args) != 1 or isinstance(root.args[0], (Slice, NamedArg)):
+                            self.refuse("an assignment to part of a set or a map in any way but m[key] = value", s)
+                        self.key_ok(tt, root.args[0], s)
+                        self.value_ok(tt, s.value, s)
+                    else:
+                        self.coll_ok_nodes.add(id(root))
+                        self.check_coll_value(s.value, tt, s)
+                    continue
                 if tt is not None and (tt.optional or self.is_optional_value(s.value)):
                     if isinstance(root, Apply):
                         self.refuse("a subscript on an optional value", s)
@@ -665,6 +711,11 @@ class Compiler:
                 if s.to is not None:
                     self.refuse("printing to a file", s)
                 self.opt_ok.update(id(a) for a in s.args)
+                self.coll_ok_nodes.update(id(a) for a in s.args if self.types.get(id(a)) is not None and self.types[id(a)].kind in COLLECTIONS)
+            elif kind is DoEach:
+                self.check_doeach(s)
+            elif kind is Call and self.is_coll_call(s):
+                self.check_coll_call(s)
             elif kind is Call:
                 callee, args = self.call_target(s)          # (not `f`: that is the procedure this body belongs to)
                 if callee is None:
@@ -798,6 +849,14 @@ class Compiler:
                     self.refuse(f"the call of '{f.name}' with an optional value passed as {intent}", node)
                 self.check_store(a, pt, node)
                 continue
+            if pt is not None and pt.kind in COLLECTIONS:        # a map or set: a variable (or, for `in`, a literal) of the same type
+                if intent == "in":
+                    self.check_coll_value(a, pt, node)
+                elif not self.is_coll_var(a) or at is None or at.kind != pt.kind or at.args != pt.args or a.name in self.fixed_names:
+                    self.refuse(f"the call of '{f.name}' with an argument that is not a variable of the type the parameter takes", node)
+                else:
+                    self.coll_ok_nodes.add(id(a))
+                continue
             if pt is not None and (pt.kind == "string" or (at is not None and at.kind == "string")):
                 if at is None or at.kind != pt.kind or at.rank != pt.rank:
                     self.refuse(f"the call of '{f.name}' with an argument that is not what the parameter takes", node)
@@ -863,7 +922,11 @@ class Compiler:
         return getattr(a, "name", None)
 
     def decl_type(self, d):
-        if not isinstance(d.type, str):                                     # a map or set
+        if isinstance(d.type, (MapType, SetType)):                          # a map or set: empty at first, copied when assigned
+            from .types import parse
+            t = parse(d.type)
+            return t if d.dims is None and not d.allocatable and not d.const and self.coll_ok(t) else None
+        if not isinstance(d.type, str):
             return None
         if d.type.endswith("?"):                                            # `int? :: n`, `address? :: home`
             base = d.type[:-1]
@@ -889,11 +952,99 @@ class Compiler:
             return None
         return Type(d.type, rank)
 
-    STATEMENTS = (Decl, Assign, If, Do, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Select, Break)
+    STATEMENTS = (Decl, Assign, If, Do, DoEach, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Select, Break)
 
     @staticmethod
     def allocs_of(body, f):
         return {d.name for d in statements_in(body) if isinstance(d, Decl) and d.allocatable}
+
+    # -- maps and sets ----------------------------------------------------------------------------------------------
+    def is_coll_var(self, e):
+        """Is `e` the name of a map or set that is a parameter or declared variable of this procedure?"""
+        return isinstance(e, Var) and e.name in self.locals_of_body and self.vtypes.get(e.name) is not None \
+            and self.vtypes[e.name].kind in COLLECTIONS
+
+    def key_ok(self, ct, node, where):
+        """The key `node` is of the kind the collection `ct` takes (anything else is a run-time error in the interpreter)."""
+        kt = self.types.get(id(node))
+        want = ct.args[0]
+        if kt is None or kt.rank != 0 or kt.optional or not (kt.kind in ("int", "int32") if want == "int" else kt.kind == "string"):
+            self.refuse(f"a key that is not {'text' if want == 'string' else 'a whole number'}", where)
+
+    def value_ok(self, ct, node, where):
+        """The value `node` can be stored in the map `ct` (a whole number goes into a real map as a real)."""
+        vt = self.types.get(id(node))
+        want = ct.args[1]
+        ok = vt is not None and vt.rank == 0 and not vt.optional and (
+            vt.kind in ("int", "int32") if want == "int" else vt.kind in ("int", "int32", "real") if want == "real" else vt.kind == want)
+        if not ok:
+            self.refuse(f"a value that is not what the map holds ({want})", where)
+
+    def check_coll_value(self, e, target, where):
+        """`e` stored in, compared with or passed as a collection of type `target`: a variable of exactly that type, or a literal."""
+        if isinstance(e, CollLit):
+            self.coll_ok_nodes.add(id(e))
+            if (e.kind == "map" and target.kind == "set") or (e.kind == "set" and target.kind == "map"):
+                self.refuse(f"a {e.kind} literal where a {target.kind} is needed", where)
+            for k in e.keys:
+                self.key_ok(target, k, where)
+            if target.kind == "map":
+                for x in e.values:
+                    self.value_ok(target, x, where)
+            return
+        t = self.types.get(id(e))
+        if t is None or t.kind != target.kind or t.args != target.args or not self.is_coll_var(e):
+            self.refuse("a map or set that is not a variable of the same type", where)
+        self.coll_ok_nodes.add(id(e))
+
+    def is_coll_call(self, s):
+        return s.receiver is None and s.name in ("add", "remove") and self.fn(s.name) is None and s.name not in self.vtypes
+
+    def check_coll_call(self, s):
+        """`call add(@seen, x)` and `call remove(@age, key)`: a variable of this procedure (not an `in` parameter) is changed."""
+        marks = s.marks or [False] * len(s.args)
+        if len(s.args) != 2 or not marks[0] or marks[1]:
+            self.refuse(f"a call of '{s.name}' that the interpreter rejects", s)
+        first = s.args[0]
+        if not self.is_coll_var(first) or first.name in self.fixed_names:
+            self.refuse(f"'{s.name}' of anything but a map or set variable that this procedure may change", s)
+        ct = self.vtypes[first.name]
+        if s.name == "add" and ct.kind != "set":
+            self.refuse("add of a map (a map gets entries with m[key] = value)", s)
+        self.coll_ok_nodes.add(id(first))
+        self.key_ok(ct, s.args[1], s)
+
+    def check_doeach(self, s):
+        """`do key, value in m`, `do x in set` and `do x in array`: the loop variables are declared with exactly the kinds they take."""
+        src = s.source
+        st = self.types.get(id(src))
+        if self.is_coll_var(src):
+            ct = self.vtypes[src.name]
+            self.coll_ok_nodes.add(id(src))
+            kinds_ = [ct.args[0]] + ([ct.args[1]] if ct.kind == "map" else [])
+        elif st is not None and st.rank >= 1 and st.kind in ("int", "int32", "real", "real32", "logical"):
+            kinds_ = [st.kind]
+        else:
+            self.refuse("a do ... in loop over anything but a map or set variable or an array of numbers", s)
+        if len(s.vars) != len(kinds_) or len(set(s.vars)) != len(s.vars):
+            self.refuse("a do ... in loop with the wrong number of variables", s)
+        for name, want in zip(s.vars, kinds_):
+            vt = self.vtypes.get(name)
+            if name not in self.locals_of_body or name in self.fixed_names or name in self.typevars or vt is None or vt.rank != 0 \
+                    or vt.optional or vt.kind != want or name in self.allocs:
+                self.refuse(f"the loop variable '{name}', which is not declared as a plain {want}", s)
+
+    def check_coll_builtin(self, e):
+        name = e.name
+        need = {"has": 2, "get": 2, "keys": 1, "values": 1, "size": 1}[name]
+        if len(e.args) != need or not self.is_coll_var(e.args[0]):
+            self.refuse(f"{name}() of anything but a map or set variable", e)
+        ct = self.vtypes[e.args[0].name]
+        self.coll_ok_nodes.add(id(e.args[0]))
+        if name in ("get", "values") and ct.kind != "map":
+            self.refuse(f"{name}() of a set", e)
+        if name in ("has", "get"):
+            self.key_ok(ct, e.args[1], e)
 
     def check_expr(self, e, strings):
         kind = type(e)
@@ -962,6 +1113,21 @@ class Compiler:
             return
         if kind is Null:
             return
+        if kind is CollLit:                              # a literal is checked where it is stored, compared or passed
+            if id(e) not in self.coll_ok_nodes:
+                self.refuse("a map or set literal where its type is not known", e)
+            return
+        if kind is Binary:                               # two maps or sets compared (either side may be a literal)
+            lt, rt = self.types.get(id(e.left)), self.types.get(id(e.right))
+            lcoll = (lt is not None and lt.kind in COLLECTIONS) or isinstance(e.left, CollLit)
+            rcoll = (rt is not None and rt.kind in COLLECTIONS) or isinstance(e.right, CollLit)
+            if lcoll or rcoll:
+                tgt = lt if lt is not None and lt.kind in COLLECTIONS else rt
+                if e.op not in ("==", "/=") or tgt is None or tgt.kind not in COLLECTIONS or not self.kind_ok(tgt):
+                    self.refuse(f"a map or set with the operator '{e.op}'", e)
+                self.check_coll_value(e.left, tgt, e)
+                self.check_coll_value(e.right, tgt, e)
+                return
         if kind not in (Num, Bool, Var, Unary, Binary, Apply, ArrayLit, MatrixLit):
             if kind is IsType:
                 self.refuse("a type test", e)
@@ -1009,7 +1175,12 @@ class Compiler:
                 self.refuse("a chained subscript", e)
             if any(isinstance(a, Slice) for a in e.args) and not e.bracket:
                 self.refuse("part of an array", e)
-            if e.bracket:
+            vt = self.vtypes.get(e.name) if e.name in self.locals_of_body else None
+            if e.bracket and vt is not None and vt.kind in COLLECTIONS:        # age["ann"]
+                if vt.kind != "map" or len(e.args) != 1 or isinstance(e.args[0], (Slice, NamedArg)):
+                    self.refuse("a set, or a map with more than one key, subscripted", e)
+                self.key_ok(vt, e.args[0], e)
+            elif e.bracket:
                 rt = self.types.get(id(e))
                 if isrec(rt) and not self.record_element(e):
                     self.refuse("part of an array of records", e)
@@ -1039,12 +1210,14 @@ class Compiler:
                     at = self.types.get(id(a))
                     if isrec(at) and at.rank == 1 and e.name == "size":
                         continue
-                    if at is not None and (isrec(at) or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS)):
+                    if at is not None and (isrec(at) or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS | COLLFUNCS)):
                         self.refuse(f"{'a record' if at.kind == 'record' else 'text'} as an argument of '{e.name}'", e)
                 if any(isinstance(a, NamedArg) for a in e.args):
                     self.refuse(f"a named argument of {e.name}()", e)
                 self.check_builtin(e)
         t = self.types.get(id(e))
+        if t is not None and t.kind in COLLECTIONS and id(e) not in self.coll_ok_nodes:
+            self.refuse("a map or set used in an expression", e)
         if not self.kind_ok(t):
             self.refuse(f"an expression of type {t if t is not None else 'unknown'}", e)
 
@@ -1113,6 +1286,10 @@ class Compiler:
         if name == "allocated":
             if len(e.args) != 1 or not isinstance(e.args[0], Var) or e.args[0].name not in self.allocs:
                 self.refuse("allocated() of anything but the name of an allocatable array", e)
+            return
+        if name in COLLFUNCS or (name == "size" and e.args and self.types.get(id(e.args[0])) is not None
+                                 and self.types[id(e.args[0])].kind in COLLECTIONS):
+            self.check_coll_builtin(e)
             return
         ranks = [self.types[id(a)].rank for a in e.args]
         if name in STRFUNCS:
@@ -1449,6 +1626,12 @@ class Compiler:
         op, line = e.op, self.line
         if op == "??":
             return self.coalesce(e)
+        lt, rt = self.types.get(id(e.left)), self.types.get(id(e.right))
+        if (lt is not None and lt.kind in COLLECTIONS) or (rt is not None and rt.kind in COLLECTIONS):      # two collections compared
+            tgt = lt if lt is not None and lt.kind in COLLECTIONS else rt
+            a, b = self.coll_value(e.left, tgt), self.coll_value(e.right, tgt)
+            same = f"rt_map_equal(&{a}, &{b})"
+            return V(Type("logical"), self.tmp("bool", same if op == "==" else f"!{same}"))
         flags = (1 if self.types[id(e.left)].kind == "int" else 0) | (2 if self.types[id(e.right)].kind == "int" else 0)
         lv, rv = self.value(e.left, exact=True), self.value(e.right, exact=True)
         if any(v.t.optional or v.t.kind == "null" for v in (lv, rv)):
@@ -1693,6 +1876,9 @@ class Compiler:
         self.after_call = []
         for a, (typ, pname, intent) in zip(args, f.params):
             pt = self.param_type(typ)
+            if pt.kind in COLLECTIONS:                       # passed by address (an `in` literal is built first)
+                out.append("&" + (self.coll_value(a, pt) if intent == "in" else self.vars[a.name][1]))
+                continue
             if intent in ("inout", "out") and pt.rank == 0:
                 if isinstance(a, Var) and a.name in self.outs and intent == "inout":     # an unassigned out parameter is read
                     self.emit(f'if (!*set_{a.name}) rt_fail({self.line}, "\'{a.name}\' is used before it is assigned");')
@@ -1834,6 +2020,9 @@ class Compiler:
 
     def apply(self, e):
         line = self.line
+        vt = self.vars[e.name][0] if e.name in self.vars else None
+        if e.bracket and vt is not None and vt.kind in COLLECTIONS:
+            return self.map_read(e)
         if e.bracket and self.types[id(e)].kind == "string":
             return self.string_part(e)
         if e.bracket:
@@ -2214,6 +2403,8 @@ class Compiler:
 
     def builtin(self, e):
         line, name = self.line, e.name
+        if name in COLLFUNCS or (name == "size" and self.types[id(e.args[0])].kind in COLLECTIONS):
+            return self.coll_builtin(e)
         if name == "present":                                     # is there a value (a plain value always is)
             v = self.value(e.args[0])
             return V(Type("logical"), self.tmp("bool", f"{v.atom}.has" if v.t.optional else "false" if v.t.kind == "null" else "true"))
@@ -2436,11 +2627,125 @@ class Compiler:
         self.depth -= 1
         self.emit("}")
 
+    # -- maps and sets, as C --------------------------------------------------------------------------------------------
+    def key_cell(self, v, ct):
+        """The key `v` as the runtime's cell."""
+        if ct.args[0] == "string":
+            return f"rt_ks({v.atom})"
+        return f"rt_ki({self.cast(v.atom, v.t.kind, 'int')})"
+
+    def val_cell(self, v, ct):
+        """The value `v` (stored in the map `ct`) as the runtime's cell."""
+        want = ct.args[1]
+        if want == "string":
+            return f"rt_ks({v.atom})"
+        if want == "int":
+            return f"rt_ki({self.cast(v.atom, v.t.kind, 'int')})"
+        if want == "real":
+            return f"rt_vd({self.cast(v.atom, v.t.kind, 'real')})"
+        return f"rt_vb({v.atom})"
+
+    def coll_value(self, e, target):
+        """The C name of the map or set `e` stands for: a variable, or a literal built (as `target`) into a temporary."""
+        if not isinstance(e, CollLit):
+            return self.value(e).atom
+        kk, vk = KEYKINDS[target.args[0]], VALKINDS[target.args[1]] if target.kind == "map" else -1
+        name = self.tmp("rt_map", "{0}")
+        self.temps.append(("map", name))
+        self.emit(f"{name}.kk = {kk}; {name}.vk = {vk};")
+        line = e.line or self.line
+        for i, k in enumerate(e.keys):
+            kc = self.key_cell(self.value(k), target)
+            vc = self.val_cell(self.value(e.values[i]), target) if target.kind == "map" else "rt_ki(0)"
+            self.emit(f'if (rt_map_get(&{name}, {kc})) rt_fail({line}, "%s appears twice in this literal", rt_key_show({kk}, {kc}));')
+            self.emit(f"rt_map_put(&{name}, {kc}, {vc}, {line});")
+        return name
+
+    def map_read(self, e):
+        """`age["ann"]`: the value, or the interpreter's error for a key that is not there."""
+        vt, m = self.vars[e.name]
+        key = self.key_cell(self.value(e.args[0]), vt)
+        ent = self.tmp("rt_entry *", f'rt_map_at(&{m}, {key}, "{e.name}", {self.line})')
+        want = vt.args[1]
+        if want == "string":
+            return V(Type("string"), self.tmp_str(f"rt_str_copy({ent}->val.s, {self.line})"))
+        return V(Type(want), self.tmp(CSCALAR[want], f"{ent}->val.{ {'int': 'i', 'real': 'd', 'logical': 'b'}[want] }"))
+
+    def coll_builtin(self, e):
+        """has, get, size, keys and values of a map or set variable."""
+        name, line = e.name, self.line
+        t, m = self.vars[e.args[0].name]
+        if name == "size":
+            return V(Type("int"), self.tmp("int64_t", f"{m}.size"))
+        if name == "has":
+            key = self.key_cell(self.value(e.args[1]), t)
+            return V(Type("logical"), self.tmp("bool", f"(rt_map_get(&{m}, {key}) != NULL)"))
+        if name == "get":
+            want = t.args[1]
+            ot = Type(want, 0, True)
+            key = self.key_cell(self.value(e.args[1]), t)
+            ent = self.tmp("rt_entry *", f"rt_map_get(&{m}, {key})")
+            res = self.tmp(cscalar(ot), "{0}")
+            field = {"int": "i", "real": "d", "logical": "b"}.get(want)
+            if want == "string":
+                self.emit(f"if ({ent}) {{ {res}.has = true; {res}.v = rt_str_copy({ent}->val.s, {line}); }}")
+                self.temps.append((f"rec_{skind(ot)}", res))
+            else:
+                self.emit(f"if ({ent}) {{ {res}.has = true; {res}.v = {ent}->val.{field}; }}")
+            return V(ot, res)
+        kind = t.args[0] if name == "keys" else t.args[1]                   # keys or values, as an array in the order added
+        res = self.tmp_array(kind, 1)
+        self.emit(f"rt_alloc_{kind}(&{res}, 1, {m}.size, 1, 1, {line});")
+        at, k = self.tmp("int64_t", "0"), self.loop_var()
+        part = f"key.{ {'int': 'i'}[kind] }" if name == "keys" else f"val.{ {'int': 'i', 'real': 'd', 'logical': 'b'}[kind] }"
+        self.emit(f"for (int64_t {k} = 0; {k} < {m}.n; {k}++) if ({m}.e[{k}].live) {res}.data[{at}++] = {m}.e[{k}].{part};")
+        return V(Type(kind, 1), res)
+
+    def st_doeach(self, s):
+        """`do key, value in m`, `do x in set`, `do x in array`: the loop walks a snapshot, so the body may change the collection."""
+        line, src = self.line, s.source
+        t = self.types[id(src)]
+        sn = self.snaps[id(s)]
+        v = self.value(src)
+        if t.kind in COLLECTIONS:
+            self.emit(f"rt_snap_take(&{sn}, &{v.atom}, {line});")
+            parts = [("k", t.args[0])] + ([("v", t.args[1])] if t.kind == "map" else [])
+        else:
+            kind = t.kind
+            self.emit(f"rt_like_{kind}(&{sn}, {v.atom}.shape, {v.atom}.rank, {line});")
+            k = self.loop_var()
+            self.emit(f"for (int64_t {k} = 0; {k} < {sn}.n; {k}++) {sn}.data[{k}] = {self.elem(v, k)};")
+            parts = [(None, kind)]
+        label, ident = self.new_loop(s)
+        self.emit(f"for (int64_t i{ident} = 0; i{ident} < {sn}.n; i{ident}++) {{")
+        self.depth += 1
+        for name, (which, kind) in zip(s.vars, parts):
+            access = self.vars[name][1]
+            if which is None:
+                self.emit(f"{access} = {sn}.data[i{ident}];")
+                continue
+            cell = f"{sn}.{which}[i{ident}]"
+            if kind == "string":
+                self.emit(f"rt_str_set(&{access}, {cell}.s, {line});")
+            else:
+                self.emit(f"{access} = {cell}.{ {'int': 'i', 'real': 'd', 'logical': 'b'}[kind] };")
+        self.block(s.body)
+        self.emit(f"cycle{ident}: ;")
+        self.depth -= 1
+        self.emit("}")
+        self.emit(f"exit{ident}: ;")
+        self.loops.pop()
+
     def st_decl(self, s):
         t = self.vars[s.name][0]
         name = c_name(s.name)
         line = self.line
         self.emit(f"if (decl_{s.name}) rt_fail({line}, \"'{s.name}' already declared\"); decl_{s.name} = true;")
+        if t.kind in COLLECTIONS:
+            self.emit(f"rt_map_reset(&{name}, {KEYKINDS[t.args[0]]}, {VALKINDS[t.args[1]] if t.kind == 'map' else -1});")
+            if s.init is not None:
+                self.emit(f"rt_map_set(&{name}, &{self.coll_value(s.init, t)}, {line});")
+            return
         if t.rank == 0:
             if t.optional:                                              # absent unless given a value
                 atom = self.typed(s.init, t, f"line {line}") if s.init is not None else f"(({cscalar(t)}){{0}})"
@@ -2493,6 +2798,15 @@ class Compiler:
             self.store(lv, self.typed(s.value, ft, f'line {line}'), skind(ft))
             return
         t = self.vars[target.name][0]
+        if t.kind in COLLECTIONS:
+            m = self.vars[target.name][1]
+            if isinstance(target, Apply):                                   # age["ann"] = 31
+                val = self.val_cell(self.value(s.value), t)
+                key = self.key_cell(self.value(target.args[0]), t)
+                self.emit(f"rt_map_put(&{m}, {key}, {val}, {line});")
+            else:                                                           # b = a, or b = {...}
+                self.emit(f"rt_map_set(&{m}, &{self.coll_value(s.value, t)}, {line});")
+            return
         if isinstance(target, Apply) and any(isinstance(a, Slice) for a in target.args):
             self.assign_section(s, t)
             return
@@ -2916,6 +3230,14 @@ class Compiler:
             self.emit("rt_write_nl();")
 
     def st_call(self, s):
+        if self.is_coll_call(s):
+            t, m = self.vars[s.args[0].name]
+            key = self.key_cell(self.value(s.args[1]), t)
+            if s.name == "add":
+                self.emit(f"rt_map_put(&{m}, {key}, rt_ki(0), {s.line});")
+            else:
+                self.emit(f'rt_map_remove(&{m}, {key}, "{s.args[0].name}", {s.line});')
+            return
         f, nodes = self.call_target(s)
         if f.ret is not None:
             raise NotCompiled(f"'{s.name}' is a function; use it in an expression", s.line)
@@ -2944,8 +3266,10 @@ class Compiler:
         for typ, name, intent in params:
             t = self.param_type(typ)
             access = c_name(name) if (intent == "in" or t.rank > 0) else f"(*{c_name(name)})"
+            if t.kind in COLLECTIONS:                       # a map or set always arrives by address
+                access = f"(*{c_name(name)})"
             self.vars[name] = (t, access)
-            if intent == "out" and t.rank == 0:
+            if intent == "out" and t.rank == 0 and t.kind not in COLLECTIONS:
                 self.outs.add(name)
         seen = set()
         for d in statements_in(body):
@@ -2957,7 +3281,9 @@ class Compiler:
         out = []
         for typ, name, intent in f.params:
             t = self.param_type(typ)
-            if t.rank > 0:
+            if t.kind in COLLECTIONS:
+                out.append(f"rt_map *{c_name(name)}")
+            elif t.rank > 0:
                 out.append(f"rt_{akind(t)}_arr {c_name(name)}")
             elif intent == "inout":
                 out.append(f"{cscalar(t)} *{c_name(name)}")
@@ -2992,6 +3318,19 @@ class Compiler:
 
     def local_declarations(self, params, body):
         self.type_copies(body)
+        self.snaps = {}                                     # each `do ... in` loop's snapshot of what it walks, freed at the end
+        for n in walk(body):
+            if isinstance(n, DoEach):
+                self.n += 1
+                name = f"sn{self.n}"
+                st = self.types[id(n.source)]
+                if st.kind in COLLECTIONS:
+                    self.emit(f"rt_snap {name} = {{0}};")
+                    self.arrays.append(("snap", name))
+                else:
+                    self.emit(f"rt_{st.kind}_arr {name} = {{0}};")
+                    self.arrays.append((st.kind, name))
+                self.snaps[id(n)] = name
         declared = {name for _, name, _ in params}
         seen = set()
         for d in statements_in(body):
@@ -2999,7 +3338,10 @@ class Compiler:
                 seen.add(d.name)
                 t = self.vars[d.name][0]
                 self.emit(f"bool decl_{d.name} = false;")
-                if t.optional:
+                if t.kind in COLLECTIONS:
+                    self.emit(f"rt_map {c_name(d.name)} = {{0}};")
+                    self.arrays.append(("map", c_name(d.name)))
+                elif t.optional:
                     self.emit(f"{cscalar(t)} {c_name(d.name)} = {{0}};")
                     if self.deep[skind(t)]:
                         self.arrays.append((f"rec_{skind(t)}", c_name(d.name)))
@@ -3027,6 +3369,10 @@ class Compiler:
             self.emit(f"{cscalar(rt)} ret = {start};")
             self.emit("int call_line = rt_call_line;")
         self.local_declarations(f.params, f.body)
+        for typ, name, intent in f.params:                  # an `out` map or set starts empty
+            pt = self.param_type(typ)
+            if pt.kind in COLLECTIONS and intent == "out":
+                self.emit(f"rt_map_reset({c_name(name)}, {KEYKINDS[pt.args[0]]}, {VALKINDS[pt.args[1]] if pt.kind == 'map' else -1});")
         self.block(f.body)
         if f.ret is not None:
             self.emit(f'rt_fail(call_line, "function {f.name} must return a {f.ret if f.ret in self.records or f.ret in self.ifaces or f.ret.endswith("?") else self.param_type(f.ret).kind}");')

@@ -237,6 +237,12 @@ BUILTIN_RULES.update({
     "to_integer": fixed(Type("int", 0, True)), "to_real": fixed(Type("real", 0, True)),
     "to_logical": fixed(Type("logical", 0, True)),
     "random": fixed(REAL), "nan": fixed(REAL), "infinity": fixed(REAL),
+    "get": lambda args: Type(args[0].args[1], 0, True) if len(args) == 2 and args[0].kind == "map" and len(args[0].args) == 2
+    and args[0].args[1] in TAKES_SCALAR else UNKNOWN,
+    "keys": lambda args: Type(args[0].args[0], 1) if len(args) == 1 and args[0].kind in ("map", "set") and args[0].args
+    and args[0].args[0] in TAKES_SCALAR else UNKNOWN,
+    "values": lambda args: Type(args[0].args[1], 1) if len(args) == 1 and args[0].kind == "map" and len(args[0].args) == 2
+    and args[0].args[1] in TAKES_SCALAR else UNKNOWN,
     "huge": epsilon_like, "epsilon": epsilon_like, "tiny": epsilon_like,
     "open": fixed(Type("file")), "try_open": fixed(Type("file", 0, True)),
 })
@@ -446,6 +452,8 @@ class Checker:
                     and "complex" not in (lt.kind, rt.kind):
                 return Type(lt.kind, 0, rt.optional)     # the fallback takes the kind of x: `real32? ?? 0.5` is a real32
             return UNKNOWN
+        if op in ("==", "/=") and ("map" in (lt.kind, rt.kind) or "set" in (lt.kind, rt.kind)):     # two collections (or a literal) compared
+            return LOGICAL
         if not (lt.known and rt.known):
             return UNKNOWN
         # a real literal next to a single is a single (as in Fortran)
@@ -549,7 +557,9 @@ class Checker:
             t = env[name]
             if t.kind == "proc":
                 return self.proc_result(name, args)
-            if t.kind in ("map", "set"):
+            if t.kind in ("map", "set"):                      # age["ann"]: the value type, when it is a single value
+                if t.kind == "map" and e.bracket and len(args) == 1 and len(t.args) == 2 and t.args[1] in TAKES_SCALAR:
+                    return Type(t.args[1])
                 return UNKNOWN
             if t.rank > 0 and e.bracket:
                 for a in arg_nodes:
