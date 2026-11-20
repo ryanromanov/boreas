@@ -274,14 +274,16 @@ static inline int64_t rt_trunc_int(double x, int line) {
 static inline void rt_check_step(int64_t step, int line) { if (step == 0) rt_fail(line, "do step cannot be zero"); }
 
 /* a call is one more level of nesting: the interpreter stops at 10000, so does a checked program (not a release one) */
+static int rt_call_line = 0;       /* the line of the call being made: a function that ends without returning reports it */
 #ifndef BOREAS_RELEASE
 static int rt_depth = 0;
 static inline void rt_call_in(int line, const char *name) {
+    rt_call_line = line;
     if (++rt_depth > 10000) rt_fail(line, "'%s' is nested more than 10000 calls deep: a recursive call that never stops?", name);
 }
 static inline void rt_call_out(void) { rt_depth--; }
 #else
-static inline void rt_call_in(int line, const char *name) { (void)line; (void)name; }
+static inline void rt_call_in(int line, const char *name) { rt_call_line = line; (void)name; }
 static inline void rt_call_out(void) {}
 #endif
 
