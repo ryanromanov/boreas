@@ -1,0 +1,64 @@
+! interfaces: values that hold one of several records, calls that run the held record's function, arrays and results of them
+interface figure
+  function name(self) -> string
+  function area(self) -> real
+  subroutine grow(inout self, real :: k)
+end interface
+
+record circle is figure
+  string :: label = "circle"
+  real :: r = 1.0
+  function name(self) -> string
+    return self.label
+  end function
+  function area(self) -> real
+    return 3.0 * self.r ** 2
+  end function
+  subroutine grow(inout self, real :: k)
+    @self.r = self.r * k
+  end subroutine
+end record
+
+record rect
+  real :: w = 2.0
+  real :: h = 1.0
+  function name(self) -> string
+    return "rect"
+  end function
+  function area(self) -> real
+    return self.w * self.h
+  end function
+  subroutine grow(inout self, real :: k)
+    @self.w = self.w * k
+  end subroutine
+end record
+
+function make(int :: n) -> figure
+  if n > 0 then
+    return circle("c" + text(n), n * 1.0)
+  end if
+  return rect()
+end function
+
+function total(figure[] :: v) -> real
+  real :: s = 0.0
+  int :: i
+  do i = 1, size(v)
+    s = s + v[i].area()
+  end do
+  return s
+end function
+
+program t
+  figure[3] :: a
+  a[1] = make(2)
+  a[2] = make(0)
+  a[3] = a[1]
+  call @a[3].grow(2.0)
+  println(a, total(a))
+  println(a[1].name(), a[2].name(), a[3].area())
+  figure :: f = circle()
+  figure :: g = f
+  call @f.grow(3.0)
+  println(f, g)
+end program
