@@ -220,6 +220,8 @@ BUILTIN_RULES.update({
     "maxloc": locating(False), "minloc": locating(False), "findloc": locating(True),
     "matmul": matmul, "dot_product": dot, "transpose": keep, "reshape": reshape,
     "norm2": lambda args: Type(float_kind(args)) if args and args[0].known and args[0].is_number else UNKNOWN,
+    "pack": lambda args: Type(args[0].kind, 1) if args and args[0].known and args[0].is_array else UNKNOWN,
+    "spread": lambda args: Type(args[0].kind, max(args[0].rank, 0) + 1) if args and args[0].known and args[0].rank >= 0 else UNKNOWN,
     "cshift": keep, "flatten": lambda args: Type(args[0].kind, 1) if args and args[0].known and args[0].is_array else UNKNOWN,
     "merge": lambda args: Type(args[0].kind, rank_of(args), False, args[0].name) if len(args) == 3
     and all(a.known for a in args) and args[0].kind == args[1].kind and args[0].rank >= 0 else UNKNOWN,

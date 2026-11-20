@@ -272,6 +272,8 @@ static const char *rt_shown_override = NULL;       /* set while a function runs 
 static const char *rt_shown(double x, int was_int, char *buf) {
     if (rt_shown_override) { strcpy(buf, rt_shown_override); return buf; }
     if (was_int) snprintf(buf, 48, "%lld", (long long)x);
+    else if (x != x) strcpy(buf, "nan");                  /* (Python's own words in a message: inf, -inf, nan) */
+    else if (isinf(x)) strcpy(buf, x < 0 ? "-inf" : "inf");
     else rt_real_text(x, buf);
     return buf;
 }
@@ -316,7 +318,11 @@ static inline double rt_math1(const char *name, double r, double x, int was_int,
     if (r != r && x == x) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown(x, was_int, b));
     if (isinf(r) && isfinite(x)) rt_fail(line, "%s(%s) is too large for a real (a file that says `use ieee` gets Infinity instead)", name, rt_shown(x, was_int, b));
 #else
-    (void)name; (void)x; (void)was_int; (void)line;
+    (void)was_int;
+    if (isinf(x) && (strcmp(name, "sin") == 0 || strcmp(name, "cos") == 0)) {
+        char b[48];
+        rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown(x, 0, b));
+    }
 #endif
     return r;
 }
@@ -343,7 +349,7 @@ static inline double rt_fmod(double a, double b, int a_int, int b_int, int line)
 #ifdef BOREAS_IEEE
     (void)a_int; (void)b_int; (void)line;
 #else
-    if (b == 0.0) { char x[48], y[48]; rt_fail(line, "mod(%s, %s): division by zero", rt_shown(a, a_int, x), rt_shown(b, b_int, y)); }
+    if (b == 0.0 || (isinf(a) && b == b)) { char x[48], y[48]; rt_fail(line, "mod(%s, %s): division by zero", rt_shown(a, a_int, x), rt_shown(b, b_int, y)); }
 #endif
     return fmod(a, b);
 }
@@ -476,6 +482,14 @@ static void rt_same_shape(const int64_t *a, int ra, const int64_t *b, int rb, in
     rt_shape_text(x, a, ra); rt_shape_text(y, b, rb);
     rt_fail(line, "array shape mismatch: %s vs %s", x, y);
 }
+static void rt_pack_check(const int64_t *a, int ra, const int64_t *m, int rm, int line) {
+    int same = ra == rm;
+    for (int d = 0; same && d < ra; d++) same = a[d] == m[d];
+    if (same) return;
+    char x[80], y[80];
+    rt_shape_text(x, m, rm); rt_shape_text(y, a, ra);
+    rt_fail(line, "pack(): the mask's shape %s differs from the array's %s", x, y);
+}
 static void rt_init_shape_error(const int64_t *init, int ri, const int64_t *shape, int rs, const char *name, int line) {
     int same = ri == rs;
     for (int d = 0; same && d < ri; d++) same = init[d] == shape[d];
@@ -570,7 +584,7 @@ static inline float rt_r32(double d, int line) {
 static inline float rt_math1f(const char *name, float r, float x, int line) {
 #ifndef BOREAS_IEEE
     char b[48];
-    if (r != r && x == x) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown((double)x, 0, b));
+    if (r != r && isfinite(x)) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown((double)x, 0, b));
     if (isinf(r) && isfinite(x)) rt_fail(line, "%s(%s) is too large for a real (a file that says `use ieee` gets Infinity instead)", name, rt_shown((double)x, 0, b));
 #else
     (void)name; (void)x; (void)line;
@@ -580,7 +594,7 @@ static inline float rt_math1f(const char *name, float r, float x, int line) {
 static inline float rt_logf(float x, float (*fn)(float), const char *name, int line) {
 #ifndef BOREAS_IEEE
     char b[48];
-    if (x <= 0.0f) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown((double)x, 0, b));
+    if (x <= 0.0f && isfinite(x)) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown((double)x, 0, b));
 #else
     (void)name; (void)line;
 #endif
@@ -693,7 +707,7 @@ static inline double rt_atanh(double x, int was_int, int line) {
 static inline float rt_atanhf(float x, int line) {
 #ifndef BOREAS_IEEE
     char b[48];
-    if (fabsf(x) >= 1.0f) rt_fail(line, "atanh(%s) has no real answer (a file that says `use ieee` gets NaN instead)", rt_shown((double)x, 0, b));
+    if (fabsf(x) >= 1.0f && isfinite(x)) rt_fail(line, "atanh(%s) has no real answer (a file that says `use ieee` gets NaN instead)", rt_shown((double)x, 0, b));
 #else
     (void)line;
 #endif
@@ -719,7 +733,7 @@ static inline double rt_fmodulo(double a, double b, int a_int, int b_int, int li
     char x[48], y[48];
     if (b == 0.0) rt_fail(line, "modulo(%s, %s): division by zero", rt_shown(a, a_int, x), rt_shown(b, b_int, y));
     double q = a / b;
-    if (q - q != 0) rt_fail(line, "modulo(): cannot convert float %s to integer", q != q ? "NaN" : "infinity");
+    if (q - q != 0) rt_fail(line, "modulo(%s, %s): division by zero", rt_shown(a, a_int, x), rt_shown(b, b_int, y));     /* (the interpreter words every failure of modulo so) */
     return a - floor(q) * b;
 }
 static inline int64_t rt_dim_int(int64_t a, int64_t b, int bits, int line) {

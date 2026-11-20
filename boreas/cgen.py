@@ -40,7 +40,7 @@ CONSTANTS = {"huge", "epsilon", "tiny"}
 SPECIALS = {"nan", "infinity"}                       # take nothing, give a real
 FLOATTESTS = {"isnan", "isinf"}
 OTHERS = {"norm2"}
-ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "cshift", "lbound", "ubound"}
+ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "findloc", "cshift", "lbound", "ubound", "pack", "spread"}
 BUILTINS |= STRFUNCS | FORMATFUNCS
 BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS | OTHERS
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
@@ -1213,8 +1213,21 @@ class Compiler:
             if len(e.args) != 1 or ranks[0] < 1 or ts[0].kind != "logical":
                 self.refuse(f"{name}() of anything but a whole array of logicals", e)
         elif name in ("maxloc", "minloc"):
-            if len(e.args) != 1 or ranks[0] != 1 or ts[0].kind == "logical":
-                self.refuse(f"{name}() of anything but a vector", e)
+            if len(e.args) != 1 or not 1 <= ranks[0] <= MAX_RANK or ts[0].kind == "logical":
+                self.refuse(f"{name}() of anything but an array of numbers", e)
+        elif name == "pack":
+            if len(e.args) != 2 or not 1 <= ranks[0] <= MAX_RANK or ts[0].kind == "string" or ts[1].kind != "logical" \
+                    or ranks[1] not in (0, ranks[0]):
+                self.refuse("pack() of anything but an array and a mask of logicals", e)
+        elif name == "spread":
+            if len(e.args) != 3 or not 0 <= ranks[0] < MAX_RANK or ranks[1] != 0 or ranks[2] != 0 or ts[0].kind == "string" \
+                    or any(t.kind not in ("int", "int32") for t in ts[1:]):
+                self.refuse("spread() of anything but a value or array, a dimension and a number of copies", e)
+        elif name == "findloc":
+            same = lambda k: "i" if k in ("int", "int32") else "r" if k in ("real", "real32") else k
+            if len(e.args) != 2 or not 1 <= ranks[0] <= MAX_RANK or ranks[1] != 0 or ts[0].kind == "string" \
+                    or same(ts[0].kind) != same(ts[1].kind):
+                self.refuse("findloc() of anything but an array and one value of the same sort", e)
         elif name == "cshift":
             if len(e.args) not in (2, 3) or ranks[0] not in (1, 2) or ranks[1] != 0 or ts[1].kind not in ("int", "int32"):
                 self.refuse("cshift() of anything but a vector or matrix and a whole-number shift", e)
@@ -2030,14 +2043,67 @@ class Compiler:
             test = f"{a.atom}.data[{k}]" if name == "any" else f"!{a.atom}.data[{k}]"
             self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) if ({test}) {{ {acc} = {'true' if name == 'any' else 'false'}; break; }}")
             return V(Type("logical"), acc)
-        if name in ("maxloc", "minloc"):
+        if name == "pack":
+            mask, kind, k = vals[1], a.t.kind, self.loop_var()
+            keep = f"{mask.atom}.data[{k}]" if mask.t.rank > 0 else mask.atom
+            count, at = self.tmp("int64_t", "0"), self.tmp("int64_t", "0")
+            if mask.t.rank > 0:
+                self.emit(f"rt_pack_check({a.atom}.shape, {a.atom}.rank, {mask.atom}.shape, {mask.atom}.rank, {line});")
+            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) if ({keep}) {count}++;")
+            res = self.tmp_array(kind, 1)
+            self.emit(f"rt_alloc_{kind}(&{res}, 1, {count}, 1, 1, {line});")
+            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) if ({keep}) {res}.data[{at}++] = {self.elem(a, k)};")
+            return V(Type(kind, 1), res)
+        if name == "spread":
+            kind, r = a.t.kind, a.t.rank
+            dim = self.tmp("int64_t", self.cast(vals[1].atom, vals[1].t.kind, "int"))
+            copies = self.tmp("int64_t", self.cast(vals[2].atom, vals[2].t.kind, "int"))
+            self.emit(f'if ({dim} < 1 || {dim} > {r + 1}) rt_fail({line}, "spread(): dimension must be 1..{r + 1}");')
+            self.emit(f'if ({copies} < 0) rt_fail({line}, "spread(): the number of copies must be a non-negative integer");')
+            self.n += 1
+            ns = f"ns{self.n}"                                   # the new shape: the copies go in at place `dim`
+            self.emit(f"int64_t {ns}[3] = {{1, 1, 1}};")
+            for d in range(r + 1):
+                src = f"{a.atom}.shape[{d}]" if d < r else "1"
+                before = f"{a.atom}.shape[{d - 1}]" if d >= 1 else "1"
+                self.emit(f"{ns}[{d}] = {d + 1} < {dim} ? {src if r else '1'} : {d + 1} == {dim} ? {copies} : {before};")
+            res = self.tmp_array(kind, r + 1)
+            self.emit(f"rt_alloc_{kind}(&{res}, {r + 1}, {ns}[0], {ns}[1], {ns}[2], {line});")
+            o, rest, at, stride, d = (self.loop_var() for _ in range(5))
+            pick = self.elem(a, at) if r else a.atom
+            self.emit(f"for (int64_t {o} = 0; {o} < {res}.n; {o}++) {{")
+            self.emit(f"    int64_t {rest} = {o}, {at} = 0, {stride} = 1;")
+            self.emit(f"    for (int {d} = 0; {d} < {r + 1}; {d}++) {{ int64_t i = {rest} % {ns}[{d}]; {rest} /= {ns}[{d}]; "
+                      f"if ({d} != {dim} - 1) {{ {at} += i * {stride}; {stride} *= {ns}[{d}]; }} }}")
+            self.emit(f"    {res}.data[{o}] = {pick};")
+            self.emit("}")
+            return V(Type(kind, r + 1), res)
+        if name in ("maxloc", "minloc", "findloc"):
             k = self.loop_var()
-            self.emit(f'rt_check_nonempty({a.atom}.n, "{name}", {line});')
-            best = self.tmp("int64_t", "0")
-            op = ">" if name == "maxloc" else "<"
-            x, bx = self.elem(a, k), self.elem(a, best)
-            self.emit(f"for (int64_t {k} = 1; {k} < {a.atom}.n; {k}++) if ({x} {op} {bx}) {best} = {k};")
-            return V(Type("int"), self.tmp("int64_t", f"{best} + 1"))
+            if name == "findloc":
+                found = self.tmp("int64_t", "0")                 # the place (from 1) of the first element equal to the value, 0 for none
+                if a.t.kind in ("int", "int32"):
+                    v = self.cast(vals[1].atom, vals[1].t.kind, "int")
+                    x = f"(int64_t){self.elem(a, k)}"
+                else:
+                    v = self.cast(vals[1].atom, vals[1].t.kind, "real") if a.t.kind != "logical" else vals[1].atom
+                    x = f"(double){self.elem(a, k)}" if a.t.kind != "logical" else self.elem(a, k)
+                self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) if ({x} == {v}) {{ {found} = {k} + 1; break; }}")
+                best = self.tmp("int64_t", f"{found} - 1")
+            else:
+                self.emit(f'rt_check_nonempty({a.atom}.n, "{name}", {line});')
+                best = self.tmp("int64_t", "0")
+                op = ">" if name == "maxloc" else "<"
+                x, bx = self.elem(a, k), self.elem(a, best)
+                self.emit(f"for (int64_t {k} = 1; {k} < {a.atom}.n; {k}++) if ({x} {op} {bx}) {best} = {k};")
+            if a.t.rank == 1:
+                return V(Type("int"), self.tmp("int64_t", f"{best} + 1"))
+            res = self.tmp_array("int", 1)                       # a matrix gives its subscripts, all 0 when nothing was found
+            self.emit(f"rt_alloc_int(&{res}, 1, {a.t.rank}, 1, 1, {line});")
+            rest = self.tmp("int64_t", best)
+            for d in range(a.t.rank):
+                self.emit(f"if ({rest} >= 0) {{ {res}.data[{d}] = {rest} % {a.atom}.shape[{d}] + 1; {rest} /= {a.atom}.shape[{d}]; }} else {res}.data[{d}] = 0;")
+            return V(Type("int", 1), res)
         if name == "merge":
             b, mask = vals[1], vals[2]
             kind = self.merge_kind(e)
