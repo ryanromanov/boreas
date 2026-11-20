@@ -15,7 +15,7 @@ import sys
 import subprocess
 import tempfile
 from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, Comment, Cycle, Deallocate, Decl, Do, DoWhile, Exit, FieldAccess, If, IsType,
-                     MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var)
+                     MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType)
 from .effects import mark_problem
 from .interp import conformance
 from .tree import statements_in, walk
@@ -124,6 +124,9 @@ class Compiler:
         self.cnames = {}                # id(Function) -> the C name it is compiled under
         self.ifaces = {}                # the interfaces the program defines: name -> InterfaceDef
         self.members = {}               # interface name -> the records that fit it (a value of the interface holds one, tagged 1, 2, ...)
+        self.typevars = set()           # the names a select type or `is` gives to its copy
+        self.tvars = {}                 # id(Case or IsType) -> (C name, Type) of that copy (declared at the start of the function)
+        self.selects = []               # the select types being written (innermost last): their `break` labels
         self.deep = {}                  # record name -> does it own text (so that copying and freeing it take work)
 
     # -- refusing what is not handled ---------------------------------------------------------------------------
@@ -272,7 +275,35 @@ class Compiler:
             return None
         return t
 
+    def check_type_subject(self, subject, node):
+        """What a select type or `is` looks at: an interface variable, parameter or element (not a computed value, whose
+        temporary a jump out of the statement would leave behind)."""
+        t = self.types.get(id(subject))
+        if t is None or t.kind != "interface" or t.rank != 0:
+            self.refuse("a select type or `is` on anything but an interface value", node)
+        if not (isinstance(subject, Var) or self.record_element(subject)):
+            self.refuse("a select type or `is` on a computed value", node)
+
+    def check_type_name(self, name, node):
+        if name not in self.records and name not in self.ifaces:
+            self.refuse(f"a select type or `is` naming '{name}'", node)
+
+    def check_select_type(self, s):
+        self.check_type_subject(s.subject, s)
+        names = [c.values for c in s.cases]
+        if None not in names or s.var is None:
+            self.refuse("a select type without `case default` or without `as`", s)
+        for c in s.cases:
+            if c.values is not None:
+                self.check_type_name(c.values, c)
+
+    def check_type_test(self, e):
+        self.check_type_subject(e.subject, e)
+        self.check_type_name(e.type, e)
+
     def check_body(self, body, f):
+        self.typevars = {n.var for n in walk(body) if isinstance(n, SelectType) and n.var} | \
+                        {n.var for n in walk(body) if isinstance(n, IsType) and n.var}
         self.allocs = self.allocs_of(body, f)
         self.skip = {id(x) for d in statements_in(body) if isinstance(d, Decl) and d.allocatable for x in d.dims}
         strings = ()
@@ -288,7 +319,10 @@ class Compiler:
                 continue
             if kind is Do and s.var in fixed:
                 self.refuse(f"a loop over the constant or parameter '{s.var}'", s)
-            if kind in (If, Do, DoWhile, Stop, Exit, Cycle, Comment):
+            if kind in (If, Do, DoWhile, Stop, Exit, Cycle, Comment, Break):
+                continue
+            if kind is SelectType:
+                self.check_select_type(s)
                 continue
             if kind in (Allocate, Deallocate):
                 if s.name not in self.allocs_of(body, f):
@@ -324,6 +358,8 @@ class Compiler:
                     self.refuse("an assignment to anything but a variable or an array element", s)
                 if root.name in fixed:
                     self.refuse(f"an assignment to the constant or parameter '{root.name}'", s)
+                if root.name in self.typevars:
+                    self.refuse(f"an assignment to '{root.name}', the copy a select type or `is` made", s)
                 tt = self.vars_type(root.name, body, f)
                 if isrec(tt):
                     if isinstance(root, Apply):
@@ -503,7 +539,7 @@ class Compiler:
             return None
         return Type(d.type, rank)
 
-    STATEMENTS = (Decl, Assign, If, Do, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate)
+    STATEMENTS = (Decl, Assign, If, Do, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Break)
 
     @staticmethod
     def allocs_of(body, f):
@@ -520,6 +556,11 @@ class Compiler:
                 self.refuse("text with a character outside ASCII", e)
             return
         if kind is Slice:                               # the parts of a section: checked as the expressions they are
+            return
+        if kind is Case:                                # a case of a select type (checked with the statement)
+            return
+        if kind is IsType:
+            self.check_type_test(e)
             return
         if kind is NamedArg:                            # `x = 1.0` in a record's constructor: its value is checked itself
             return
@@ -771,7 +812,10 @@ class Compiler:
         self.emit("{")
         self.depth += 1
         saved, self.temps = self.temps, []
-        self.emit(f"{name} = {self.scalar(e, 'logical')};")
+        if isinstance(e, IsType):
+            self.emit(f"{name} = {self.type_test(e)};")
+        else:
+            self.emit(f"{name} = {self.scalar(e, 'logical')};")
         for k, t in self.temps:
             self.emit(f"rt_free_{k}(&{t});")
         self.temps = saved
@@ -1838,12 +1882,28 @@ class Compiler:
     def st_if(self, s):
         self.if_chain(s.branches, s.orelse)
 
+    def with_copy(self, node, name, body):
+        """Write `body` with `name` standing for the copy `node` made (a select type case or an `is` test)."""
+        saved = self.vars.get(name)
+        cname, t = self.tvars[id(node)]
+        self.vars[name] = (t, cname)
+        try:
+            self.block(body)
+        finally:
+            if saved is None:
+                del self.vars[name]
+            else:
+                self.vars[name] = saved
+
     def if_chain(self, branches, orelse):
         (cond, body), rest = branches[0], branches[1:]
         c = self.cond(cond)
         self.emit(f"if ({c}) {{")
         self.depth += 1
-        self.block(body)
+        if isinstance(cond, IsType) and cond.var:
+            self.with_copy(cond, cond.var, body)
+        else:
+            self.block(body)
         self.depth -= 1
         if rest or orelse:
             self.emit("} else {")
@@ -1859,6 +1919,87 @@ class Compiler:
                 self.block(orelse)
             self.depth -= 1
         self.emit("}")
+
+    def tags_of(self, iname, name):
+        """The tags (1, 2, ...) of the records in interface `iname` that `name` (a record or an interface) matches."""
+        members = self.members[iname]
+        if name in self.records:
+            return [members.index(name) + 1] if name in members else []
+        return [i + 1 for i, r in enumerate(members) if not conformance(self.records[r], self.ifaces[name])]
+
+    def bind(self, var, t, sv, iname, tags):
+        """Make the copy `var` (of type `t`) from the interface value `sv` (of interface `iname`), which holds one of `tags`."""
+        if t.kind == "interface" and t.name == iname:
+            self.store(var, sv, iname)
+            return
+        for tag in tags:
+            r = self.members[iname][tag - 1]
+            self.emit(f"if ({sv}.tag == {tag}) {{")
+            self.depth += 1
+            self.store(var, self.convert(V(Type("record", 0, False, r), f"{sv}.u.m_{r}"), t), t.name)
+            self.depth -= 1
+            self.emit("}")
+
+    def type_test(self, e):
+        """`x is circle as c`: whether `x` holds that record (or one that fits that interface); if so, `c` is made."""
+        sub = self.value(e.subject)
+        sv = self.tmp(f"r_{sub.t.name}", sub.atom)
+        tags = self.tags_of(sub.t.name, e.type)
+        holds = " || ".join(f"{sv}.tag == {t}" for t in tags) or "false"
+        res = self.tmp("bool", f"({holds})")
+        if e.var and tags:
+            name, t = self.tvars[id(e)]
+            self.emit(f"if ({res}) {{")
+            self.depth += 1
+            self.bind(name, t, sv, sub.t.name, tags)
+            self.depth -= 1
+            self.emit("}")
+        return res
+
+    def st_selecttype(self, s):
+        sub = self.value(s.subject)
+        iname = sub.t.name
+        sv = self.tmp(f"r_{iname}", sub.atom)
+        chosen = {}                                  # tag -> the case that runs: a record's own case, then the first interface it fits
+        default = next(c for c in s.cases if c.values is None)
+        for tag, r in enumerate(self.members[iname], 1):
+            case = None
+            for c in s.cases:
+                if c.values == r:
+                    case = c
+            if case is None:
+                for c in s.cases:
+                    if c.values in self.ifaces and not conformance(self.records[r], self.ifaces[c.values]):
+                        case = c
+                        break
+            chosen[tag] = case or default
+        self.n += 1
+        label = f"brk{self.n}"
+        self.selects.append(label)
+        first = True
+        for c in s.cases:
+            tags = [t for t, k in chosen.items() if k is c]
+            if not tags and c is not default:
+                continue
+            if c is default:
+                self.emit("{" if first else "} else {")
+            else:
+                cond = " || ".join(f"{sv}.tag == {t}" for t in tags)
+                self.emit(f"{'' if first else '} else '}if ({cond}) {{")
+            first = False
+            self.depth += 1
+            name, t = self.tvars[id(c)]
+            self.bind(name, t, sv, iname, tags if c is not default else list(range(1, len(self.members[iname]) + 1)))
+            self.with_copy(c, s.var, c.body)
+            self.depth -= 1
+        self.emit("}")
+        self.selects.pop()
+        self.emit(f"{label}: ;")
+
+    def st_break(self, s):
+        if not self.selects:
+            raise NotCompiled("a break outside a select", getattr(s, "line", None))
+        self.emit(f"goto {self.selects[-1]};")
 
     def new_loop(self, s):
         self.n += 1
@@ -2011,7 +2152,31 @@ class Compiler:
                 out.append(f"{cscalar(t)} {c_name(name)}")
         return ", ".join(out) or "void"
 
+    def type_copies(self, body):
+        """Each select type case and `is` test that names its copy gets a variable of its own, declared at the start of the
+        function (so that a jump out of the case cannot skip freeing it)."""
+        for n in walk(body):
+            if isinstance(n, SelectType):
+                subject = self.types[id(n.subject)]
+                for c in n.cases:
+                    if c.values is None:
+                        t = Type("interface", 0, False, subject.name)
+                    else:
+                        t = Type("interface" if c.values in self.ifaces else "record", 0, False, c.values)
+                    self.new_copy(c, t)
+            elif isinstance(n, IsType) and n.var:
+                self.new_copy(n, Type("interface" if n.type in self.ifaces else "record", 0, False, n.type))
+
+    def new_copy(self, node, t):
+        self.n += 1
+        name = f"sv{self.n}"
+        self.tvars[id(node)] = (name, t)
+        self.emit(f"r_{t.name} {name} = {{0}};")
+        if self.deep[t.name]:
+            self.arrays.append((f"rec_{t.name}", name))
+
     def local_declarations(self, params, body):
+        self.type_copies(body)
         declared = {name for _, name, _ in params}
         seen = set()
         for d in statements_in(body):

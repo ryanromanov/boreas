@@ -111,6 +111,24 @@ class TypeOfTests(unittest.TestCase):
         checker = infer(unit, Interp(unit, lambda s: None))
         self.assertEqual(checker.value_dependent, [])
 
+    def test_the_copy_of_a_select_type_or_is_has_the_type_of_its_own_branch(self):
+        src = ("interface fig\n  function area(self) -> real\nend interface\n"
+               "record ca is fig\n  real :: r = 1.0\n  function area(self) -> real\n    return self.r\n  end function\nend record\n"
+               "record re is fig\n  real :: w = 2.0\n  function area(self) -> real\n    return self.w\n  end function\nend record\n"
+               "program t\n  fig :: f = ca()\n  select type f as p\n    case ca\n      println(p.r)\n    case re\n      println(p.w)\n"
+               "    case default\n      println(p.area())\n  end select\n"
+               "  if f is ca as x then\n    println(x.r)\n  end if\n  if f is re as x then\n    println(x.w)\n  end if\nend program\n")
+        unit = parse(src)
+        checker = infer(unit, Interp(unit, lambda s: None))
+        self.assertEqual(checker.errors, [])
+        seen = {}
+        from boreas.tree import walk
+        from boreas.parser import FieldAccess
+        for n in walk(unit.program.body):
+            if isinstance(n, FieldAccess) and n.args is None:
+                seen[(n.base.name, n.field)] = str(checker.types[id(n)])
+        self.assertEqual(seen, {("p", "r"): "real", ("p", "w"): "real", ("x", "r"): "real", ("x", "w"): "real"})
+
 
 class OracleTests(unittest.TestCase):
     """Run programs with BOREAS_TYPE_ORACLE: every value the interpreter computes must fit the static type."""
