@@ -147,6 +147,96 @@ static inline int64_t rt_mod(int64_t a, int64_t b, int line) {      /* mod(a, b)
     if (b == -1) return 0;
     return a % b;
 }
+/* Bit functions. A whole number travels as an int64_t; w is the width of its kind (32 or 64). The bits are worked on
+   as an unsigned pattern of that width, and the result is the signed value of the pattern. */
+static inline uint64_t rt_bu(int64_t x, int w) { return w == 32 ? (uint64_t)(uint32_t)x : (uint64_t)x; }
+static inline int64_t rt_bs(uint64_t u, int w) { return w == 32 ? (int64_t)(int32_t)(uint32_t)u : (int64_t)u; }
+static inline int64_t rt_iand(int64_t a, int64_t b, int w) { return rt_bs(rt_bu(a, w) & rt_bu(b, w), w); }
+static inline int64_t rt_ior(int64_t a, int64_t b, int w) { return rt_bs(rt_bu(a, w) | rt_bu(b, w), w); }
+static inline int64_t rt_ieor(int64_t a, int64_t b, int w) { return rt_bs(rt_bu(a, w) ^ rt_bu(b, w), w); }
+static inline int64_t rt_bitnot(int64_t a, int w) { return rt_bs(~rt_bu(a, w), w); }
+static inline int64_t rt_ishft(int64_t x, int64_t n, int w, int line) {
+    if (n < -w || n > w) rt_fail(line, "ishft(): the shift must be a whole number from -%d to %d", w, w);
+    uint64_t u = rt_bu(x, w);
+    return rt_bs(n >= 0 ? (n >= 64 ? 0 : u << n) : (-n >= 64 ? 0 : u >> -n), w);
+}
+static inline int64_t rt_shift(char dir, const char *name, int64_t x, int64_t n, int w, int line) {
+    if (n < 0 || n > w) rt_fail(line, "%s(): the shift must be a whole number from 0 to %d", name, w);
+    uint64_t u = rt_bu(x, w);
+    if (dir == 'l') return rt_bs(n >= 64 ? 0 : u << n, w);
+    if (dir == 'r') return rt_bs(n >= 64 ? 0 : u >> n, w);
+    return n >= w ? (x < 0 ? -1 : 0) : (x >> n);            /* shifta: the sign bit fills in */
+}
+static inline int rt_bpos(const char *name, int64_t pos, int w, int line) {
+    if (pos < 0 || pos >= w) rt_fail(line, "%s(): the bit position must be a whole number from 0 to %d", name, w - 1);
+    return (int)pos;
+}
+static inline bool rt_btest(int64_t x, int64_t pos, int w, int line) { return (rt_bu(x, w) >> rt_bpos("btest", pos, w, line)) & 1; }
+static inline int64_t rt_ibset(int64_t x, int64_t pos, int w, int line) { return rt_bs(rt_bu(x, w) | (1ULL << rt_bpos("ibset", pos, w, line)), w); }
+static inline int64_t rt_ibclr(int64_t x, int64_t pos, int w, int line) { return rt_bs(rt_bu(x, w) & ~(1ULL << rt_bpos("ibclr", pos, w, line)), w); }
+static inline int64_t rt_ibits(int64_t x, int64_t pos, int64_t len, int w, int line) {
+    int p = rt_bpos("ibits", pos, w, line);
+    if (len < 0 || len > w - p) rt_fail(line, "ibits(): the length must be a whole number from 0 to %d", w - p);
+    return rt_bs((rt_bu(x, w) >> p) & (len >= 64 ? ~0ULL : (1ULL << len) - 1), w);
+}
+static inline int64_t rt_popcnt(int64_t x, int w) { return __builtin_popcountll(rt_bu(x, w)); }
+static inline int64_t rt_leadz(int64_t x, int w) { uint64_t u = rt_bu(x, w); return u == 0 ? w : __builtin_clzll(u) - (64 - w); }
+static inline int64_t rt_trailz(int64_t x, int w) { uint64_t u = rt_bu(x, w); return u == 0 ? w : __builtin_ctzll(u); }
+/* norm2 adds the squares exactly (Python's math.fsum: Shewchuk's algorithm, rounded once at the end), so the length
+   does not depend on the order of the numbers. This is a port of CPython's math_fsum. */
+typedef struct { double small[32]; double *p; int64_t n, cap; double special, inf; } rt_fsum;
+static void rt_fsum_init(rt_fsum *f) { f->p = f->small; f->n = 0; f->cap = 32; f->special = 0.0; f->inf = 0.0; }
+static void rt_fsum_add(rt_fsum *f, double x, int line) {
+    double xsave = x, y, t, hi, yr, lo;
+    int64_t i = 0;
+    for (int64_t j = 0; j < f->n; j++) {
+        y = f->p[j];
+        if (fabs(x) < fabs(y)) { t = x; x = y; y = t; }
+        hi = x + y; yr = hi - x; lo = y - yr;
+        if (lo != 0.0) f->p[i++] = lo;
+        x = hi;
+    }
+    f->n = i;
+    if (x != 0.0) {
+        if (!isfinite(x)) {
+            if (isfinite(xsave)) rt_fail(line, "norm2(): intermediate overflow in fsum");
+            if (isinf(xsave)) f->inf += xsave;
+            f->special += xsave;
+            f->n = 0;
+        } else {
+            if (f->n >= f->cap) {
+                int64_t cap = f->cap * 2;
+                double *q = (double *)malloc((size_t)cap * sizeof(double));
+                if (!q) rt_fail(line, "out of memory");
+                memcpy(q, f->p, (size_t)f->n * sizeof(double));
+                if (f->p != f->small) free(f->p);
+                f->p = q; f->cap = cap;
+            }
+            f->p[f->n++] = x;
+        }
+    }
+}
+static double rt_fsum_result(rt_fsum *f, int line) {
+    double hi = 0.0, lo = 0.0, x, y, yr;
+    if (f->special != 0.0) {
+        if (isnan(f->inf)) rt_fail(line, "norm2(): -inf + inf in fsum");
+        hi = f->special;
+    } else if (f->n > 0) {
+        int64_t n = f->n;
+        hi = f->p[--n];
+        while (n > 0) {
+            x = hi; y = f->p[--n];
+            hi = x + y; yr = hi - x; lo = y - yr;
+            if (lo != 0.0) break;
+        }
+        if (n > 0 && ((lo < 0.0 && f->p[n - 1] < 0.0) || (lo > 0.0 && f->p[n - 1] > 0.0))) {
+            y = lo * 2.0; x = hi + y; yr = x - hi;
+            if (y == yr) hi = x;
+        }
+    }
+    if (f->p != f->small) free(f->p);
+    return hi;
+}
 static int64_t rt_ipow(int64_t a, int64_t b, int line) {
     if (b < 0) {
         if (a == 0) rt_fail(line, "zero cannot be raised to a negative integer power");
@@ -182,6 +272,8 @@ static const char *rt_shown_override = NULL;       /* set while a function runs 
 static const char *rt_shown(double x, int was_int, char *buf) {
     if (rt_shown_override) { strcpy(buf, rt_shown_override); return buf; }
     if (was_int) snprintf(buf, 48, "%lld", (long long)x);
+    else if (x != x) strcpy(buf, "nan");                  /* (Python's own words in a message: inf, -inf, nan) */
+    else if (isinf(x)) strcpy(buf, x < 0 ? "-inf" : "inf");
     else rt_real_text(x, buf);
     return buf;
 }
@@ -226,7 +318,11 @@ static inline double rt_math1(const char *name, double r, double x, int was_int,
     if (r != r && x == x) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown(x, was_int, b));
     if (isinf(r) && isfinite(x)) rt_fail(line, "%s(%s) is too large for a real (a file that says `use ieee` gets Infinity instead)", name, rt_shown(x, was_int, b));
 #else
-    (void)name; (void)x; (void)was_int; (void)line;
+    (void)was_int;
+    if (isinf(x) && (strcmp(name, "sin") == 0 || strcmp(name, "cos") == 0)) {
+        char b[48];
+        rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown(x, 0, b));
+    }
 #endif
     return r;
 }
@@ -253,7 +349,7 @@ static inline double rt_fmod(double a, double b, int a_int, int b_int, int line)
 #ifdef BOREAS_IEEE
     (void)a_int; (void)b_int; (void)line;
 #else
-    if (b == 0.0) { char x[48], y[48]; rt_fail(line, "mod(%s, %s): division by zero", rt_shown(a, a_int, x), rt_shown(b, b_int, y)); }
+    if (b == 0.0 || (isinf(a) && b == b)) { char x[48], y[48]; rt_fail(line, "mod(%s, %s): division by zero", rt_shown(a, a_int, x), rt_shown(b, b_int, y)); }
 #endif
     return fmod(a, b);
 }
@@ -386,6 +482,14 @@ static void rt_same_shape(const int64_t *a, int ra, const int64_t *b, int rb, in
     rt_shape_text(x, a, ra); rt_shape_text(y, b, rb);
     rt_fail(line, "array shape mismatch: %s vs %s", x, y);
 }
+static void rt_pack_check(const int64_t *a, int ra, const int64_t *m, int rm, int line) {
+    int same = ra == rm;
+    for (int d = 0; same && d < ra; d++) same = a[d] == m[d];
+    if (same) return;
+    char x[80], y[80];
+    rt_shape_text(x, m, rm); rt_shape_text(y, a, ra);
+    rt_fail(line, "pack(): the mask's shape %s differs from the array's %s", x, y);
+}
 static void rt_init_shape_error(const int64_t *init, int ri, const int64_t *shape, int rs, const char *name, int line) {
     int same = ri == rs;
     for (int d = 0; same && d < ri; d++) same = init[d] == shape[d];
@@ -480,7 +584,7 @@ static inline float rt_r32(double d, int line) {
 static inline float rt_math1f(const char *name, float r, float x, int line) {
 #ifndef BOREAS_IEEE
     char b[48];
-    if (r != r && x == x) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown((double)x, 0, b));
+    if (r != r && isfinite(x)) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown((double)x, 0, b));
     if (isinf(r) && isfinite(x)) rt_fail(line, "%s(%s) is too large for a real (a file that says `use ieee` gets Infinity instead)", name, rt_shown((double)x, 0, b));
 #else
     (void)name; (void)x; (void)line;
@@ -490,7 +594,7 @@ static inline float rt_math1f(const char *name, float r, float x, int line) {
 static inline float rt_logf(float x, float (*fn)(float), const char *name, int line) {
 #ifndef BOREAS_IEEE
     char b[48];
-    if (x <= 0.0f) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown((double)x, 0, b));
+    if (x <= 0.0f && isfinite(x)) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown((double)x, 0, b));
 #else
     (void)name; (void)line;
 #endif
@@ -603,7 +707,7 @@ static inline double rt_atanh(double x, int was_int, int line) {
 static inline float rt_atanhf(float x, int line) {
 #ifndef BOREAS_IEEE
     char b[48];
-    if (fabsf(x) >= 1.0f) rt_fail(line, "atanh(%s) has no real answer (a file that says `use ieee` gets NaN instead)", rt_shown((double)x, 0, b));
+    if (fabsf(x) >= 1.0f && isfinite(x)) rt_fail(line, "atanh(%s) has no real answer (a file that says `use ieee` gets NaN instead)", rt_shown((double)x, 0, b));
 #else
     (void)line;
 #endif
@@ -629,7 +733,7 @@ static inline double rt_fmodulo(double a, double b, int a_int, int b_int, int li
     char x[48], y[48];
     if (b == 0.0) rt_fail(line, "modulo(%s, %s): division by zero", rt_shown(a, a_int, x), rt_shown(b, b_int, y));
     double q = a / b;
-    if (q - q != 0) rt_fail(line, "modulo(): cannot convert float %s to integer", q != q ? "NaN" : "infinity");
+    if (q - q != 0) rt_fail(line, "modulo(%s, %s): division by zero", rt_shown(a, a_int, x), rt_shown(b, b_int, y));     /* (the interpreter words every failure of modulo so) */
     return a - floor(q) * b;
 }
 static inline int64_t rt_dim_int(int64_t a, int64_t b, int bits, int line) {
@@ -692,6 +796,62 @@ static void rt_same_shape3(const int64_t *a, int ra, const int64_t *b, int rb, c
 typedef struct { char *p; int64_t n; } rt_str;
 #define RT_LIT(s) ((rt_str){(char *)(s), (int64_t)(sizeof(s) - 1)})
 static inline const char *rt_cs(rt_str s) { return s.p ? s.p : ""; }
+/* to_integer, to_real, to_logical: the number or word the text spells (blanks around it are ignored), or nothing. */
+static bool rt_blank(char c) { return c == ' ' || (c >= 9 && c <= 13) || (c >= 28 && c <= 31); }
+static void rt_strip(rt_str s, const char **b, int64_t *n) {
+    const char *p = s.p ? s.p : ""; int64_t k = s.n;
+    while (k > 0 && rt_blank(p[0])) { p++; k--; }
+    while (k > 0 && rt_blank(p[k - 1])) k--;
+    *b = p; *n = k;
+}
+static bool rt_parse_int(rt_str s, int64_t *out) {
+    const char *p; int64_t n; rt_strip(s, &p, &n);
+    int64_t i = 0; bool neg = false;
+    if (n > 0 && (p[0] == '+' || p[0] == '-')) { neg = p[0] == '-'; i = 1; }
+    if (i >= n) return false;
+    uint64_t v = 0, lim = neg ? 9223372036854775808ULL : 9223372036854775807ULL;
+    for (; i < n; i++) {
+        if (p[i] < '0' || p[i] > '9') return false;
+        unsigned d = (unsigned)(p[i] - '0');
+        if (v > (lim - d) / 10) return false;              /* does not fit in an int */
+        v = v * 10 + d;
+    }
+    *out = neg ? (int64_t)(0 - v) : (int64_t)v;
+    return true;
+}
+static bool rt_parse_real(rt_str s, double *out) {
+    const char *p; int64_t n; rt_strip(s, &p, &n);
+    int64_t i = 0, a = 0, b = 0;
+    if (n > 0 && (p[0] == '+' || p[0] == '-')) i = 1;
+    while (i < n && p[i] >= '0' && p[i] <= '9') { i++; a++; }
+    if (i < n && p[i] == '.') { i++; while (i < n && p[i] >= '0' && p[i] <= '9') { i++; b++; } }
+    if (a == 0 && b == 0) return false;
+    if (i < n && (p[i] == 'e' || p[i] == 'E' || p[i] == 'd' || p[i] == 'D')) {
+        i++;
+        if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+        int64_t e = 0;
+        while (i < n && p[i] >= '0' && p[i] <= '9') { i++; e++; }
+        if (e == 0) return false;
+    }
+    if (i != n) return false;
+    char small[128], *buf = n < 128 ? small : (char *)malloc((size_t)n + 1);
+    if (!buf) rt_fail(0, "out of memory");
+    for (int64_t k = 0; k < n; k++) buf[k] = (p[k] == 'd' || p[k] == 'D') ? 'e' : p[k];
+    buf[n] = 0;
+    *out = strtod(buf, NULL);
+    if (buf != small) free(buf);
+    return true;
+}
+static bool rt_parse_logical(rt_str s, bool *out) {
+    const char *p; int64_t n; rt_strip(s, &p, &n);
+    char w[8];
+    if (n < 1 || n > 7) return false;
+    for (int64_t k = 0; k < n; k++) w[k] = (p[k] >= 'A' && p[k] <= 'Z') ? (char)(p[k] + 32) : p[k];
+    w[n] = 0;
+    if (!strcmp(w, "t") || !strcmp(w, ".t.") || !strcmp(w, "true") || !strcmp(w, ".true.")) { *out = true; return true; }
+    if (!strcmp(w, "f") || !strcmp(w, ".f.") || !strcmp(w, "false") || !strcmp(w, ".false.")) { *out = false; return true; }
+    return false;
+}
 static inline void rt_free_str(rt_str *s) { free(s->p); s->p = NULL; s->n = 0; }
 static rt_str rt_str_new(const char *p, int64_t n, int line) {
     rt_str r;
@@ -757,6 +917,46 @@ static int64_t rt_str_index(rt_str s, rt_str sub, bool back) {
         for (int64_t i = s.n - sub.n; i >= 0; i--) if (sub.n == 0 || memcmp(s.p + i, sub.p, (size_t)sub.n) == 0) return i + 1;
     }
     return 0;
+}
+/* scan: the first (or last) place of `s` holding a character of `set`; verify: one that is not in `set`. 0 for none. */
+static int64_t rt_str_scan(rt_str s, rt_str set, bool back, bool verify) {
+    int64_t found = 0;
+    for (int64_t i = 0; i < s.n; i++) {
+        bool in = set.n > 0 && memchr(set.p, s.p[i], (size_t)set.n) != NULL;
+        if (in != verify) { if (!back) return i + 1; found = i + 1; }
+    }
+    return found;
+}
+/* adjustl / adjustr: the blanks at one end moved to the other (the length stays) */
+static rt_str rt_str_adjust(rt_str s, bool right, int line) {
+    rt_str r = rt_str_new(rt_cs(s), s.n, line);
+    int64_t lead = 0, trail = 0;
+    while (lead < s.n && s.p[lead] == ' ') lead++;
+    while (trail < s.n - lead && s.p[s.n - 1 - trail] == ' ') trail++;
+    if (s.n == 0) return r;
+    if (right) { memmove(r.p + trail, s.p, (size_t)(s.n - trail)); memset(r.p, ' ', (size_t)trail); }
+    else { memmove(r.p, s.p + lead, (size_t)(s.n - lead)); memset(r.p + s.n - lead, ' ', (size_t)lead); }
+    return r;
+}
+static rt_str rt_str_replace(rt_str s, rt_str old, rt_str nw, int line) {
+    if (old.n == 0) rt_fail(line, "replace(): the text to replace must not be empty");
+    int64_t count = 0;
+    for (int64_t i = 0; i + old.n <= s.n; ) { if (memcmp(s.p + i, old.p, (size_t)old.n) == 0) { count++; i += old.n; } else i++; }
+    int64_t n = s.n + count * (nw.n - old.n);
+    rt_str r;
+    r.p = (char *)malloc((size_t)n + 1);
+    if (!r.p) rt_fail(line, "out of memory");
+    int64_t o = 0;
+    for (int64_t i = 0; i < s.n; ) {
+        if (i + old.n <= s.n && memcmp(s.p + i, old.p, (size_t)old.n) == 0) { if (nw.n) memcpy(r.p + o, nw.p, (size_t)nw.n); o += nw.n; i += old.n; }
+        else r.p[o++] = s.p[i++];
+    }
+    r.p[n] = 0; r.n = n;
+    return r;
+}
+static int64_t rt_iachar(rt_str s, int line) {
+    if (s.n != 1) rt_fail(line, "iachar(): needs a one-character string, got \"%.*s\"", (int)s.n, rt_cs(s));
+    return (unsigned char)s.p[0];
 }
 static bool rt_str_starts(rt_str s, rt_str sub) { return sub.n <= s.n && (sub.n == 0 || memcmp(s.p, sub.p, (size_t)sub.n) == 0); }
 static bool rt_str_ends(rt_str s, rt_str sub) { return sub.n <= s.n && (sub.n == 0 || memcmp(s.p + s.n - sub.n, sub.p, (size_t)sub.n) == 0); }

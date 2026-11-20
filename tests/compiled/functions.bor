@@ -1,0 +1,26 @@
+! More built-in functions: bits, reading numbers from text, nan and infinity, text searching,
+! norm2, bounds, findloc, pack and spread.
+program functions
+  ! bits
+  int :: flags = 0
+  flags = ibset(flags, 3)
+  flags = ior(flags, shiftl(1, 5))
+  println("flags", flags, popcnt(flags), btest(flags, 3), trailz(flags), leadz(flags))
+
+  ! numbers from text (the result may be null)
+  string :: line = " 42 "
+  int? :: n = to_integer(line)
+  println(n ?? -1, to_integer("x") ?? -1, to_real("2.5e2") ?? 0.0, to_logical("T") ?? false)
+
+  ! nan and infinity
+  real :: x = nan()
+  println(isnan(x), isinf(infinity()), isnan(1.0))
+
+  ! text
+  println("[" + adjustr("ab  ") + "]", replace("a-b-c", "-", "+"), scan("hello", "lo"), verify("aab", "a"), iachar("A"))
+
+  ! arrays
+  real[2, 3] :: m = reshape([1.0, 5.0, 3.0, 4.0, 2.0, 6.0], [2, 3])
+  println(norm2([3.0, 4.0]), ubound(m), lbound(m, 1), maxloc(m), findloc(m, 2.0), findloc([1, 2, 3], 9))
+  println(pack([1, 2, 3, 4, 5], [1, 2, 3, 4, 5] > 2), spread([1, 2], 1, 2))
+end program functions
