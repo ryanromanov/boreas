@@ -15,12 +15,12 @@ import sys
 import subprocess
 import tempfile
 from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, Comment, Cycle, Deallocate, Decl, Do, DoWhile, Exit, FieldAccess, If, IsType,
-                     MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType, Select, SelectExpr, Arm, literal_value, NOT_LITERAL)
+                     MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType, Select, SelectExpr, Arm, literal_value, NOT_LITERAL, Null)
 from .effects import mark_problem
 from .interp import conformance
 from .tree import statements_in, walk
 from .typecheck import infer
-from .types import Type
+from .types import Type, NULL
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("int", "int32", "real", "real32", "logical")
@@ -28,7 +28,7 @@ CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "fl
 STRFUNCS = {"trim", "upper", "lower", "len", "len_trim", "repeat", "contains", "starts_with", "ends_with", "index"}
 FORMATFUNCS = {"text", "tf", "right", "left", "fixed", "scientific", "general"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
-            "size", "maxval", "minval", "sum", "product", "matmul", "dot_product", "allocated"}
+            "size", "maxval", "minval", "sum", "product", "matmul", "dot_product", "allocated", "present"}
 ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real", "real32", "real64", "asin", "acos", "atan",
               "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "erf", "erfc", "floor", "ceiling", "nint", "aint", "anint",
               "int32", "int64"}
@@ -65,9 +65,25 @@ def all_functions(c):
     return [*c.unit.functions.values(), *c.methods.values()]
 
 
+OPT = "opt__"      # the name an optional value's type goes by in C: r_opt__int, r_opt__string, r_opt__address, ...
+
+
 def isrec(t):
-    """Is `t` a record or an interface (both are structs in C and are copied, freed and printed the same way)?"""
-    return t is not None and t.kind in ("record", "interface")
+    """Is `t` a record or an interface (both are structs in C and are copied, freed and printed the same way)? (An optional
+    one is a struct of its own: see `base_name`.)"""
+    return t is not None and t.kind in ("record", "interface") and not t.optional
+
+
+def base_name(t):
+    """The name of a type without its `?`: the kind, or the record's name."""
+    return t.name if t.kind in ("record", "interface") else t.kind
+
+
+def skind(t):
+    """The name `store` and the free/copy functions know a single value of type `t` by."""
+    if t.optional:
+        return OPT + base_name(t)
+    return t.name if isrec(t) else t.kind
 
 
 def akind(t):
@@ -81,6 +97,8 @@ def ctype(t):
 
 def cscalar(t):
     """The C type of a single value of type `t` (a record is a struct)."""
+    if t.optional:
+        return f"r_{OPT}{base_name(t)}"
     return f"r_{t.name}" if isrec(t) else CSCALAR[t.kind]
 
 
@@ -129,6 +147,7 @@ class Compiler:
         self.selects = []               # the select types being written (innermost last): their `break` labels
         self.type_order = []            # records and interfaces, each after the types it is made of
         self.has_iface = {}             # name -> can a value of it hold an interface value (which may have no value yet)
+        self.optionals = []             # the types of which an optional value is used
         self.deep = {}                  # record name -> does it own text (so that copying and freeing it take work)
 
     # -- refusing what is not handled ---------------------------------------------------------------------------
@@ -139,11 +158,33 @@ class Compiler:
         """Is `t` a type the compiler handles: a single value or array of a number or logical, or one record?"""
         if t is None or not t.known:
             return False
+        if t.optional:                                   # a single number, logical, text or record that may be absent
+            return t.rank == 0 and (t.kind in KINDS or t.kind == "string" or
+                                    (t.kind == "record" and t.name in self.records and not self.has_iface.get(t.name)))
         if isrec(t):
-            return t.rank in (0, 1) and not t.optional and (t.name in self.records or t.name in self.ifaces)
+            return t.rank in (0, 1) and (t.name in self.records or t.name in self.ifaces)
         if t.kind == "string":
-            return t.rank == 0 and not t.optional
+            return t.rank == 0
         return t.kind in KINDS and 0 <= t.rank <= MAX_RANK
+
+    @staticmethod
+    def fopt(fd):
+        return fd.type.endswith("?")
+
+    @staticmethod
+    def fbase(fd):
+        """The type of a field without its `?`."""
+        return fd.type[:-1] if fd.type.endswith("?") else fd.type
+
+    def ftype(self, fd):
+        """The name a field's type goes by in the C text: the type, or opt__<type> for an optional one."""
+        return OPT + fd.type[:-1] if fd.type.endswith("?") else fd.type
+
+    def field_type(self, fd):
+        """The Type of one value of the field `fd`."""
+        base = self.fbase(fd)
+        kind = "record" if base in self.records else "interface" if base in self.ifaces else base
+        return Type(kind, 0, self.fopt(fd), base if kind in ("record", "interface") else "")
 
     def check_records(self):
         """The records of the program: single numbers and logicals and other records only (no functions, arrays or
@@ -154,8 +195,11 @@ class Compiler:
                 self.methods[(name, fname)] = f
                 self.cnames[id(f)] = f"f_{name}__{fname}"
             for fd in r.fields:
-                iface = fd.type in self.unit.interfaces
-                if fd.allocatable or (fd.type not in KINDS and fd.type != "string" and fd.type not in todo and not iface):
+                base = self.fbase(fd)
+                iface = base in self.unit.interfaces
+                if fd.allocatable or (base not in KINDS and base != "string" and base not in todo and not iface):
+                    self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type})", line=fd.line)
+                if self.fopt(fd) and (iface or fd.dims is not None or fd.init is not None):
                     self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type})", line=fd.line)
                 if fd.dims is not None:                        # a fixed-size array of numbers, records or interface values
                     d = fd.dims[0] if len(fd.dims) == 1 else None
@@ -175,8 +219,8 @@ class Compiler:
                 self.refuse(f"record '{name}' inside itself", line=todo[name].line)
             visiting.add(name)
             for fd in todo[name].fields:
-                if fd.type in todo:
-                    visit(fd.type)
+                if self.fbase(fd) in todo:
+                    visit(self.fbase(fd))
             visiting.discard(name)
             self.records[name] = todo[name]
             self.rec_order.append(name)
@@ -202,15 +246,42 @@ class Compiler:
                     self.refuse(f"record '{name}' fits the unknown interface '{iname}'", line=self.records[name].line)
         self.order_types()
 
+    def uses_optional(self):
+        """The types (number kinds, text and records) of which an optional value is used anywhere in the program."""
+        from .tree import walk as _walk
+        bases = set()
+
+        def note(typ):
+            if isinstance(typ, str) and typ.endswith("?"):
+                base = typ[:-1]
+                if base in KINDS or base == "string" or base in self.records:
+                    bases.add(base)
+        for r in self.records.values():
+            for fd in r.fields:
+                note(fd.type)
+        for f in all_functions(self):
+            note(f.ret)
+            for typ, _, _ in f.params:
+                note(typ)
+        for f in [*all_functions(self), None]:
+            for n in _walk(f.body if f else self.unit.program.body):
+                if isinstance(n, Decl):
+                    note(n.type)
+        return sorted(bases)
+
     def order_types(self):
         """Records and interfaces in the order their C types can be written: a record after the records and interfaces its
         fields hold, an interface after the records it can hold. A record that holds an interface value it can itself be (a
         `scene` with a `figure` field that fits `figure`) would be a struct inside itself: refused."""
         deps = {}
         for name, r in self.records.items():
-            deps[name] = [fd.type for fd in r.fields if fd.type in self.records or fd.type in self.ifaces]
+            deps[name] = [self.ftype(fd) for fd in r.fields
+                          if self.fbase(fd) in self.records or self.fbase(fd) in self.ifaces or self.fopt(fd)]
         for name in self.ifaces:
             deps[name] = list(self.members[name])
+        self.optionals = self.uses_optional()
+        for base in self.optionals:                     # the type of an optional value of each kind of record, number and text
+            deps[OPT + base] = [base] if base in self.records else []
         done, visiting = [], set()
 
         def visit(n):
@@ -229,10 +300,14 @@ class Compiler:
         for n in done:                                           # owns text or an interface value; reaches an interface value
             if n in self.ifaces:
                 self.deep[n] = self.has_iface[n] = True
+            elif n.startswith(OPT):
+                base = n[len(OPT):]
+                self.deep[n] = base == "string" or bool(self.deep.get(base))
+                self.has_iface[n] = bool(self.has_iface.get(base))
             else:
                 fields = self.records[n].fields
-                self.deep[n] = any(fd.type == "string" or self.deep.get(fd.type) for fd in fields)
-                self.has_iface[n] = any(fd.type in self.ifaces or self.has_iface.get(fd.type) for fd in fields)
+                self.deep[n] = any(self.fbase(fd) == "string" or self.deep.get(self.ftype(fd)) for fd in fields)
+                self.has_iface[n] = any(self.fbase(fd) in self.ifaces or self.has_iface.get(self.ftype(fd)) for fd in fields)
 
     def iface_function(self, iname, fname):
         return self.ifaces[iname].functions.get(fname)
@@ -311,10 +386,14 @@ class Compiler:
             return Type("record", 1, False, typ[:-2])
         if typ.endswith("[]") and typ[:-2] in self.ifaces:
             return Type("interface", 1, False, typ[:-2])
+        if typ.endswith("?") and typ[:-1] in self.records:                  # an optional record
+            return Type("record", 0, True, typ[:-1])
         t = parse(typ, None)
-        if t.known and t.kind == "string" and t.rank == 0 and not t.optional:
+        if t.known and t.kind == "string" and t.rank == 0:
             return t
-        if not t.known or t.kind not in KINDS or t.optional or not 0 <= t.rank <= MAX_RANK:
+        if t.known and t.optional:
+            return t if t.kind in KINDS and t.rank == 0 else None
+        if not t.known or t.kind not in KINDS or not 0 <= t.rank <= MAX_RANK:
             return None
         return t
 
@@ -366,6 +445,7 @@ class Compiler:
         self.check_type_name(e.type, e)
 
     def check_body(self, body, f):
+        self.opt_ok = set()                                    # the nodes that may be an optional value (what is done with it is handled)
         self.typevars = {n.var for n in walk(body) if isinstance(n, SelectType) and n.var} | \
                         {n.var for n in walk(body) if isinstance(n, IsType) and n.var}
         self.allocs = self.allocs_of(body, f)
@@ -378,7 +458,10 @@ class Compiler:
             if kind is Return:
                 if f is None or (s.value is None) != (f.ret is None):
                     self.refuse("a return that does not match its procedure", s)
-                if f.ret in self.records or f.ret in self.ifaces:
+                self.opt_ok.add(id(s.value))
+                if f.ret.endswith("?") or self.is_optional_value(s.value):
+                    self.check_store(s.value, self.param_type(f.ret), s)
+                elif f.ret in self.records or f.ret in self.ifaces:
                     self.same_record(s.value, f.ret, s)
                 continue
             if kind is Do and s.var in fixed:
@@ -402,10 +485,17 @@ class Compiler:
                 if t is None:
                     what = "allocatable " if s.allocatable else ""
                     self.refuse(f"the declaration of '{s.name}' ({what}{s.type})", s)
-                if isrec(t) and s.init is not None:
+                if s.init is not None:
+                    self.opt_ok.add(id(s.init))
+                if t.optional and s.init is not None:
+                    self.check_store(s.init, t, s)
+                elif isrec(t) and s.init is not None:
                     self.same_record(s.init, s.type, s, t.rank)
+                elif s.init is not None and self.is_optional_value(s.init):
+                    self.check_store(s.init, t, s)
             elif kind is Assign:
                 root = s.target
+                self.opt_ok.update((id(root), id(s.value)))
                 if isinstance(root, FieldAccess):
                     name = self.field_root(root, s)
                     if self.types.get(id(root)) is None or not self.kind_ok(self.types[id(root)]):
@@ -416,7 +506,16 @@ class Compiler:
                     if root.args is not None:
                         if not self.field_element(root):
                             self.refuse("a field with subscripts", s)
-                    if isrec(ft):
+                    b = root.base
+                    while isinstance(b, FieldAccess) or isinstance(b, Var):      # not through a record that may be absent
+                        if self.types.get(id(b)) is not None and self.types[id(b)].optional:
+                            self.refuse("an assignment through a record that may be absent", s)
+                        if isinstance(b, Var):
+                            break
+                        b = b.base
+                    if ft.optional or self.is_optional_value(s.value):
+                        self.check_store(s.value, ft, s)
+                    elif isrec(ft):
                         self.same_record(s.value, ft.name, s)
                     else:
                         self.fits(s.value, ft.kind, f"the field '{root.field}'", s)
@@ -433,14 +532,18 @@ class Compiler:
                 if root.name in self.typevars:
                     self.refuse(f"an assignment to '{root.name}', the copy a select type or `is` made", s)
                 tt = self.vars_type(root.name, body, f)
-                if isrec(tt):
+                if tt is not None and (tt.optional or self.is_optional_value(s.value)):
+                    if isinstance(root, Apply):
+                        self.refuse("a subscript on an optional value", s)
+                    self.check_store(s.value, tt, s)
+                elif isrec(tt):
                     if isinstance(root, Apply):
                         if tt.rank != 1 or not self.record_element(root):
                             self.refuse("a subscript on a record", s)
                         self.same_record(s.value, tt.name, s)
                     else:
                         self.same_record(s.value, tt.name, s, tt.rank)
-                if tt is not None and tt.kind == "string":
+                if tt is not None and tt.kind == "string" and not tt.optional and not self.is_optional_value(s.value):
                     vt = self.types.get(id(s.value))
                     if isinstance(root, Apply):
                         self.refuse("an assignment to part of a text", s)
@@ -449,12 +552,14 @@ class Compiler:
             elif kind is Print:
                 if s.to is not None:
                     self.refuse("printing to a file", s)
+                self.opt_ok.update(id(a) for a in s.args)
             elif kind is Call:
                 callee, args = self.call_target(s)          # (not `f`: that is the procedure this body belongs to)
                 if callee is None:
                     self.refuse(f"the call of '{s.name}'", s)
                 if mark_problem(callee, s):
                     self.refuse(f"a call of '{s.name}' that the interpreter rejects", s)
+                self.opt_ok.update(id(a) for a in args)
                 self.check_aliasing(s, fixed)
             else:
                 self.refuse(f"a {kind.__name__} statement", s)
@@ -471,6 +576,38 @@ class Compiler:
             if isinstance(d, Decl) and d.name == name:
                 return self.decl_type(d)
         return None
+
+    def is_optional_value(self, e):
+        t = self.types.get(id(e))
+        return t is not None and (t.optional or t.kind == "null")
+
+    def coalesce_ok(self, e):
+        """`a ?? b`: `a` optional, and `b` of the same kind (or a literal number for a real or int32: converted as stored)."""
+        lt, rt = self.types[id(e.left)], self.types[id(e.right)]
+        if base_name(lt) != base_name(rt) and not (isinstance(e.right, Num) and lt.kind in ("real", "real32", "int32")
+                                                    and rt.kind in ("int", "real")):
+            return False
+        return self.types[id(e)].kind == lt.kind
+
+    def check_store(self, value, target, node):
+        """`value` can be stored in a place of type `target` when one of them may be absent: `null` only into an optional place,
+        an optional value only where the base type is the same (an absent one stops the program at run time, as the
+        interpreter does), a plain value as it always could."""
+        vt = self.types.get(id(value))
+        if vt is None or vt.rank != 0 or not self.kind_ok(target):
+            self.refuse("a value that does not fit an optional place", node)
+        if vt.kind == "null":
+            if not target.optional:
+                self.refuse("null stored in a plain place", node)
+            return
+        if vt.optional:
+            if base_name(vt) != base_name(target) or (target.kind not in ("record", "interface") and vt.kind != target.kind):
+                self.refuse("an optional value of another type", node)
+            return
+        if target.kind == "record":
+            self.same_record(value, target.name, node)
+        else:
+            self.fits(value, target.kind, "an optional place", node)
 
     def same_record(self, value, name, node, rank=0):
         """`value` must be a record of the type `name` (anything else is the interpreter's runtime error: refused). Stored in an
@@ -542,8 +679,13 @@ class Compiler:
         return e.name
 
     def check_call_args(self, f, args, node):
-        for a, (typ, _, _) in zip(args, f.params):
+        for a, (typ, _, intent) in zip(args, f.params):
             at, pt = self.types.get(id(a)), self.param_type(typ)
+            if pt is not None and (pt.optional or self.is_optional_value(a)):
+                if intent != "in":
+                    self.refuse(f"the call of '{f.name}' with an optional value passed as {intent}", node)
+                self.check_store(a, pt, node)
+                continue
             if pt is not None and (pt.kind == "string" or (at is not None and at.kind == "string")):
                 if at is None or at.kind != pt.kind or at.rank != pt.rank:
                     self.refuse(f"the call of '{f.name}' with an argument that is not what the parameter takes", node)
@@ -574,10 +716,15 @@ class Compiler:
         f = self.iface_function(rt.name, s.name) if rt.kind == "interface" else self.methods.get((rt.name, s.name))
         return f, [s.receiver] + list(s.args)
 
+    @staticmethod
+    def arity_ok(f, n):
+        """A call gives every parameter a value, except that optional ones at the end may be left off."""
+        return n == len(f.params) or (n < len(f.params) and all(isinstance(typ, str) and typ.endswith("?") for typ, _, _ in f.params[n:]))
+
     def check_aliasing(self, s, fixed=()):
         f, args = self.call_target(s)
-        if len(args) != len(f.params):
-            self.refuse(f"a call of '{s.name}' with optional or missing arguments", s)
+        if not self.arity_ok(f, len(args)):
+            self.refuse(f"a call of '{s.name}' with missing arguments", s)
         self.check_call_args(f, args, s)
         roots = [self.root_name(a) for a in args]
         for a, (typ, pname, intent) in zip(args, f.params):
@@ -604,6 +751,13 @@ class Compiler:
         return getattr(a, "name", None)
 
     def decl_type(self, d):
+        if d.type.endswith("?"):                                            # `int? :: n`, `address? :: home`
+            base = d.type[:-1]
+            if d.dims is not None or d.allocatable or d.const:
+                return None
+            if base in KINDS or base == "string":
+                return Type(base, 0, True)
+            return Type("record", 0, True, base) if base in self.records else None
         if d.type in self.ifaces:
             if d.dims is not None and len(d.dims) == 1 and not d.allocatable and not d.const:
                 return Type("interface", 1, False, d.type)
@@ -633,6 +787,9 @@ class Compiler:
             return
         if kind in self.STATEMENTS:
             return
+        t0 = self.types.get(id(e))
+        if t0 is not None and (t0.optional or t0.kind == "null") and id(e) not in self.opt_ok:
+            self.refuse("an optional value (or null) where a plain value is needed", e)
         if kind is Str:
             if not all(0 < ord(ch) < 128 for ch in e.value):
                 self.refuse("text with a character outside ASCII", e)
@@ -656,6 +813,8 @@ class Compiler:
         if kind is FieldAccess and e.args is not None and not e.bracket:          # x.area(): a record's function
             bt = self.types.get(id(e.base))
             f = None
+            if bt is not None and bt.optional:
+                self.refuse("a function called on a record that may be absent", e)
             if bt is not None and bt.rank == 0 and bt.kind == "record":
                 f = self.methods.get((bt.name, e.field))
             elif bt is not None and bt.rank == 0 and bt.kind == "interface":
@@ -667,6 +826,10 @@ class Compiler:
             if not self.kind_ok(t):
                 self.refuse(f"a result of type {t if t is not None else 'unknown'}", e)
             return
+        if kind is FieldAccess and not self.is_method_call(e) and self.types.get(id(e.base)) is not None and self.types[id(e.base)].optional:
+            if self.dotted(e.base) is None:
+                self.refuse("a field of an optional record that is not a variable or a field of one", e)
+            self.opt_ok.add(id(e.base))
         if kind is FieldAccess:
             src = self.field_source(e, e)
             t = self.types.get(id(e))
@@ -681,24 +844,42 @@ class Compiler:
             if t.kind == "interface" and self.dotted(e) is None:
                 self.refuse("an interface field of a computed value", e)
             return
+        if kind is Null:
+            return
         if kind not in (Num, Bool, Var, Unary, Binary, Apply, ArrayLit, MatrixLit):
             if kind is IsType:
                 self.refuse("a type test", e)
             self.refuse(f"a {kind.__name__}", e)
         if kind in (Unary, Binary):
+            operands = (e.operand,) if kind is Unary else (e.left, e.right)
+            if any(self.is_optional_value(x) for x in operands):             # which operators take an optional operand
+                kinds_ = {self.types[id(x)].kind for x in operands}
+                numeric = all(self.types[id(x)].kind in ("int", "int32", "real", "real32") for x in operands)
+                if kind is Unary:
+                    ok = e.op in ("-", "not") and self.types[id(e.operand)].kind != "null"
+                elif e.op == "??":
+                    ok = self.types[id(e.left)].optional and self.types[id(e.right)].kind != "null" and \
+                        self.coalesce_ok(e)
+                elif e.op in ("==", "/="):
+                    ok = "null" in kinds_ or (numeric or kinds_ <= {"string", "logical"})
+                else:
+                    ok = e.op in ("+", "-", "*", "/", "**", "<", "<=", ">", ">=") and numeric
+                if not ok:
+                    self.refuse(f"an optional operand of '{e.op}'", e)
+                self.opt_ok.update(id(x) for x in operands)
             for x in ((e.operand,) if kind is Unary else (e.left, e.right)):
                 xt = self.types.get(id(x))
-                if isrec(xt):
+                if isrec(xt) and e.op != "??":
                     self.refuse(f"a record with the operator '{e.op}'", e)
             kinds = {self.types[id(x)].kind if self.types.get(id(x)) is not None else None
                      for x in ((e.operand,) if kind is Unary else (e.left, e.right))}
             if "string" in kinds:                       # text: joined with +, compared; anything else is the checker's error
-                ok = kind is Binary and e.op in ("+", "==", "/=", "<", "<=", ">", ">=") and kinds == {"string"}
+                ok = kind is Binary and e.op in ("+", "==", "/=", "<", "<=", ">", ">=", "??") and (kinds == {"string"} or (e.op in ("==", "/=", "??") and kinds <= {"string", "null"}))
                 if not ok:
                     self.refuse(f"text with the operator '{e.op}'", e)
         if kind is Unary and e.op not in ("-", "+", "not"):
             self.refuse(f"the operator '{e.op}'", e)
-        if kind is Binary and e.op not in ("+", "-", "*", "/", "**", "==", "/=", "<", "<=", ">", ">=", "and", "or"):
+        if kind is Binary and e.op not in ("+", "-", "*", "/", "**", "==", "/=", "<", "<=", ">", ">=", "and", "or", "??"):
             self.refuse(f"the operator '{e.op}'", e)
         if kind is MatrixLit and isrec(self.types.get(id(e))):
             self.refuse("a matrix of records", e)
@@ -725,11 +906,17 @@ class Compiler:
                         if x is not None and (xt is None or xt.rank != 0 or xt.kind not in ("int", "int32")):
                             self.refuse("a text index that is not a whole number", e)
             elif e.name in self.records:
+                self.opt_ok.update(id(a.value if isinstance(a, NamedArg) else a) for a in e.args)
                 self.check_constructor(e)
             elif e.name in self.unit.functions:
+                self.opt_ok.update(id(a) for a in e.args)
                 self.check_call_args(self.unit.functions[e.name], e.args, e)
             elif e.name not in BUILTINS:
                 self.refuse(f"the function '{e.name}'", e)
+            elif e.name == "present":
+                if len(e.args) != 1 or self.types.get(id(e.args[0])) is None or self.types[id(e.args[0])].rank != 0:
+                    self.refuse("present() of anything but one single value", e)
+                self.opt_ok.add(id(e.args[0]))
             else:
                 for a in e.args:
                     at = self.types.get(id(a))
@@ -759,10 +946,14 @@ class Compiler:
         by_name = {f.name: f for f in r.fields}
         for fname, a in zip(given, pos + named):
             value = a.value if isinstance(a, NamedArg) else a
-            ft = by_name[fname].type
+            ft = self.fbase(by_name[fname])
             if by_name[fname].dims is not None:
                 self.refuse(f"a call of {e.name}() giving the array field '{fname}'", e)
-            if ft in self.records or ft in self.ifaces:
+            if self.fopt(by_name[fname]) or self.is_optional_value(value):
+                if not self.fopt(by_name[fname]):
+                    self.refuse(f"a call of {e.name}() giving an optional value to the plain field '{fname}'", e)
+                self.check_store(value, self.field_type(by_name[fname]), e)
+            elif ft in self.records or ft in self.ifaces:
                 self.same_record(value, ft, e)
             else:
                 self.fits(value, ft, f"the field '{fname}'", e)
@@ -965,6 +1156,8 @@ class Compiler:
         and rounds once (16777217 + 0.5 is 16777218.0, not 16777216.0)."""
         v = self.raw(e)
         target = self.conv.get(id(e))
+        if v.t.optional or v.t.kind == "null":
+            return v
         if exact and target is not None and target.kind == "real32" and v.t.kind in ("int", "int32"):
             return v
         if target is not None and target.kind != v.t.kind:
@@ -995,6 +1188,8 @@ class Compiler:
             return V(Type("int"), f"INT64_C({e.value})")
         if t is Bool:
             return V(Type("logical"), "true" if e.value else "false")
+        if t is Null:
+            return V(NULL, "0")
         if t is Str:
             return V(Type("string"), f"RT_LIT({c_string(e.value)})")
         if t is Var:
@@ -1017,6 +1212,16 @@ class Compiler:
             bt = self.types[id(e.base)]
             f = self.iface_function(bt.name, e.field) if bt.kind == "interface" else self.methods[(bt.name, e.field)]
             return self.call_function(f, [e.base] + list(e.args), self.line)
+        if t is FieldAccess and self.types[id(e.base)].optional:         # a field of a record that may be absent
+            ft = self.types[id(e)]
+            b = self.value(e.base)
+            self.emit(f"if (!{b.atom}.has) rt_fail({self.line}, {c_string("'" + self.dotted(e.base) + "' is null, so it has no fields (check with present())")});")
+            place = f"{b.atom}.v.m_{e.field}"
+            if e.args is not None:
+                i = self.tmp("int64_t", self.scalar(e.args[0], "int"))
+                self.emit(f"rt_check_index({i}, {self.field_size(self.types[id(e.base)].name, e.field)}, 1, 1, {self.line});")
+                place += f"[{i} - 1]"
+            return V(ft, self.tmp(cscalar(ft), place))
         if t is FieldAccess:
             ft = self.types[id(e)]
             if self.field_source(e, e) is None:                    # a field of what a call gives
@@ -1055,6 +1260,8 @@ class Compiler:
     def unary(self, e):
         v = self.value(e.operand)
         line = self.line
+        if v.t.optional:
+            v = self.unwrap(v, f"'{e.op}' cannot be used with null; check with present() or use ??")
         kind = v.t.kind
         if v.t.rank == 0:
             if e.op == "not":
@@ -1085,8 +1292,63 @@ class Compiler:
 
     def binary(self, e):
         op, line = e.op, self.line
+        if op == "??":
+            return self.coalesce(e)
         flags = (1 if self.types[id(e.left)].kind == "int" else 0) | (2 if self.types[id(e.right)].kind == "int" else 0)
         lv, rv = self.value(e.left, exact=True), self.value(e.right, exact=True)
+        if any(v.t.optional or v.t.kind == "null" for v in (lv, rv)):
+            return self.optional_binary(op, lv, rv, flags, line)
+        return self.binary_values(op, lv, rv, flags, line)
+
+    def optional_binary(self, op, lv, rv, flags, line):
+        """An operator with an optional operand: `==` and `/=` say whether both are absent or both are present and equal; any
+        other stops when an operand is absent."""
+        has = lambda v: f"{v.atom}.has" if v.t.optional else ("false" if v.t.kind == "null" else "true")
+        plain = lambda v: V(Type(v.t.kind, 0, False, v.t.name), f"{v.atom}.v") if v.t.optional else v
+        if op in ("==", "/="):
+            res = self.tmp("bool", "false")
+            self.emit(f"if ({has(lv)} && {has(rv)}) {{")
+            self.depth += 1
+            if lv.t.kind != "null" and rv.t.kind != "null":
+                inner = self.binary_values(op, plain(lv), plain(rv), flags, line)
+                self.emit(f"{res} = {inner.atom};")
+            self.depth -= 1
+            self.emit(f"}} else {{ {res} = ({has(lv)} {'==' if op == '==' else '!='} {has(rv)}); }}")
+            return V(Type("logical"), res)
+        need = " && ".join(f"{v.atom}.has" for v in (lv, rv) if v.t.optional)
+        self.emit(f'if (!({need})) rt_fail({line}, {c_string(f"operator {op!r} cannot be used with null; check with present() or use ??")});')
+        return self.binary_values(op, plain(lv), plain(rv), flags, line)
+
+    def coalesce(self, e):
+        """`a ?? b`: `a` when it has a value, else `b` (which is only worked out then)."""
+        rt, line = self.types[id(e)], self.line
+        lv = self.value(e.left)
+        if not lv.t.optional:                                  # a plain value is never absent
+            return lv
+        self.n += 1
+        res = f"t{self.n}"
+        sk = skind(rt)
+        self.emit(f"{cscalar(rt)} {res} = {{0}};")
+        if rt.kind == "string" and not rt.optional:
+            self.temps.append(("str", res))
+        elif self.deep.get(sk):
+            self.temps.append((f"rec_{sk}", res))
+        self.emit(f"if ({lv.atom}.has) {{")
+        self.depth += 1
+        self.store(res, lv.atom if rt.optional else f"{lv.atom}.v", sk)
+        self.depth -= 1
+        self.emit("} else {")
+        self.depth += 1
+        saved, self.temps = self.temps, []
+        self.store(res, self.coerce(self.value(e.right), rt, "the fallback of ??"), sk)
+        for k, name in self.temps:
+            self.emit(f"rt_free_{k}(&{name});")
+        self.temps = saved
+        self.depth -= 1
+        self.emit("}")
+        return V(rt, res)
+
+    def binary_values(self, op, lv, rv, flags, line):
         compare = op in ("==", "/=", "<", "<=", ">", ">=")
         logic = op in ("and", "or")
         if lv.t.kind == "string":
@@ -1299,6 +1561,8 @@ class Compiler:
             else:
                 v = self.value(a)
                 out.append(v.atom)
+        for typ, pname, intent in f.params[len(args):]:               # optional parameters left off arrive absent
+            out.append(f"(({cscalar(self.param_type(typ))}){{0}})")
         return out
 
     def dotted(self, e):
@@ -1341,14 +1605,9 @@ class Compiler:
         by_name = {f.name: f for f in r.fields}
         for fname, a in zip(names[:len(pos)] + [a.name for a in named], pos + named):
             value = a.value if isinstance(a, NamedArg) else a
-            ft = by_name[fname].type
-            if ft in self.ifaces:
-                atom = self.typed(value, Type("interface", 0, False, ft))
-            elif ft in self.records:
-                atom = self.value(value).atom
-            else:
-                atom = self.scalar(value, ft, f"field '{fname}' of {e.name}")
-            self.store(f"{res}.m_{fname}", atom, ft)
+            ftp = self.field_type(by_name[fname])
+            atom = self.typed(value, ftp, f"field '{fname}' of {e.name}")
+            self.store(f"{res}.m_{fname}", atom, skind(ftp))
         if self.deep[e.name]:
             self.temps.append((f"rec_{e.name}", res))
         return V(Type("record", 0, False, e.name), res)
@@ -1363,9 +1622,36 @@ class Compiler:
 
     def typed(self, e, target, what=""):
         """The C value of `e` for a place of type `target`."""
+        return self.coerce(self.value(e), target, what)
+
+    def coerce(self, v, target, what=""):
+        """The C value of `v` for a place of type `target`: an optional place takes a value (wrapped), `null` or an optional
+        value of its own type; a plain place takes a value, or an optional one that must not be absent."""
+        if target.optional:
+            ct = cscalar(target)
+            if v.t.kind == "null":
+                return f"(({ct}){{0}})"
+            if v.t.optional:
+                return v.atom
+            atom = v.atom if v.t.kind == target.kind else self.narrow(v.atom, v.t.kind, target.kind, self.line, what)
+            return f"(({ct}){{true, {atom}}})"
+        if v.t.optional:
+            name = base_name(target)
+            prefix = what + ": " if what.startswith(("function ", "argument ")) else ""
+            v = self.unwrap(v, f"{prefix}cannot assign null to {name} (declare it '{name}?' to allow null)",
+                            "call_line" if what.startswith("function ") else None)       # (a result is checked at the call)
         if isrec(target):
-            return self.convert(self.value(e), target)
-        return self.scalar(e, target.kind, what)
+            return self.convert(v, target)
+        if v.t.rank != 0:
+            raise NotCompiled("an array where a single value is needed", self.line)
+        if v.t.kind != target.kind:
+            return self.narrow(v.atom, v.t.kind, target.kind, self.line, what)
+        return v.atom
+
+    def unwrap(self, v, message, line=None):
+        """The value inside the optional value `v`, after stopping with `message` if there is none."""
+        self.emit(f"if (!{v.atom}.has) rt_fail({line or self.line}, {c_string(message)});")
+        return V(Type(v.t.kind, 0, False, v.t.name), f"{v.atom}.v")
 
     def check_assigned(self, lv, name, element):
         """An interface value that was never given one cannot be used."""
@@ -1467,15 +1753,15 @@ class Compiler:
 
     def call_function(self, f, nodes, line):
         """A call of the function `f` (a record's function gets the record first) as a value."""
-        if len(nodes) != len(f.params):
-            raise NotCompiled(f"a call of '{f.name}' with optional or missing arguments", line)
+        if not self.arity_ok(f, len(nodes)):
+            raise NotCompiled(f"a call of '{f.name}' with missing arguments", line)
         args = self.call_args(f, nodes)
         self.emit(f'rt_call_in({line}, "{f.name}");')
         rt = self.param_type(f.ret)
         call = f"{self.cnames[id(f)]}({', '.join(args)})"
-        result = self.tmp_str(call) if rt.kind == "string" else self.tmp(cscalar(rt), call)
-        if isrec(rt) and self.deep[rt.name]:
-            self.temps.append((f"rec_{rt.name}", result))
+        result = self.tmp_str(call) if rt.kind == "string" and not rt.optional else self.tmp(cscalar(rt), call)
+        if (isrec(rt) or rt.optional) and self.deep[skind(rt)]:
+            self.temps.append((f"rec_{skind(rt)}", result))
         self.emit("rt_call_out();")
         return V(rt, result)
 
@@ -1670,6 +1956,9 @@ class Compiler:
 
     def builtin(self, e):
         line, name = self.line, e.name
+        if name == "present":                                     # is there a value (a plain value always is)
+            v = self.value(e.args[0])
+            return V(Type("logical"), self.tmp("bool", f"{v.atom}.has" if v.t.optional else "false" if v.t.kind == "null" else "true"))
         if name == "size" and isinstance(e.args[0], FieldAccess) and e.args[0].args is None:       # the size written in the record
             a = e.args[0]
             n = self.field_size(self.types[id(a.base)].name, a.field)
@@ -1881,10 +2170,13 @@ class Compiler:
         line = self.line
         self.emit(f"if (decl_{s.name}) rt_fail({line}, \"'{s.name}' already declared\"); decl_{s.name} = true;")
         if t.rank == 0:
-            if s.init is not None and t.kind == "string":
-                self.emit(f"rt_str_set(&{name}, {self.scalar(s.init, 'string')}, {line});")
+            if t.optional:                                              # absent unless given a value
+                atom = self.typed(s.init, t, f"line {line}") if s.init is not None else f"(({cscalar(t)}){{0}})"
+                self.store(name, atom, skind(t))
+            elif s.init is not None and t.kind == "string":
+                self.emit(f"rt_str_set(&{name}, {self.typed(s.init, t, f'line {line}')}, {line});")
             elif s.init is not None:
-                self.store(name, self.typed(s.init, t, f'line {line}'), t.name if isrec(t) else t.kind)
+                self.store(name, self.typed(s.init, t, f'line {line}'), skind(t))
             elif isrec(t) and self.deep[t.name]:
                 self.emit(f"rt_free_rec_{t.name}(&{name}); {name} = d_{t.name}();")
             elif isrec(t):
@@ -1926,7 +2218,7 @@ class Compiler:
         if isinstance(target, FieldAccess):
             ft = self.types[id(target)]
             lv = self.field_lvalue(target)
-            self.store(lv, self.typed(s.value, ft, f'line {line}'), ft.name if isrec(ft) else ft.kind)
+            self.store(lv, self.typed(s.value, ft, f'line {line}'), skind(ft))
             return
         t = self.vars[target.name][0]
         if isinstance(target, Apply) and any(isinstance(a, Slice) for a in target.args):
@@ -1934,14 +2226,14 @@ class Compiler:
             return
         if isinstance(target, Apply):                                   # an element: its subscripts first
             lv = self.lvalue(target)
-            self.store(lv, self.typed(s.value, t.element(), f'line {line}'), t.name if isrec(t) else t.kind)
+            self.store(lv, self.typed(s.value, t.element(), f'line {line}'), skind(t))
             return
         name = self.vars[target.name][1]
-        if t.kind == "string":
-            self.emit(f"rt_str_set(&{name}, {self.scalar(s.value, 'string')}, {line});")
+        if t.kind == "string" and not t.optional:
+            self.emit(f"rt_str_set(&{name}, {self.typed(s.value, t, f'line {line}')}, {line});")
             return
         if t.rank == 0:
-            self.store(name, self.typed(s.value, t, f'line {line}'), t.name if isrec(t) else t.kind)
+            self.store(name, self.typed(s.value, t, f'line {line}'), skind(t))
             if target.name in self.outs:
                 self.emit(f"*set_{target.name} = true;")
             return
@@ -2303,10 +2595,7 @@ class Compiler:
     def st_return(self, s):
         if self.func is not None and self.func.ret is not None:
             rt = self.param_type(self.func.ret)
-            if rt.kind == "string":
-                self.emit(f"rt_str_set(&ret, {self.scalar(s.value, 'string')}, {self.line});")
-            else:
-                self.store("ret", self.typed(s.value, rt, f'function {self.func.name}'), rt.name if isrec(rt) else rt.kind)
+            self.store("ret", self.typed(s.value, rt, f'function {self.func.name}'), skind(rt))
         for k, name in self.temps:                 # this statement's temporaries, which the jump would skip
             self.emit(f"rt_free_{k}(&{name});")
         self.emit("goto fn_end;")
@@ -2321,7 +2610,12 @@ class Compiler:
         parts = []
         for a in s.args:
             v = self.value(a)
-            parts.append(("rec:" + v.t.name if isrec(v.t) else v.t.kind, v.t.rank, v.atom if v.t.rank == 0 else v))
+            if v.t.optional:
+                parts.append(("rec:" + skind(v.t), 0, v.atom))                    # w_opt__int ... print the value, or null
+            elif v.t.kind == "null":
+                parts.append(("null", 0, "0"))
+            else:
+                parts.append(("rec:" + v.t.name if isrec(v.t) else v.t.kind, v.t.rank, v.atom if v.t.rank == 0 else v))
         for kind, rank, atom in parts:                 # a record with an interface value that has none cannot be printed: before any output
             if kind.startswith("rec:") and self.has_iface[kind[4:]]:
                 if rank == 0:
@@ -2332,7 +2626,9 @@ class Compiler:
         for i, (kind, rank, atom) in enumerate(parts):
             if i:
                 self.emit("rt_write_sep();")
-            if rank == 0:
+            if kind == "null":
+                self.emit('rt_write_str("null");')
+            elif rank == 0:
                 self.emit(f"{'w_' + kind[4:] if kind.startswith('rec:') else WRITERS[kind]}({atom});")
             elif kind.startswith("rec:"):
                 self.emit(f"rt_write_ra_{kind[4:]}_arr(&{atom.atom});")
@@ -2351,8 +2647,8 @@ class Compiler:
         f, nodes = self.call_target(s)
         if f.ret is not None:
             raise NotCompiled(f"'{s.name}' is a function; use it in an expression", s.line)
-        if len(nodes) != len(f.params):
-            raise NotCompiled(f"a call of '{s.name}' with optional or missing arguments", s.line)
+        if not self.arity_ok(f, len(nodes)):
+            raise NotCompiled(f"a call of '{s.name}' with missing arguments", s.line)
         args = self.call_args(f, nodes)
         after = self.after_call
         self.emit(f'rt_call_in({s.line}, "{s.name}");')
@@ -2424,7 +2720,11 @@ class Compiler:
                 seen.add(d.name)
                 t = self.vars[d.name][0]
                 self.emit(f"bool decl_{d.name} = false;")
-                if t.kind == "string":
+                if t.optional:
+                    self.emit(f"{cscalar(t)} {c_name(d.name)} = {{0}};")
+                    if self.deep[skind(t)]:
+                        self.arrays.append((f"rec_{skind(t)}", c_name(d.name)))
+                elif t.kind == "string":
                     self.emit(f"rt_str {c_name(d.name)} = {{0}};")
                     self.arrays.append(("str", c_name(d.name)))
                 elif isrec(t) and t.rank == 0 and self.deep[t.name]:
@@ -2443,13 +2743,13 @@ class Compiler:
         head = f"static {cscalar(rt) if rt else 'void'} {self.cnames[id(f)]}({self.c_params(f)})"
         self.lines, self.depth, self.line, self.arrays = [], 1, 0, []
         if rt:
-            start = f"d_{rt.name}()" if isrec(rt) else "{0}" if rt.kind == "string" else "false" if rt.kind == "logical" else "0"
+            start = "{0}" if rt.optional else f"d_{rt.name}()" if isrec(rt) else "{0}" if rt.kind == "string" else "false" if rt.kind == "logical" else "0"
             self.emit(f"{cscalar(rt)} ret = {start};")
             self.emit("int call_line = rt_call_line;")
         self.local_declarations(f.params, f.body)
         self.block(f.body)
         if f.ret is not None:
-            self.emit(f'rt_fail(call_line, "function {f.name} must return a {f.ret if f.ret in self.records or f.ret in self.ifaces else self.param_type(f.ret).kind}");')
+            self.emit(f'rt_fail(call_line, "function {f.name} must return a {f.ret if f.ret in self.records or f.ret in self.ifaces or f.ret.endswith("?") else self.param_type(f.ret).kind}");')
         self.emit("fn_end: ;")
         for k, name in self.arrays:
             self.emit(f"rt_free_{k}(&{name});")
@@ -2457,7 +2757,8 @@ class Compiler:
         return head + ";", "\n".join([head + " {"] + self.lines + ["}"])
 
     def field_ctype(self, fd):
-        return f"r_{fd.type}" if fd.type in self.records or fd.type in self.ifaces else CSCALAR[fd.type]
+        t = self.ftype(fd)
+        return f"r_{t}" if t in self.records or t in self.ifaces or t.startswith(OPT) else CSCALAR[t]
 
     def field_size(self, rec, field):
         """The size of the array field `field` of record `rec`, or None when it is a single value."""
@@ -2475,20 +2776,21 @@ class Compiler:
         if self.deep[name]:                                   # free, copy, and store (copy, then free the old)
             free, copy = [], []
             for fd in r.fields:
-                own = fd.type == "string" or self.deep.get(fd.type)
+                ft = self.ftype(fd)
+                own = ft == "string" or self.deep.get(ft)
                 if not own:
                     continue
                 m = f"m_{fd.name}"
-                if fd.type == "string":
+                if ft == "string":
                     free.append(f"rt_free_str(&r->{m});")
                     copy.append(f"r.{m} = rt_str_new(rt_cs(a.{m}), a.{m}.n, 0);")
                 elif fd.dims:
                     n = fd.dims[0].value
-                    free.append(f"for (int i = 0; i < {n}; i++) rt_free_rec_{fd.type}(&r->{m}[i]);")
-                    copy.append(f"for (int i = 0; i < {n}; i++) r.{m}[i] = rt_copy_rec_{fd.type}(a.{m}[i]);")
+                    free.append(f"for (int i = 0; i < {n}; i++) rt_free_rec_{ft}(&r->{m}[i]);")
+                    copy.append(f"for (int i = 0; i < {n}; i++) r.{m}[i] = rt_copy_rec_{ft}(a.{m}[i]);")
                 else:
-                    free.append(f"rt_free_rec_{fd.type}(&r->{m});")
-                    copy.append(f"r.{m} = rt_copy_rec_{fd.type}(a.{m});")
+                    free.append(f"rt_free_rec_{ft}(&r->{m});")
+                    copy.append(f"r.{m} = rt_copy_rec_{ft}(a.{m});")
             out.append(f"static void rt_free_rec_{name}(r_{name} *r) {{ {' '.join(free)} }}")
             out.append(f"static r_{name} rt_copy_rec_{name}(r_{name} a) {{ r_{name} r = a; {' '.join(copy)} return r; }}")
             out.append(f"static void rt_set_rec_{name}(r_{name} *dst, r_{name} src) {{ r_{name} c = rt_copy_rec_{name}(src); "
@@ -2497,8 +2799,8 @@ class Compiler:
         body = []
         for fd in r.fields:
             m = f"r.m_{fd.name}"
-            if fd.type in self.records or fd.type in self.ifaces:
-                value = f"d_{fd.type}()"
+            if self.ftype(fd) in self.records or self.ftype(fd) in self.ifaces or self.fopt(fd):
+                value = f"d_{self.ftype(fd)}()"
             elif fd.init is not None:
                 value = self.field_default(fd, self.records)
             elif fd.type == "string":
@@ -2512,7 +2814,8 @@ class Compiler:
         out.append(f"static r_{name} d_{name}(void) {{ r_{name} r; " + " ".join(body) + " return r; }")
         parts = []
         for i, fd in enumerate(r.fields):
-            writer = f"w_{fd.type}" if fd.type in self.records or fd.type in self.ifaces else WRITERS[fd.type]
+            ft = self.ftype(fd)
+            writer = f"w_{ft}" if ft in self.records or ft in self.ifaces or self.fopt(fd) else WRITERS[ft]
             label = f'rt_write_str({c_string((", " if i else "") + fd.name + "=")});'
             if fd.dims:
                 parts.append(f'{label} rt_write_str("["); for (int i = 0; i < {fd.dims[0].value}; i++) {{ if (i) rt_write_str(", "); '
@@ -2531,6 +2834,8 @@ class Compiler:
         yet (as the interpreter finds it when asked to print), and `chk_<name>` stops with its message about printing."""
         out = []
         reach = lambda t: t in self.ifaces or self.has_iface.get(t)
+        if any(self.fopt(fd) and reach(self.fbase(fd)) for fd in self.records.get(name, type("", (), {"fields": []})).fields):
+            self.refuse(f"an optional field of a record that can hold an interface value (in '{name}')")
         if name in self.ifaces:
             cases = " ".join(f"case {i + 1}: return un_{r}(&v->u.m_{r}, prefix, out);" for i, r in enumerate(self.members[name]) if self.has_iface[r])
             out.append(f"static const char *un_{name}(const r_{name} *v, const char *prefix, char *out) {{ switch (v->tag) {{ {cases} default: return NULL; }} }}")
@@ -2559,7 +2864,30 @@ class Compiler:
         """All the C types: each record and interface after the types it is made of."""
         out = []
         for n in self.type_order:
-            out.extend(self.iface_block(n) if n in self.ifaces else self.record_block(n))
+            if n.startswith(OPT):
+                out.extend(self.optional_block(n[len(OPT):]))
+            else:
+                out.extend(self.iface_block(n) if n in self.ifaces else self.record_block(n))
+        return out
+
+    def optional_block(self, base):
+        """The struct of an optional value of type `base` (`has` says whether there is one), how it is copied and freed when the
+        value owns text, and how it prints (`null` when absent)."""
+        name = OPT + base
+        ct = f"r_{base}" if base in self.records else CSCALAR[base]
+        out = [f"typedef struct {{ bool has; {ct} v; }} r_{name};"]
+        if self.deep[name]:
+            if base == "string":
+                free, copy = "rt_free_str(&r->v);", "c.v = rt_str_new(rt_cs(a.v), a.v.n, 0);"
+            else:
+                free, copy = f"rt_free_rec_{base}(&r->v);", f"c.v = rt_copy_rec_{base}(a.v);"
+            out.append(f"static void rt_free_rec_{name}(r_{name} *r) {{ if (r->has) {{ {free} }} r->has = false; }}")
+            out.append(f"static r_{name} rt_copy_rec_{name}(r_{name} a) {{ r_{name} c = a; if (a.has) {{ {copy} }} return c; }}")
+            out.append(f"static void rt_set_rec_{name}(r_{name} *dst, r_{name} src) {{ r_{name} c = rt_copy_rec_{name}(src); "
+                       f"rt_free_rec_{name}(dst); *dst = c; }}")
+        writer = f"w_{base}" if base in self.records else WRITERS[base]
+        out.append(f"static r_{name} d_{name}(void) {{ r_{name} r; memset(&r, 0, sizeof r); return r; }}")
+        out.append(f'static void w_{name}(r_{name} o) {{ if (o.has) {writer}(o.v); else rt_write_str("null"); }}')
         return out
 
     def iface_block(self, name):

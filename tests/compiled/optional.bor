@@ -1,0 +1,43 @@
+! optional values: `?` types, null, present(), ??, optional parameters, results and record fields
+record address
+  string :: city = "x"
+  int :: zip = 1
+end record
+
+record person
+  string :: name = "n"
+  address? :: home
+  real? :: score
+end record
+
+function step_or(int? :: step) -> int
+  return step ?? 5
+end function
+
+function maybe(int :: k) -> int?
+  if k > 0 then
+    return k
+  end if
+  return null
+end function
+
+program t
+  int? :: n
+  int? :: k = 4
+  println(n, k, present(n), present(k), n == null, k /= null, n ?? 9, k ?? 9)
+  n = 3
+  println(n + k, -n, n < k, n == 3)
+  println(step_or(), step_or(3), step_or(null), maybe(2), maybe(0), maybe(2) ?? 0)
+  person :: p
+  println(p, present(p.home))
+  p.home = address("Pgh", 5)
+  p.score = 2.5
+  println(p, p.home.city, p.home.zip + 1, p.home ?? address())
+  person :: q = p
+  q.home = null
+  println(p, q)
+  string? :: s
+  println(s ?? "d", s)
+  s = "abc"
+  println(s, s == "abc", s ?? "d")
+end program
