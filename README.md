@@ -955,7 +955,7 @@ positional or named values, `p.x = ...`, `a.b.c`, printing, as `in` or `inout` p
 record's own functions: `x.area()`, `call @x.grow(2)`). Text (ASCII only): `string` variables, parameters and results, `+`, the
 comparisons, `s[i]`, `s[lo:hi]`, `len`, `len_trim`, `trim`, `upper`, `lower`, `repeat`, `index`, `contains`, `starts_with`,
 `ends_with`, and the formatting functions `text`, `tf`, `right`, `left`, `fixed`, `scientific` and `general` (with the
-`"fortran"` style). Fixed-size arrays of records (one dimension: elements, `a[i].x`, whole-array copies, literals, `in` and `inout` parameters, `size`) work too. Interfaces work for variables, `in` and `inout` parameters, results and fixed arrays (`f.area()`, `call @f.grow(2)`; not yet `select type`). A program that uses anything else (arrays or maps of text,
+`"fortran"` style). Fixed-size arrays of records (one dimension: elements, `a[i].x`, whole-array copies, literals, `in` and `inout` parameters, `size`) work too. Interfaces work for variables, `in` and `inout` parameters, results and fixed arrays (`f.area()`, `call @f.grow(2)`, `select type` and `x is circle as c` on a variable or element). A program that uses anything else (arrays or maps of text,
 interfaces, modules, functions that return arrays, ...) is refused as a
 whole, with a message that names the construct and its line ("not supported by the compiler yet: field 's' of record
 'p' (string[2]) (line 3)"): run it with the

@@ -1,0 +1,59 @@
+! select type and `is`: which record an interface value holds, with a copy of it inside the branch
+interface figure
+  function area(self) -> real
+  function name(self) -> string
+end interface
+interface sized
+  function area(self) -> real
+end interface
+
+record circle is figure
+  string :: label = "circle"
+  real :: r = 1.0
+  function area(self) -> real
+    return 3.0 * self.r ** 2
+  end function
+  function name(self) -> string
+    return self.label
+  end function
+end record
+
+record rect is figure
+  real :: w = 2.0
+  function area(self) -> real
+    return self.w
+  end function
+  function name(self) -> string
+    return "rect"
+  end function
+end record
+
+program t
+  figure[3] :: a
+  a[1] = circle("cc", 2.0)
+  a[2] = rect(5.0)
+  a[3] = circle()
+  int :: i
+  do i = 1, 3
+    select type a[i] as p
+      case rect
+        println("rect", p.w)
+        p.w = p.w * 2.0
+        a[i] = p
+      case sized
+        println("sized", p.area())
+        if i == 3 then
+          break
+        end if
+        println("not the last")
+      case default
+        println("other")
+    end select
+    if a[i] is circle as c then
+      println("circle", c.label, c.r)
+    else if a[i] is rect then
+      println("a rect")
+    end if
+  end do
+  println(a)
+end program

@@ -309,12 +309,33 @@ class Checker:
             elif isinstance(node, SelectType):
                 env[node.var] = UNKNOWN
         self.scope = scope
+        over = {}                    # id(statement) -> the names a select type or `is` gives its copy, with their types there
         for s in statements_in(body):
             self.line = getattr(s, "line", 0) or self.line
             self.stmt = s
+            here = {**env, **over[id(s)]} if id(s) in over else env
             for operand in self.operands(s):
-                self.expr(operand, env)
-            self.check_statement(s, env)
+                self.expr(operand, here)
+            self.check_statement(s, here)
+            for name, t, inner in self.copies(s, scope):
+                for n in statements_in(inner):
+                    over.setdefault(id(n), {})[name] = t
+
+    def copies(self, s, scope):
+        """(name, type, statements) for each copy `s` makes: a select type's case variable inside its case, `c` of
+        `x is circle as c` inside the branch. (The type of the subject has been worked out by now.)"""
+        if isinstance(s, SelectType) and s.var:
+            subject = self.types.get(id(s.subject), UNKNOWN)
+            for c in s.cases:
+                if c.values is None:
+                    t = subject if subject.known else UNKNOWN
+                else:
+                    t = Type("interface" if c.values in scope.interfaces else "record", 0, False, c.values)
+                yield s.var, t, c.body
+        elif isinstance(s, If):
+            for cond, body in s.branches:
+                if isinstance(cond, IsType) and cond.var:
+                    yield cond.var, Type("interface" if cond.type in scope.interfaces else "record", 0, False, cond.type), body
 
     @staticmethod
     def operands(s):
