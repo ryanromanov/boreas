@@ -127,6 +127,8 @@ class Compiler:
         self.typevars = set()           # the names a select type or `is` gives to its copy
         self.tvars = {}                 # id(Case or IsType) -> (C name, Type) of that copy (declared at the start of the function)
         self.selects = []               # the select types being written (innermost last): their `break` labels
+        self.type_order = []            # records and interfaces, each after the types it is made of
+        self.has_iface = {}             # name -> can a value of it hold an interface value (which may have no value yet)
         self.deep = {}                  # record name -> does it own text (so that copying and freeing it take work)
 
     # -- refusing what is not handled ---------------------------------------------------------------------------
@@ -152,8 +154,16 @@ class Compiler:
                 self.methods[(name, fname)] = f
                 self.cnames[id(f)] = f"f_{name}__{fname}"
             for fd in r.fields:
-                if fd.dims is not None or fd.allocatable or (fd.type not in KINDS and fd.type != "string" and fd.type not in todo):
+                iface = fd.type in self.unit.interfaces
+                if fd.allocatable or (fd.type not in KINDS and fd.type != "string" and fd.type not in todo and not iface):
                     self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type})", line=fd.line)
+                if fd.dims is not None:                        # a fixed-size array of numbers, records or interface values
+                    d = fd.dims[0] if len(fd.dims) == 1 else None
+                    if not (isinstance(d, Num) and type(d.value) is int and d.value >= 0) or fd.type == "string" or \
+                            (fd.init is not None and (iface or fd.type in todo)):
+                        self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type}[])", line=fd.line)
+                if iface and fd.init is not None:
+                    self.refuse(f"the default of field '{fd.name}'", line=fd.line)
                 if fd.init is not None:
                     self.field_default(fd, todo)
         visiting = set()
@@ -190,6 +200,39 @@ class Compiler:
             for iname, _ in self.records[name].implements:
                 if iname not in self.ifaces:
                     self.refuse(f"record '{name}' fits the unknown interface '{iname}'", line=self.records[name].line)
+        self.order_types()
+
+    def order_types(self):
+        """Records and interfaces in the order their C types can be written: a record after the records and interfaces its
+        fields hold, an interface after the records it can hold. A record that holds an interface value it can itself be (a
+        `scene` with a `figure` field that fits `figure`) would be a struct inside itself: refused."""
+        deps = {}
+        for name, r in self.records.items():
+            deps[name] = [fd.type for fd in r.fields if fd.type in self.records or fd.type in self.ifaces]
+        for name in self.ifaces:
+            deps[name] = list(self.members[name])
+        done, visiting = [], set()
+
+        def visit(n):
+            if n in done:
+                return
+            if n in visiting:
+                self.refuse(f"'{n}' holds a value that can be itself", line=getattr((self.records.get(n) or self.ifaces.get(n)), "line", None))
+            visiting.add(n)
+            for d in deps[n]:
+                visit(d)
+            visiting.discard(n)
+            done.append(n)
+        for n in deps:
+            visit(n)
+        self.type_order = done
+        for n in done:                                           # owns text or an interface value; reaches an interface value
+            if n in self.ifaces:
+                self.deep[n] = self.has_iface[n] = True
+            else:
+                fields = self.records[n].fields
+                self.deep[n] = any(fd.type == "string" or self.deep.get(fd.type) for fd in fields)
+                self.has_iface[n] = any(fd.type in self.ifaces or self.has_iface.get(fd.type) for fd in fields)
 
     def iface_function(self, iname, fname):
         return self.ifaces[iname].functions.get(fname)
@@ -300,7 +343,9 @@ class Compiler:
         t = self.types.get(id(subject))
         if t is None or t.kind != "interface" or t.rank != 0:
             self.refuse("a select type or `is` on anything but an interface value", node)
-        if not (isinstance(subject, Var) or self.record_element(subject)):
+        place = isinstance(subject, Var) or self.record_element(subject) or (
+            isinstance(subject, FieldAccess) and not self.is_method_call(subject) and self.field_source(subject, node) is not None)
+        if not place:
             self.refuse("a select type or `is` on a computed value", node)
 
     def check_type_name(self, name, node):
@@ -366,7 +411,12 @@ class Compiler:
                     if self.types.get(id(root)) is None or not self.kind_ok(self.types[id(root)]):
                         self.refuse("a field of a type that is not handled", s)
                     ft = self.types[id(root)]
-                    if ft.kind == "record":
+                    if ft.rank != 0:
+                        self.refuse("an assignment to a whole array field", s)
+                    if root.args is not None:
+                        if not self.field_element(root):
+                            self.refuse("a field with subscripts", s)
+                    if isrec(ft):
                         self.same_record(s.value, ft.name, s)
                     else:
                         self.fits(s.value, ft.kind, f"the field '{root.field}'", s)
@@ -400,10 +450,10 @@ class Compiler:
                 if s.to is not None:
                     self.refuse("printing to a file", s)
             elif kind is Call:
-                f, args = self.call_target(s)
-                if f is None:
+                callee, args = self.call_target(s)          # (not `f`: that is the procedure this body belongs to)
+                if callee is None:
                     self.refuse(f"the call of '{s.name}'", s)
-                if mark_problem(f, s):
+                if mark_problem(callee, s):
                     self.refuse(f"a call of '{s.name}' that the interpreter rejects", s)
                 self.check_aliasing(s, fixed)
             else:
@@ -451,7 +501,7 @@ class Compiler:
     def field_source(self, e, node):
         """What a chain of fields `a.b.c` read starts at: a variable (its name), or a call that gives a record."""
         while isinstance(e, FieldAccess) and not self.is_method_call(e):
-            if e.args is not None or e.chain:
+            if e.chain or (e.args is not None and not self.field_element(e)):
                 self.refuse("a field with subscripts", node)
             e = e.base
         if isinstance(e, Var):
@@ -469,10 +519,20 @@ class Compiler:
         t = self.types.get(id(e))
         return isrec(t) and t.rank == 0
 
+    def field_element(self, e):
+        """Is `e` one element `a.f[i]` of an array field (a single subscript that is not a range)?"""
+        return (isinstance(e, FieldAccess) and e.args is not None and e.bracket and not e.chain and len(e.args) == 1
+                and not isinstance(e.args[0], Slice) and self.field_array(e))
+
+    def field_array(self, e):
+        """Is the field `e` names an array field of a record (its size is written in the record)?"""
+        bt = self.types.get(id(e.base))
+        return bt is not None and bt.kind == "record" and bt.rank == 0 and self.field_size(bt.name, e.field) is not None
+
     def field_root(self, e, node):
         """The variable a chain of fields `a.b.c` starts at (anything but a plain variable is refused)."""
         while isinstance(e, FieldAccess):
-            if e.args is not None or e.call or e.chain:
+            if e.call or e.chain or (e.args is not None and not self.field_element(e)):
                 self.refuse("a field with subscripts or a record's function", node)
             e = e.base
         if self.record_element(e):
@@ -608,10 +668,18 @@ class Compiler:
                 self.refuse(f"a result of type {t if t is not None else 'unknown'}", e)
             return
         if kind is FieldAccess:
-            self.field_source(e, e)
+            src = self.field_source(e, e)
             t = self.types.get(id(e))
             if not self.kind_ok(t) or t.rank != 0:
-                self.refuse(f"a field of type {t if t is not None else 'unknown'}", e)
+                if id(e) not in self.skip:
+                    self.refuse(f"a field of type {t if t is not None else 'unknown'}", e)
+                return
+            if e.args is not None:                      # one element of an array field: the subscript is a whole number
+                at = self.types.get(id(e.args[0]))
+                if at is None or at.rank != 0 or at.kind not in ("int", "int32"):
+                    self.refuse("an array field subscript that is not a whole number", e)
+            if t.kind == "interface" and self.dotted(e) is None:
+                self.refuse("an interface field of a computed value", e)
             return
         if kind not in (Num, Bool, Var, Unary, Binary, Apply, ArrayLit, MatrixLit):
             if kind is IsType:
@@ -692,7 +760,9 @@ class Compiler:
         for fname, a in zip(given, pos + named):
             value = a.value if isinstance(a, NamedArg) else a
             ft = by_name[fname].type
-            if ft in self.records:
+            if by_name[fname].dims is not None:
+                self.refuse(f"a call of {e.name}() giving the array field '{fname}'", e)
+            if ft in self.records or ft in self.ifaces:
                 self.same_record(value, ft, e)
             else:
                 self.fits(value, ft, f"the field '{fname}'", e)
@@ -757,6 +827,11 @@ class Compiler:
         elif name == "size":
             if len(e.args) not in (1, 2) or ranks[0] < 1 or (len(e.args) == 2 and not isinstance(e.args[1], Num)):
                 self.refuse("size() of anything but an array and a literal dimension", e)
+            a = e.args[0]
+            if isinstance(a, FieldAccess):                 # the array field of a record: its size is written in the record
+                if a.args is not None or self.field_source(a, e) is None or not self.field_array(a):
+                    self.refuse("size() of anything but a whole array field", e)
+                self.skip.add(id(a))
         elif name in ("maxval", "minval", "sum", "product"):
             if len(e.args) != 1 or ranks[0] < 1:
                 self.refuse(f"{name}() of anything but a whole array", e)
@@ -938,7 +1013,7 @@ class Compiler:
             return self.binary(e)
         if t is Apply:
             return self.apply(e)
-        if t is FieldAccess and e.args is not None:
+        if t is FieldAccess and e.args is not None and not e.bracket:
             bt = self.types[id(e.base)]
             f = self.iface_function(bt.name, e.field) if bt.kind == "interface" else self.methods[(bt.name, e.field)]
             return self.call_function(f, [e.base] + list(e.args), self.line)
@@ -946,8 +1021,17 @@ class Compiler:
             ft = self.types[id(e)]
             if self.field_source(e, e) is None:                    # a field of what a call gives
                 base = self.value(e.base)
-                return V(ft, self.tmp(cscalar(ft), f"{base.atom}.m_{e.field}"))
-            return V(ft, self.tmp(cscalar(ft), self.field_lvalue(e)))
+                place = f"{base.atom}.m_{e.field}"
+                if e.args is not None:
+                    i = self.tmp("int64_t", self.scalar(e.args[0], "int"))
+                    self.emit(f"rt_check_index({i}, {self.field_size(self.types[id(e.base)].name, e.field)}, 1, 1, {self.line});")
+                    place += f"[{i} - 1]"
+                res = self.tmp(cscalar(ft), place)
+            else:
+                res = self.tmp(cscalar(ft), self.field_lvalue(e))
+            if ft.kind == "interface":                              # a field that was never given a value
+                self.emit(f'if ({res}.tag == 0) rt_fail({self.line}, "field \'{self.dotted(e)}\' is used before it is assigned");')
+            return V(ft, res)
         if t in (ArrayLit, MatrixLit):
             return self.array_literal(e)
         if t is SelectExpr:
@@ -1217,13 +1301,32 @@ class Compiler:
                 out.append(v.atom)
         return out
 
+    def dotted(self, e):
+        """`sc.items` for the field `items` of the variable `sc`, however it is subscripted (what the interpreter calls such a
+        field in a message); None when the chain does not start at a variable or an element of one."""
+        names = []
+        while isinstance(e, FieldAccess):
+            if self.is_method_call(e):
+                return None
+            names.append(e.field)
+            e = e.base
+        if isinstance(e, Var) or (isinstance(e, Apply) and e.bracket):
+            return ".".join([e.name] + names[::-1])
+        return None
+
     def field_lvalue(self, e):
         """The C lvalue of `a.b.c` (a chain of fields of a variable)."""
         if isinstance(e, Var):
             return self.vars[e.name][1]
         if isinstance(e, Apply):                                      # an element of an array of records
             return self.lvalue(e)
-        return f"{self.field_lvalue(e.base)}.m_{e.field}"
+        base = self.field_lvalue(e.base)
+        if e.args is not None:                                        # an element of an array field: checked against its size
+            bt = self.types[id(e.base)]
+            i = self.tmp("int64_t", self.scalar(e.args[0], "int"))
+            self.emit(f"rt_check_index({i}, {self.field_size(bt.name, e.field)}, 1, 1, {self.line});")
+            return f"{base}.m_{e.field}[{i} - 1]"
+        return f"{base}.m_{e.field}"
 
     def constructor(self, e):
         """`point(1.0, 2.0)`: the defaults, then the given fields in order (positional ones first), each stored as the
@@ -1239,7 +1342,9 @@ class Compiler:
         for fname, a in zip(names[:len(pos)] + [a.name for a in named], pos + named):
             value = a.value if isinstance(a, NamedArg) else a
             ft = by_name[fname].type
-            if ft in self.records:
+            if ft in self.ifaces:
+                atom = self.typed(value, Type("interface", 0, False, ft))
+            elif ft in self.records:
                 atom = self.value(value).atom
             else:
                 atom = self.scalar(value, ft, f"field '{fname}' of {e.name}")
@@ -1565,6 +1670,12 @@ class Compiler:
 
     def builtin(self, e):
         line, name = self.line, e.name
+        if name == "size" and isinstance(e.args[0], FieldAccess) and e.args[0].args is None:       # the size written in the record
+            a = e.args[0]
+            n = self.field_size(self.types[id(a.base)].name, a.field)
+            if len(e.args) == 1 or e.args[1].value == 1:
+                return V(Type("int"), self.tmp("int64_t", f"INT64_C({n})"))
+            raise NotCompiled("size() with that dimension", line)
         if name == "allocated":
             return V(Type("logical"), self.tmp("bool", f"({self.vars[e.args[0].name][1]}.data != NULL)"))
         if name == "atan" and len(e.args) == 2:
@@ -1815,7 +1926,7 @@ class Compiler:
         if isinstance(target, FieldAccess):
             ft = self.types[id(target)]
             lv = self.field_lvalue(target)
-            self.store(lv, self.scalar(s.value, ft.kind, f'line {line}'), ft.name if ft.kind == "record" else ft.kind)
+            self.store(lv, self.typed(s.value, ft, f'line {line}'), ft.name if isrec(ft) else ft.kind)
             return
         t = self.vars[target.name][0]
         if isinstance(target, Apply) and any(isinstance(a, Slice) for a in target.args):
@@ -2211,6 +2322,13 @@ class Compiler:
         for a in s.args:
             v = self.value(a)
             parts.append(("rec:" + v.t.name if isrec(v.t) else v.t.kind, v.t.rank, v.atom if v.t.rank == 0 else v))
+        for kind, rank, atom in parts:                 # a record with an interface value that has none cannot be printed: before any output
+            if kind.startswith("rec:") and self.has_iface[kind[4:]]:
+                if rank == 0:
+                    self.emit(f"chk_{kind[4:]}({atom}, {self.line});")
+                else:
+                    k = self.loop_var()
+                    self.emit(f"for (int64_t {k} = 0; {k} < {atom.atom}.n; {k}++) chk_{kind[4:]}({atom.atom}.data[{k}], {self.line});")
         for i, (kind, rank, atom) in enumerate(parts):
             if i:
                 self.emit("rt_write_sep();")
@@ -2338,76 +2456,141 @@ class Compiler:
         self.emit("return ret;" if rt else "return;")
         return head + ";", "\n".join([head + " {"] + self.lines + ["}"])
 
-    def record_code(self):
-        """The C struct of each record type, the function that makes one holding its default values, and the one that
-        prints it (`point(x=1.0, y=2.0)`)."""
+    def field_ctype(self, fd):
+        return f"r_{fd.type}" if fd.type in self.records or fd.type in self.ifaces else CSCALAR[fd.type]
+
+    def field_size(self, rec, field):
+        """The size of the array field `field` of record `rec`, or None when it is a single value."""
+        for fd in self.records[rec].fields:
+            if fd.name == field:
+                return fd.dims[0].value if fd.dims else None
+        return None
+
+    def record_block(self, name):
+        """The C struct of a record, how it is copied, freed, made with its defaults and printed (`point(x=1.0, y=2.0)`)."""
+        r = self.records[name]
         out = []
-        for name in self.rec_order:
-            r = self.records[name]
-            out.append("typedef struct { " + " ".join(
-                f"{f'r_{fd.type}' if fd.type in self.records else CSCALAR[fd.type]} m_{fd.name};" for fd in r.fields)
-                + f" }} r_{name};")
-        for name in self.rec_order:                           # records that own text: free, copy and store (copy, then free the old)
-            if not self.deep[name]:
-                continue
-            fields = self.records[name].fields
-            free = " ".join(f"rt_free_str(&r->m_{fd.name});" if fd.type == "string" else f"rt_free_rec_{fd.type}(&r->m_{fd.name});"
-                            for fd in fields if fd.type == "string" or self.deep.get(fd.type))
-            copy = " ".join(f"r.m_{fd.name} = rt_str_new(rt_cs(a.m_{fd.name}), a.m_{fd.name}.n, 0);" if fd.type == "string"
-                            else f"r.m_{fd.name} = rt_copy_rec_{fd.type}(a.m_{fd.name});"
-                            for fd in fields if fd.type == "string" or self.deep.get(fd.type))
-            out.append(f"static void rt_free_rec_{name}(r_{name} *r) {{ {free} }}")
-            out.append(f"static r_{name} rt_copy_rec_{name}(r_{name} a) {{ r_{name} r = a; {copy} return r; }}")
+        decls = [f"{self.field_ctype(fd)} m_{fd.name}{f'[{max(fd.dims[0].value, 1)}]' if fd.dims else ''};" for fd in r.fields]
+        out.append("typedef struct { " + " ".join(decls) + f" }} r_{name};")
+        if self.deep[name]:                                   # free, copy, and store (copy, then free the old)
+            free, copy = [], []
+            for fd in r.fields:
+                own = fd.type == "string" or self.deep.get(fd.type)
+                if not own:
+                    continue
+                m = f"m_{fd.name}"
+                if fd.type == "string":
+                    free.append(f"rt_free_str(&r->{m});")
+                    copy.append(f"r.{m} = rt_str_new(rt_cs(a.{m}), a.{m}.n, 0);")
+                elif fd.dims:
+                    n = fd.dims[0].value
+                    free.append(f"for (int i = 0; i < {n}; i++) rt_free_rec_{fd.type}(&r->{m}[i]);")
+                    copy.append(f"for (int i = 0; i < {n}; i++) r.{m}[i] = rt_copy_rec_{fd.type}(a.{m}[i]);")
+                else:
+                    free.append(f"rt_free_rec_{fd.type}(&r->{m});")
+                    copy.append(f"r.{m} = rt_copy_rec_{fd.type}(a.{m});")
+            out.append(f"static void rt_free_rec_{name}(r_{name} *r) {{ {' '.join(free)} }}")
+            out.append(f"static r_{name} rt_copy_rec_{name}(r_{name} a) {{ r_{name} r = a; {' '.join(copy)} return r; }}")
             out.append(f"static void rt_set_rec_{name}(r_{name} *dst, r_{name} src) {{ r_{name} c = rt_copy_rec_{name}(src); "
                        f"rt_free_rec_{name}(dst); *dst = c; }}")
-        for name in self.rec_order:                           # arrays of the record: elements start as the defaults
-            out.extend(self.array_code(name))
-        for name in self.rec_order:
-            r = self.records[name]
-            body = []
-            for fd in r.fields:
-                if fd.init is not None:
-                    value = self.field_default(fd, self.records)
-                elif fd.type in self.records:
-                    value = f"d_{fd.type}()"
-                elif fd.type == "string":
-                    value = "rt_str_new(\"\", 0, 0)"
-                else:
-                    value = "false" if fd.type == "logical" else "0"
-                body.append(f"r.m_{fd.name} = {value};")
-            out.append(f"static r_{name} d_{name}(void) {{ r_{name} r; " + " ".join(body) + " return r; }")
-            parts = []
-            for i, fd in enumerate(r.fields):
-                writer = f"w_{fd.type}" if fd.type in self.records else WRITERS[fd.type]
-                parts.append(f'rt_write_str({c_string((", " if i else "") + fd.name + "=")}); {writer}(r.m_{fd.name});')
-            out.append(f"static void w_{name}(r_{name} r) {{ rt_write_str({c_string(name + '(')}); " + " ".join(parts)
-                       + ' rt_write_str(")"); }')
-            out.append(f"static void rt_write_ra_{name}_arr(const rt_ra_{name}_arr *a) {{ rt_write_str(\"[\"); "
-                       f"for (int64_t i = 0; i < a->n; i++) {{ if (i) rt_write_str(\", \"); w_{name}(a->data[i]); }} rt_write_str(\"]\"); }}")
+        out.extend(self.array_code(name))
+        body = []
+        for fd in r.fields:
+            m = f"r.m_{fd.name}"
+            if fd.type in self.records or fd.type in self.ifaces:
+                value = f"d_{fd.type}()"
+            elif fd.init is not None:
+                value = self.field_default(fd, self.records)
+            elif fd.type == "string":
+                value = 'rt_str_new("", 0, 0)'
+            else:
+                value = "false" if fd.type == "logical" else "0"
+            if fd.dims:
+                body.append(f"for (int i = 0; i < {fd.dims[0].value}; i++) {m}[i] = {value};")
+            else:
+                body.append(f"{m} = {value};")
+        out.append(f"static r_{name} d_{name}(void) {{ r_{name} r; " + " ".join(body) + " return r; }")
+        parts = []
+        for i, fd in enumerate(r.fields):
+            writer = f"w_{fd.type}" if fd.type in self.records or fd.type in self.ifaces else WRITERS[fd.type]
+            label = f'rt_write_str({c_string((", " if i else "") + fd.name + "=")});'
+            if fd.dims:
+                parts.append(f'{label} rt_write_str("["); for (int i = 0; i < {fd.dims[0].value}; i++) {{ if (i) rt_write_str(", "); '
+                             f'{writer}(r.m_{fd.name}[i]); }} rt_write_str("]");')
+            else:
+                parts.append(f"{label} {writer}(r.m_{fd.name});")
+        out.append(f"static void w_{name}(r_{name} r) {{ rt_write_str({c_string(name + '(')}); " + " ".join(parts) + ' rt_write_str(")"); }')
+        out.append(f"static void rt_write_ra_{name}_arr(const rt_ra_{name}_arr *a) {{ rt_write_str(\"[\"); "
+                   f"for (int64_t i = 0; i < a->n; i++) {{ if (i) rt_write_str(\", \"); w_{name}(a->data[i]); }} rt_write_str(\"]\"); }}")
+        if self.has_iface[name]:
+            out.extend(self.unassigned_code(name))
         return out
 
+    def unassigned_code(self, name):
+        """For a type that can hold an interface value: `un_<name>` gives the dotted path of the first one that has no value
+        yet (as the interpreter finds it when asked to print), and `chk_<name>` stops with its message about printing."""
+        out = []
+        reach = lambda t: t in self.ifaces or self.has_iface.get(t)
+        if name in self.ifaces:
+            cases = " ".join(f"case {i + 1}: return un_{r}(&v->u.m_{r}, prefix, out);" for i, r in enumerate(self.members[name]) if self.has_iface[r])
+            out.append(f"static const char *un_{name}(const r_{name} *v, const char *prefix, char *out) {{ switch (v->tag) {{ {cases} default: return NULL; }} }}")
+            cases = " ".join(f"case {i + 1}: chk_{r}(v->u.m_{r}, line); break;" for i, r in enumerate(self.members[name]) if self.has_iface[r])
+            out.append(f"static void chk_{name}(r_{name} v, int line) {{ switch (v.tag) {{ {cases} default: break; }} }}")
+            return out
+        body = []
+        for fd in self.records[name].fields:
+            if not reach(fd.type):
+                continue
+            n = fd.dims[0].value if fd.dims else 1
+            loop = f"for (int i = 0; i < {n}; i++) " if fd.dims else ""
+            item = f"r->m_{fd.name}[i]" if fd.dims else f"r->m_{fd.name}"
+            one = ""
+            if fd.type in self.ifaces:
+                one += f'if ({item}.tag == 0) {{ snprintf(out, 256, "%s%s", prefix, "{fd.name}"); return out; }} '
+            one += (f'{{ char p[256]; snprintf(p, 256, "%s%s.", prefix, "{fd.name}"); '
+                    f'const char *x = un_{fd.type}(&{item}, p, out); if (x) return x; }}')
+            body.append(f"{loop}{{ {one} }}")
+        out.append(f"static const char *un_{name}(const r_{name} *r, const char *prefix, char *out) {{ {' '.join(body)} return NULL; }}")
+        out.append(f'static void chk_{name}(r_{name} r, int line) {{ char out[256]; if (un_{name}(&r, "", out)) '
+                   f'rt_fail(line, "cannot print a {name}: its field \'%s\' has no value yet", out); }}')
+        return out
+
+    def type_code(self):
+        """All the C types: each record and interface after the types it is made of."""
+        out = []
+        for n in self.type_order:
+            out.extend(self.iface_block(n) if n in self.ifaces else self.record_block(n))
+        return out
+
+    def iface_block(self, name):
+        """The struct of an interface (a tag, 0 for nothing assigned yet, and a union of the records that fit it), how it is
+        copied, freed and printed, and its arrays."""
+        types = []
+        members = self.members[name]
+        union = " ".join(f"r_{r} m_{r};" for r in members)
+        types.append(f"typedef struct {{ int tag; union {{ {union or 'char none;'} }} u; }} r_{name};")
+        deep = [(i + 1, r) for i, r in enumerate(members) if self.deep[r]]
+        free = " ".join(f"case {i}: rt_free_rec_{r}(&r->u.m_{r}); break;" for i, r in deep)
+        copy = " ".join(f"case {i}: c.u.m_{r} = rt_copy_rec_{r}(a.u.m_{r}); break;" for i, r in deep)
+        types.append(f"static void rt_free_rec_{name}(r_{name} *r) {{ switch (r->tag) {{ {free} default: break; }} r->tag = 0; }}")
+        types.append(f"static r_{name} rt_copy_rec_{name}(r_{name} a) {{ r_{name} c = a; switch (a.tag) {{ {copy} default: break; }} return c; }}")
+        types.append(f"static void rt_set_rec_{name}(r_{name} *dst, r_{name} src) {{ r_{name} c = rt_copy_rec_{name}(src); "
+                     f"rt_free_rec_{name}(dst); *dst = c; }}")
+        types.append(f"static r_{name} d_{name}(void) {{ r_{name} r; memset(&r, 0, sizeof r); return r; }}")
+        shown = " ".join(f"case {i + 1}: w_{r}(v.u.m_{r}); break;" for i, r in enumerate(members))
+        types.append(f'static void w_{name}(r_{name} v) {{ switch (v.tag) {{ {shown} default: rt_write_str("None"); }} }}')
+        types.extend(self.array_code(name))
+        types.append(f'static void rt_write_ra_{name}_arr(const rt_ra_{name}_arr *a) {{ rt_write_str("["); '
+                     f'for (int64_t i = 0; i < a->n; i++) {{ if (i) rt_write_str(", "); w_{name}(a->data[i]); }} rt_write_str("]"); }}')
+        types.extend(self.unassigned_code(name))
+        return types
+
     def interface_code(self):
-        """The struct of each interface (a tag, 0 for nothing assigned yet, and a union of the records that fit it), how it is
-        copied, freed and printed, and its arrays; then, for each function it lists, the function that looks at the tag and calls
-        the function of the record held. Returns (the types and their helpers, the prototypes, the dispatching functions)."""
-        types, protos, bodies = [], [], []
+        """For each function an interface lists, the function that looks at the tag and calls the function of the record held.
+        Returns (the prototypes, the dispatching functions)."""
+        protos, bodies = [], []
         for name, idef in self.ifaces.items():
             members = self.members[name]
-            union = " ".join(f"r_{r} m_{r};" for r in members)
-            types.append(f"typedef struct {{ int tag; union {{ {union or 'char none;'} }} u; }} r_{name};")
-            deep = [(i + 1, r) for i, r in enumerate(members) if self.deep[r]]
-            free = " ".join(f"case {i}: rt_free_rec_{r}(&r->u.m_{r}); break;" for i, r in deep)
-            copy = " ".join(f"case {i}: c.u.m_{r} = rt_copy_rec_{r}(a.u.m_{r}); break;" for i, r in deep)
-            types.append(f"static void rt_free_rec_{name}(r_{name} *r) {{ switch (r->tag) {{ {free} default: break; }} r->tag = 0; }}")
-            types.append(f"static r_{name} rt_copy_rec_{name}(r_{name} a) {{ r_{name} c = a; switch (a.tag) {{ {copy} default: break; }} return c; }}")
-            types.append(f"static void rt_set_rec_{name}(r_{name} *dst, r_{name} src) {{ r_{name} c = rt_copy_rec_{name}(src); "
-                         f"rt_free_rec_{name}(dst); *dst = c; }}")
-            types.append(f"static r_{name} d_{name}(void) {{ r_{name} r; memset(&r, 0, sizeof r); return r; }}")
-            shown = " ".join(f"case {i + 1}: w_{r}(v.u.m_{r}); break;" for i, r in enumerate(members))
-            types.append(f'static void w_{name}(r_{name} v) {{ switch (v.tag) {{ {shown} default: rt_write_str("None"); }} }}')
-            types.extend(self.array_code(name))
-            types.append(f'static void rt_write_ra_{name}_arr(const rt_ra_{name}_arr *a) {{ rt_write_str("["); '
-                         f'for (int64_t i = 0; i < a->n; i++) {{ if (i) rt_write_str(", "); w_{name}(a->data[i]); }} rt_write_str("]"); }}')
             for fname, f in idef.functions.items():
                 rt = self.param_type(f.ret) if f.ret is not None else None
                 head = f"static {cscalar(rt) if rt else 'void'} {self.cnames[id(f)]}({self.c_params(f)})"
@@ -2424,7 +2607,7 @@ class Compiler:
                     cases.append(f"case {i + 1}: {'return ' if rt else ''}{call};{'' if rt else ' return;'}")
                 tag = f"{c_name(self_p[1])}->tag" if inout else f"{c_name(self_p[1])}.tag"
                 bodies.append(head + " {\n    switch (" + tag + ") {\n        " + "\n        ".join(cases) + "\n    }\n    abort();\n}")
-        return types, protos, bodies
+        return protos, bodies
 
     def array_code(self, name):
         """The array of a record or interface `name`: elements start as `d_<name>()`, and are freed one by one if they own anything."""
@@ -2466,8 +2649,8 @@ class Compiler:
             flags.append("#define BOREAS_RELEASE 1")
         if self.unit.ieee:
             flags.append("#define BOREAS_IEEE 1")
-        itypes, iprotos, ibodies = self.interface_code()
-        return "\n".join(["/* generated by `boreas emit-c`: do not edit */"] + flags + [runtime] + self.record_code() + itypes + protos
+        iprotos, ibodies = self.interface_code()
+        return "\n".join(["/* generated by `boreas emit-c`: do not edit */"] + flags + [runtime] + self.type_code() + protos
                          + iprotos + ibodies + [""] + defs + [""] + main) + "\n"
 
 
