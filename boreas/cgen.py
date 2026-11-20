@@ -15,7 +15,7 @@ import sys
 import subprocess
 import tempfile
 from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, Comment, Cycle, Deallocate, Decl, Do, DoWhile, Exit, FieldAccess, If, IsType,
-                     MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType)
+                     MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType, Select, SelectExpr, Arm, literal_value, NOT_LITERAL)
 from .effects import mark_problem
 from .interp import conformance
 from .tree import statements_in, walk
@@ -275,6 +275,25 @@ class Compiler:
             return None
         return t
 
+    def check_select(self, subject, groups, node):
+        """`select case`: the subject is a whole number, text or logical; every case value is a literal of that kind (a range of
+        whole numbers or text, or one logical), as anything else is checked by the interpreter when the select runs."""
+        t = self.types.get(id(subject))
+        if t is None or t.rank != 0 or t.kind not in ("int", "int32", "string", "logical"):
+            self.refuse("a select case on anything but a whole number, text or logical", node)
+        want = {"int": int, "int32": int, "string": str, "logical": bool}[t.kind]
+        for values in groups:
+            for item in values or ():
+                parts = [item.lo, item.hi] if isinstance(item, Slice) else [item]
+                if isinstance(item, Slice) and (item.step is not None or t.kind == "logical"):
+                    self.refuse("a range with a step, or of logicals, in a select case", node)
+                for x in parts:
+                    if x is None:
+                        continue
+                    v = literal_value(x)
+                    if v is NOT_LITERAL or type(v) is not want or (want is str and not all(0 < ord(ch) < 128 for ch in v)):
+                        self.refuse("a case value that is not a literal of the selector's kind", node)
+
     def check_type_subject(self, subject, node):
         """What a select type or `is` looks at: an interface variable, parameter or element (not a computed value, whose
         temporary a jump out of the statement would leave behind)."""
@@ -323,6 +342,9 @@ class Compiler:
                 continue
             if kind is SelectType:
                 self.check_select_type(s)
+                continue
+            if kind is Select:
+                self.check_select(s.subject, [c.values for c in s.cases], s)
                 continue
             if kind in (Allocate, Deallocate):
                 if s.name not in self.allocs_of(body, f):
@@ -539,7 +561,7 @@ class Compiler:
             return None
         return Type(d.type, rank)
 
-    STATEMENTS = (Decl, Assign, If, Do, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Break)
+    STATEMENTS = (Decl, Assign, If, Do, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Select, Break)
 
     @staticmethod
     def allocs_of(body, f):
@@ -557,7 +579,14 @@ class Compiler:
             return
         if kind is Slice:                               # the parts of a section: checked as the expressions they are
             return
-        if kind is Case:                                # a case of a select type (checked with the statement)
+        if kind in (Case, Arm):                         # a case of a select (checked with the statement or expression)
+            return
+        if kind is SelectExpr:
+            t = self.types.get(id(e))
+            if t is None or t.rank != 0 or t.kind not in (*KINDS, "string") or any(
+                    self.types.get(id(a.value)) != t for a in e.arms):
+                self.refuse("a select expression whose arms are not all one kind of single value", e)
+            self.check_select(e.subject, [a.values for a in e.arms], e)
             return
         if kind is IsType:
             self.check_type_test(e)
@@ -921,6 +950,8 @@ class Compiler:
             return V(ft, self.tmp(cscalar(ft), self.field_lvalue(e)))
         if t in (ArrayLit, MatrixLit):
             return self.array_literal(e)
+        if t is SelectExpr:
+            return self.select_expr(e)
         raise NotCompiled(f"a {t.__name__}", getattr(e, "line", None))
 
     # -- operators ------------------------------------------------------------------------------------------------------
@@ -1919,6 +1950,97 @@ class Compiler:
                 self.block(orelse)
             self.depth -= 1
         self.emit("}")
+
+    def case_index(self, subject, groups):
+        """Work out which group of case values the subject matches: a C int, the group's index, or -1 for none (a `default` group
+        is the answer when nothing else matches). The subject's temporaries are freed here, before any body runs."""
+        sel = self.tmp("int", "-1")
+        self.emit("{")
+        self.depth += 1
+        saved, self.temps = self.temps, []
+        v = self.value(subject)
+        sv = self.tmp("int64_t" if v.t.kind in ("int", "int32") else CSCALAR[v.t.kind], f"(int64_t){v.atom}" if v.t.kind in ("int", "int32") else v.atom)
+        default = None
+        first = True
+        for n, values in enumerate(groups):
+            if values is None:
+                default = n
+                continue
+            tests = []
+            for item in values:
+                tests.append(self.case_test(sv, v.t.kind, item))
+            self.emit(f"{'' if first else 'else '}if ({' || '.join(tests)}) {sel} = {n};")
+            first = False
+        if default is not None:
+            self.emit(f"{'' if first else 'else '}{sel} = {default};")
+        for k, t in self.temps:
+            self.emit(f"rt_free_{k}(&{t});")
+        self.temps = saved
+        self.depth -= 1
+        self.emit("}")
+        return sel
+
+    def case_test(self, sv, kind, item):
+        def lit(x):
+            v = literal_value(x)
+            if kind == "string":
+                return f"RT_LIT({c_string(v)})"
+            return "true" if v is True else "false" if v is False else f"INT64_C({v})"
+        if kind == "string":
+            cmp = lambda x, op: f"(rt_str_cmp({sv}, {lit(x)}) {op} 0)"
+        elif kind == "logical":
+            return f"({sv} == {lit(item)})"
+        else:
+            cmp = lambda x, op: f"({sv} {op} {lit(x)})"
+        if not isinstance(item, Slice):
+            return cmp(item, "==")
+        parts = []
+        if item.lo is not None:
+            parts.append(cmp(item.lo, ">="))
+        if item.hi is not None:
+            parts.append(cmp(item.hi, "<="))
+        return "(" + " && ".join(parts) + ")" if parts else "true"
+
+    def st_select(self, s):
+        sel = self.case_index(s.subject, [c.values for c in s.cases])
+        self.n += 1
+        label = f"brk{self.n}"
+        self.selects.append(label)
+        for i, c in enumerate(s.cases):
+            guard = f"{sel} >= 0 && {sel} <= {i}" if s.flow else f"{sel} == {i}"     # fallthrough: the chosen body and each after it
+            self.emit(f"if ({guard}) {{")
+            self.depth += 1
+            self.block(c.body)
+            self.depth -= 1
+            self.emit("}")
+        self.selects.pop()
+        self.emit(f"{label}: ;")
+
+    def select_expr(self, e):
+        t = self.types[id(e)]
+        sel = self.case_index(e.subject, [a.values for a in e.arms])
+        self.n += 1
+        res = f"t{self.n}"
+        if t.kind == "string":
+            self.emit(f"rt_str {res} = {{0}};")
+            self.temps.append(("str", res))
+        else:
+            self.emit(f"{CSCALAR[t.kind]} {res} = {'false' if t.kind == 'logical' else '0'};")
+        for i, arm in enumerate(e.arms):               # only the chosen arm is worked out
+            self.emit(f"if ({sel} == {i}) {{")
+            self.depth += 1
+            saved, self.temps = self.temps, []
+            atom = self.scalar(arm.value, t.kind)
+            if t.kind == "string":
+                self.emit(f"rt_str_set(&{res}, {atom}, {self.line});")
+            else:
+                self.emit(f"{res} = {atom};")
+            for k, name in self.temps:
+                self.emit(f"rt_free_{k}(&{name});")
+            self.temps = saved
+            self.depth -= 1
+            self.emit("}")
+        return V(t, res)
 
     def tags_of(self, iname, name):
         """The tags (1, 2, ...) of the records in interface `iname` that `name` (a record or an interface) matches."""
