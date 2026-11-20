@@ -1215,7 +1215,8 @@ class Compiler:
         if t is FieldAccess and self.types[id(e.base)].optional:         # a field of a record that may be absent
             ft = self.types[id(e)]
             b = self.value(e.base)
-            self.emit(f"if (!{b.atom}.has) rt_fail({self.line}, {c_string("'" + self.dotted(e.base) + "' is null, so it has no fields (check with present())")});")
+            message = "'" + self.dotted(e.base) + "' is null, so it has no fields (check with present())"
+            self.emit(f"if (!{b.atom}.has) rt_fail({self.line}, {c_string(message)});")
             place = f"{b.atom}.v.m_{e.field}"
             if e.args is not None:
                 i = self.tmp("int64_t", self.scalar(e.args[0], "int"))
