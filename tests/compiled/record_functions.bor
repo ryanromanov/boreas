@@ -1,0 +1,39 @@
+! a record's own functions: x.area() and call @x.grow(2) compile as functions that take the record first
+record counter
+  int :: n = 0
+  real :: scale = 1.5
+
+  subroutine grow(inout self, int :: by)
+    @self.n = self.n + by
+  end subroutine
+
+  function twice(self) -> int
+    return self.n * 2
+  end function
+
+  function scaled(self, real :: k) -> real
+    return self.n * self.scale * k + self.twice()
+  end function
+
+  subroutine show(self)
+    println("counter", self.n, self.scale)
+  end subroutine
+end record
+
+record pair
+  counter :: a
+  counter :: b
+end record
+
+program t
+  counter :: c
+  pair :: p
+  call @c.grow(3)
+  call @c.grow(4)
+  call c.show()
+  println(c.twice(), c.scaled(2.0))
+  call @p.a.grow(10)
+  println(p.a.twice(), p.b.twice())
+  call p.b.show()
+  println(counter(5).twice())
+end program t

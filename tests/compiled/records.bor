@@ -1,0 +1,33 @@
+! records: single values with numeric, logical and record fields, defaults, constructors, nested fields, parameters
+record point
+  real :: x
+  real :: y = 2
+end record
+
+record seg
+  point :: a
+  point :: b
+  int32 :: tag = 7
+  logical :: ok
+end record
+
+function mid(seg :: s) -> point
+  return point((s.a.x + s.b.x) / 2.0, (s.a.y + s.b.y) / 2.0)
+end function
+
+subroutine shift(inout point :: p, real :: d)
+  @p.x = p.x + d
+end subroutine
+
+program t
+  point :: p = point(1.0, 2.0)
+  seg :: s
+  s = seg(p, point(x = 3.0), ok = true)
+  println(p)
+  println(s)
+  println(mid(s))
+  call shift(@p, 1)
+  println(p, s.a.x)
+  s.tag = 40000
+  println(s.tag)
+end program t
