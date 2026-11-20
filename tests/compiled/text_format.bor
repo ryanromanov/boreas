@@ -1,0 +1,10 @@
+! text(), right(), left(), fixed(), scientific(), general(), tf()
+program t
+  real :: x = 12345.678
+  int :: n = 42
+  println(text(n), text(2.5), text(true), text("s"), text(x))
+  println("[" + right(n, 6) + "]", "[" + left("ab", 5) + "]", "[" + right(-42, 6, "0") + "]", "[" + right(1234567, 3) + "]", "[" + right("abcdef", 3) + "]")
+  println(fixed(3.14159, 3), fixed(x, 1, 12), fixed(0.5, 3, 4), fixed(2.0, 0), fixed(-0.04, 1), tf(true), tf(false))
+  println(scientific(x, 4), scientific(x, 4, 14), general(x, 4), general(123.0, 4), general(0.5, 4), general(0.00001234, 3))
+  println(scientific(x, 4, 0, "fortran"), general(x, 6, 12, "fortran"), general(123.456, 5, 12, "fortran"), scientific(0.0, 3, 12, "fortran"))
+end program t

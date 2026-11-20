@@ -25,6 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("int", "int32", "real", "real32", "logical")
 CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool", "string": "rt_str"}
 STRFUNCS = {"trim", "upper", "lower", "len", "len_trim", "repeat", "contains", "starts_with", "ends_with", "index"}
+FORMATFUNCS = {"text", "tf", "right", "left", "fixed", "scientific", "general"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
             "size", "maxval", "minval", "sum", "product", "matmul", "dot_product", "allocated"}
 ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real", "real32", "real64", "asin", "acos", "atan",
@@ -33,7 +34,7 @@ ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real",
 ELEMENTAL2 = {"atan2", "sign", "modulo", "dim"}
 CONSTANTS = {"huge", "epsilon", "tiny"}
 ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "cshift"}
-BUILTINS |= STRFUNCS
+BUILTINS |= STRFUNCS | FORMATFUNCS
 BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
                "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
@@ -507,7 +508,7 @@ class Compiler:
             else:
                 for a in e.args:
                     at = self.types.get(id(a))
-                    if at is not None and (at.kind == "record" or (at.kind == "string" and e.name not in STRFUNCS)):
+                    if at is not None and (at.kind == "record" or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS)):
                         self.refuse(f"{'a record' if at.kind == 'record' else 'text'} as an argument of '{e.name}'", e)
                 self.check_builtin(e)
         t = self.types.get(id(e))
@@ -550,6 +551,21 @@ class Compiler:
         if len(kinds) != len(shapes) or any(k is None or k not in ((w,) if isinstance(w, str) else w) for k, w in zip(kinds, shapes)):
             self.refuse(f"{name}() of anything but what it takes", e)
 
+    def check_format_function(self, e):
+        """text, tf, right, left, fixed, scientific, general: single values of the kinds each one takes."""
+        name, args = e.name, e.args
+        kinds = [self.types[id(a)].kind if self.types.get(id(a)) is not None and self.types[id(a)].rank == 0 else None for a in args]
+        ints, numbers = ("int", "int32"), ("int", "int32", "real", "real32")
+        shown = ("int", "int32", "real", "real32", "logical", "string")
+        shapes = {"text": [shown], "tf": [("logical",)], "right": [shown, ints, ("string",)], "left": [shown, ints, ("string",)],
+                  "fixed": [numbers, ints, ints], "scientific": [numbers, ints, ints, ("string",)],
+                  "general": [numbers, ints, ints, ("string",)]}[name]
+        least = {"text": 1, "tf": 1, "right": 2, "left": 2, "fixed": 2, "scientific": 2, "general": 2}[name]
+        if not least <= len(args) <= len(shapes) or any(k not in w for k, w in zip(kinds, shapes)):
+            self.refuse(f"{name}() of anything but what it takes", e)
+        if name in ("scientific", "general") and len(args) == 4 and not (isinstance(args[3], Str) and args[3].value == "fortran"):
+            self.refuse(f"{name}() with a style other than \"fortran\"", e)
+
     def check_builtin(self, e):
         name = e.name
         if name == "allocated":
@@ -559,6 +575,9 @@ class Compiler:
         ranks = [self.types[id(a)].rank for a in e.args]
         if name in STRFUNCS:
             self.check_string_function(e)
+            return
+        if name in FORMATFUNCS:
+            self.check_format_function(e)
             return
         if name == "atan" and len(e.args) == 2:
             if any(r != 0 for r in ranks):
@@ -1076,6 +1095,37 @@ class Compiler:
         hi = self.tmp("int64_t", self.scalar(a.hi, "int") if a.hi is not None else f"{base}.n")
         return V(Type("string"), self.tmp_str(f'rt_str_part({base}, {lo}, {hi}, "{e.name}", {line})'))
 
+    def as_text(self, v):
+        """(the text a single value shows as, whether the value was text)."""
+        k, a, line = v.t.kind, v.atom, self.line
+        if k == "string":
+            return a, True
+        call = {"int": f"rt_text_int({a}, {line})", "int32": f"rt_text_int({a}, {line})", "real": f"rt_text_real({a}, {line})",
+                "real32": f"rt_text_real32({a}, {line})", "logical": f"rt_text_bool({a}, {line})"}[k]
+        return self.tmp_str(call), False
+
+    def format_function(self, e):
+        """text, tf, right, left, fixed, scientific, general: the arguments are all worked out first, in order."""
+        name, line = e.name, self.line
+        fortran = len(e.args) == 4
+        v = [self.value(a) for a in e.args[:3]]               # (a fourth argument is the style, a literal)
+        if name == "text":
+            t, is_text = self.as_text(v[0])
+            return V(Type("string"), self.tmp_str(f"rt_str_copy({t}, {line})") if is_text else t)
+        if name == "tf":
+            return V(Type("string"), self.tmp_str(f'rt_str_cstr({v[0].atom} ? "T" : "F", {line})'))
+        if name in ("right", "left"):
+            t, is_text = self.as_text(v[0])
+            width = self.cast(v[1].atom, v[1].t.kind, "int")
+            fill = v[2].atom if len(v) == 3 else 'RT_LIT(" ")'
+            return V(Type("string"), self.tmp_str(f'rt_pad("{name}", {t}, {"true" if is_text else "false"}, {width}, {fill}, {"true" if name == "right" else "false"}, {line})'))
+        x = self.cast(v[0].atom, v[0].t.kind, "real")
+        count = self.cast(v[1].atom, v[1].t.kind, "int")
+        width = self.cast(v[2].atom, v[2].t.kind, "int") if len(v) > 2 else "INT64_MIN"
+        if name == "fixed":
+            return V(Type("string"), self.tmp_str(f"rt_fixed({x}, {count}, {width}, {line})"))
+        return V(Type("string"), self.tmp_str(f"rt_{name}({x}, {count}, {width}, {'true' if fortran else 'false'}, {line})"))
+
     def string_function(self, e):
         """trim, upper, lower, repeat, len, len_trim, contains, starts_with, ends_with, index of text."""
         name, line = e.name, self.line
@@ -1306,6 +1356,8 @@ class Compiler:
             return self.constant(e)
         if name in STRFUNCS:
             return self.string_function(e)
+        if name in FORMATFUNCS:
+            return self.format_function(e)
         vals = [self.value(a, exact=name in ("mod", "min", "max") or name in ELEMENTAL2) for a in e.args]
         if name in ELEMENTAL2:
             return self.elemental2(name, e, vals, line)
