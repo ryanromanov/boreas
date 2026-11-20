@@ -26,7 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("int", "int32", "real", "real32", "logical")
 CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool", "string": "rt_str"}
 CONVERSIONS = {"to_integer": "int", "to_real": "real", "to_logical": "logical"}      # text to an optional number or logical
-STRFUNCS = {"trim", "upper", "lower", "len", "len_trim", "repeat", "contains", "starts_with", "ends_with", "index"} | set(CONVERSIONS)
+STRFUNCS = {"trim", "upper", "lower", "len", "len_trim", "repeat", "contains", "starts_with", "ends_with", "index", "scan", "verify", "replace", "adjustl", "adjustr", "iachar"} | set(CONVERSIONS)
 FORMATFUNCS = {"text", "tf", "right", "left", "fixed", "scientific", "general"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
             "size", "maxval", "minval", "sum", "product", "matmul", "dot_product", "allocated", "present"}
@@ -39,9 +39,10 @@ BITFUNCS = {"iand": 2, "ior": 2, "ieor": 2, "bitnot": 1, "ishft": 2, "shiftl": 2
 CONSTANTS = {"huge", "epsilon", "tiny"}
 SPECIALS = {"nan", "infinity"}                       # take nothing, give a real
 FLOATTESTS = {"isnan", "isinf"}
-ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "cshift"}
+OTHERS = {"norm2"}
+ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "cshift", "lbound", "ubound"}
 BUILTINS |= STRFUNCS | FORMATFUNCS
-BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS
+BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS | OTHERS
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
                "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
                "acosh": "acoshf", "erf": "erff", "erfc": "erfcf"}
@@ -1040,6 +1041,8 @@ class Compiler:
                         continue
                     if at is not None and (isrec(at) or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS)):
                         self.refuse(f"{'a record' if at.kind == 'record' else 'text'} as an argument of '{e.name}'", e)
+                if any(isinstance(a, NamedArg) for a in e.args):
+                    self.refuse(f"a named argument of {e.name}()", e)
                 self.check_builtin(e)
         t = self.types.get(id(e))
         if not self.kind_ok(t):
@@ -1082,8 +1085,10 @@ class Compiler:
         shapes = {"trim": ["string"], "upper": ["string"], "lower": ["string"], "len": ["string"], "len_trim": ["string"],
                   "repeat": ["string", ("int", "int32")], "contains": ["string", "string"], "starts_with": ["string", "string"],
                   "ends_with": ["string", "string"], "index": ["string", "string"],
-                  "to_integer": ["string"], "to_real": ["string"], "to_logical": ["string"]}[name]
-        if name == "index" and len(e.args) == 3:
+                  "to_integer": ["string"], "to_real": ["string"], "to_logical": ["string"], "adjustl": ["string"],
+                  "adjustr": ["string"], "iachar": ["string"], "scan": ["string", "string"], "verify": ["string", "string"],
+                  "replace": ["string", "string", "string"]}[name]
+        if name in ("index", "scan", "verify") and len(e.args) == 3:
             shapes = shapes + ["logical"]
         if len(kinds) != len(shapes) or any(k is None or k not in ((w,) if isinstance(w, str) else w) for k, w in zip(kinds, shapes)):
             self.refuse(f"{name}() of anything but what it takes", e)
@@ -1129,6 +1134,9 @@ class Compiler:
                 self.refuse("modulo() in a file that says `use ieee`", e)
         elif name in ARRAY_FUNCTIONS:
             self.check_array_function(e, ranks)
+        elif name == "norm2":
+            if len(e.args) != 1 or ranks[0] < 1 or self.types[id(e.args[0])].kind != "real":
+                self.refuse("norm2() of anything but one array of reals", e)
         elif name in SPECIALS:
             if e.args:
                 self.refuse(f"{name}() with arguments", e)
@@ -1193,6 +1201,11 @@ class Compiler:
         elif name in ("flatten", "shape"):
             if len(e.args) != 1 or ranks[0] < 1:
                 self.refuse(f"{name}() of anything but an array", e)
+        elif name in ("lbound", "ubound"):
+            if len(e.args) not in (1, 2) or ranks[0] < 1:
+                self.refuse(f"{name}() of anything but an array", e)
+            if len(e.args) == 2 and not (isinstance(e.args[1], Num) and isinstance(e.args[1].value, int) and 1 <= e.args[1].value <= ranks[0]):
+                self.refuse(f"{name}() with a dimension that is not a literal in range", e)
         elif name == "merge":
             if len(e.args) != 3 or ts[2].kind != "logical" or self.merge_kind(e) is None:
                 self.refuse("merge() of values of different types", e)
@@ -1873,6 +1886,15 @@ class Compiler:
             return V(t, r)
         if name in ("trim", "upper", "lower"):
             return V(Type("string"), self.tmp_str(f"rt_str_{name}({v[0].atom}, {line})"))
+        if name in ("adjustl", "adjustr"):
+            return V(Type("string"), self.tmp_str(f"rt_str_adjust({v[0].atom}, {'true' if name == 'adjustr' else 'false'}, {line})"))
+        if name == "replace":
+            return V(Type("string"), self.tmp_str(f"rt_str_replace({v[0].atom}, {v[1].atom}, {v[2].atom}, {line})"))
+        if name == "iachar":
+            return V(Type("int"), self.tmp("int64_t", f"rt_iachar({v[0].atom}, {line})"))
+        if name in ("scan", "verify"):
+            back = v[2].atom if len(v) == 3 else "false"
+            return V(Type("int"), self.tmp("int64_t", f"rt_str_scan({v[0].atom}, {v[1].atom}, {back}, {'true' if name == 'verify' else 'false'})"))
         if name == "repeat":
             return V(Type("string"), self.tmp_str(f"rt_str_repeat({v[0].atom}, {self.cast(v[1].atom, v[1].t.kind, 'int')}, {line})"))
         if name == "len":
@@ -1955,6 +1977,15 @@ class Compiler:
         name = e.name
         out = self.types[id(e)]
         a = vals[0]
+        if name in ("lbound", "ubound"):                 # the bounds of an array start at 1: the size of each dimension is the top
+            if len(vals) == 2:
+                d = e.args[1].value
+                return V(Type("int"), self.tmp("int64_t", "1" if name == "lbound" else f"{a.atom}.shape[{d - 1}]"))
+            res = self.tmp_array("int", 1)
+            self.emit(f"rt_alloc_int(&{res}, 1, {a.t.rank}, 1, 1, {line});")
+            for d in range(a.t.rank):
+                self.emit(f"{res}.data[{d}] = {'1' if name == 'lbound' else a.atom + '.shape[' + str(d) + ']'};")
+            return V(Type("int", 1), res)
         if name == "reshape":
             shp = vals[1]
             r = out.rank
@@ -2139,6 +2170,12 @@ class Compiler:
         if name in SPECIALS:
             return V(Type("real"), self.tmp("double", "NAN" if name == "nan" else "INFINITY"))
         vals = [self.value(a, exact=name in ("mod", "min", "max") or name in ELEMENTAL2 or name in BITFUNCS) for a in e.args]
+        if name == "norm2":
+            a, k, f = vals[0], self.loop_var(), self.tmp("rt_fsum", "{0}")
+            x = self.elem(a, k)
+            self.emit(f"rt_fsum_init(&{f});")
+            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {{ double sq{k} = {x} * {x}; rt_fsum_add(&{f}, sq{k}, {line}); }}")
+            return V(Type("real"), self.tmp("double", f"sqrt(rt_fsum_result(&{f}, {line}))"))
         if name in FLOATTESTS:
             if vals[0].t.kind in ("int", "int32"):
                 return V(Type("logical"), self.tmp("bool", f"((void){vals[0].atom}, false)"))

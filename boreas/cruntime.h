@@ -182,6 +182,61 @@ static inline int64_t rt_ibits(int64_t x, int64_t pos, int64_t len, int w, int l
 static inline int64_t rt_popcnt(int64_t x, int w) { return __builtin_popcountll(rt_bu(x, w)); }
 static inline int64_t rt_leadz(int64_t x, int w) { uint64_t u = rt_bu(x, w); return u == 0 ? w : __builtin_clzll(u) - (64 - w); }
 static inline int64_t rt_trailz(int64_t x, int w) { uint64_t u = rt_bu(x, w); return u == 0 ? w : __builtin_ctzll(u); }
+/* norm2 adds the squares exactly (Python's math.fsum: Shewchuk's algorithm, rounded once at the end), so the length
+   does not depend on the order of the numbers. This is a port of CPython's math_fsum. */
+typedef struct { double small[32]; double *p; int64_t n, cap; double special, inf; } rt_fsum;
+static void rt_fsum_init(rt_fsum *f) { f->p = f->small; f->n = 0; f->cap = 32; f->special = 0.0; f->inf = 0.0; }
+static void rt_fsum_add(rt_fsum *f, double x, int line) {
+    double xsave = x, y, t, hi, yr, lo;
+    int64_t i = 0;
+    for (int64_t j = 0; j < f->n; j++) {
+        y = f->p[j];
+        if (fabs(x) < fabs(y)) { t = x; x = y; y = t; }
+        hi = x + y; yr = hi - x; lo = y - yr;
+        if (lo != 0.0) f->p[i++] = lo;
+        x = hi;
+    }
+    f->n = i;
+    if (x != 0.0) {
+        if (!isfinite(x)) {
+            if (isfinite(xsave)) rt_fail(line, "norm2(): intermediate overflow in fsum");
+            if (isinf(xsave)) f->inf += xsave;
+            f->special += xsave;
+            f->n = 0;
+        } else {
+            if (f->n >= f->cap) {
+                int64_t cap = f->cap * 2;
+                double *q = (double *)malloc((size_t)cap * sizeof(double));
+                if (!q) rt_fail(line, "out of memory");
+                memcpy(q, f->p, (size_t)f->n * sizeof(double));
+                if (f->p != f->small) free(f->p);
+                f->p = q; f->cap = cap;
+            }
+            f->p[f->n++] = x;
+        }
+    }
+}
+static double rt_fsum_result(rt_fsum *f, int line) {
+    double hi = 0.0, lo = 0.0, x, y, yr;
+    if (f->special != 0.0) {
+        if (isnan(f->inf)) rt_fail(line, "norm2(): -inf + inf in fsum");
+        hi = f->special;
+    } else if (f->n > 0) {
+        int64_t n = f->n;
+        hi = f->p[--n];
+        while (n > 0) {
+            x = hi; y = f->p[--n];
+            hi = x + y; yr = hi - x; lo = y - yr;
+            if (lo != 0.0) break;
+        }
+        if (n > 0 && ((lo < 0.0 && f->p[n - 1] < 0.0) || (lo > 0.0 && f->p[n - 1] > 0.0))) {
+            y = lo * 2.0; x = hi + y; yr = x - hi;
+            if (y == yr) hi = x;
+        }
+    }
+    if (f->p != f->small) free(f->p);
+    return hi;
+}
 static int64_t rt_ipow(int64_t a, int64_t b, int line) {
     if (b < 0) {
         if (a == 0) rt_fail(line, "zero cannot be raised to a negative integer power");
@@ -848,6 +903,46 @@ static int64_t rt_str_index(rt_str s, rt_str sub, bool back) {
         for (int64_t i = s.n - sub.n; i >= 0; i--) if (sub.n == 0 || memcmp(s.p + i, sub.p, (size_t)sub.n) == 0) return i + 1;
     }
     return 0;
+}
+/* scan: the first (or last) place of `s` holding a character of `set`; verify: one that is not in `set`. 0 for none. */
+static int64_t rt_str_scan(rt_str s, rt_str set, bool back, bool verify) {
+    int64_t found = 0;
+    for (int64_t i = 0; i < s.n; i++) {
+        bool in = set.n > 0 && memchr(set.p, s.p[i], (size_t)set.n) != NULL;
+        if (in != verify) { if (!back) return i + 1; found = i + 1; }
+    }
+    return found;
+}
+/* adjustl / adjustr: the blanks at one end moved to the other (the length stays) */
+static rt_str rt_str_adjust(rt_str s, bool right, int line) {
+    rt_str r = rt_str_new(rt_cs(s), s.n, line);
+    int64_t lead = 0, trail = 0;
+    while (lead < s.n && s.p[lead] == ' ') lead++;
+    while (trail < s.n - lead && s.p[s.n - 1 - trail] == ' ') trail++;
+    if (s.n == 0) return r;
+    if (right) { memmove(r.p + trail, s.p, (size_t)(s.n - trail)); memset(r.p, ' ', (size_t)trail); }
+    else { memmove(r.p, s.p + lead, (size_t)(s.n - lead)); memset(r.p + s.n - lead, ' ', (size_t)lead); }
+    return r;
+}
+static rt_str rt_str_replace(rt_str s, rt_str old, rt_str nw, int line) {
+    if (old.n == 0) rt_fail(line, "replace(): the text to replace must not be empty");
+    int64_t count = 0;
+    for (int64_t i = 0; i + old.n <= s.n; ) { if (memcmp(s.p + i, old.p, (size_t)old.n) == 0) { count++; i += old.n; } else i++; }
+    int64_t n = s.n + count * (nw.n - old.n);
+    rt_str r;
+    r.p = (char *)malloc((size_t)n + 1);
+    if (!r.p) rt_fail(line, "out of memory");
+    int64_t o = 0;
+    for (int64_t i = 0; i < s.n; ) {
+        if (i + old.n <= s.n && memcmp(s.p + i, old.p, (size_t)old.n) == 0) { if (nw.n) memcpy(r.p + o, nw.p, (size_t)nw.n); o += nw.n; i += old.n; }
+        else r.p[o++] = s.p[i++];
+    }
+    r.p[n] = 0; r.n = n;
+    return r;
+}
+static int64_t rt_iachar(rt_str s, int line) {
+    if (s.n != 1) rt_fail(line, "iachar(): needs a one-character string, got \"%.*s\"", (int)s.n, rt_cs(s));
+    return (unsigned char)s.p[0];
 }
 static bool rt_str_starts(rt_str s, rt_str sub) { return sub.n <= s.n && (sub.n == 0 || memcmp(s.p, sub.p, (size_t)sub.n) == 0); }
 static bool rt_str_ends(rt_str s, rt_str sub) { return sub.n <= s.n && (sub.n == 0 || memcmp(s.p + s.n - sub.n, sub.p, (size_t)sub.n) == 0); }
