@@ -686,3 +686,308 @@ static void rt_same_shape3(const int64_t *a, int ra, const int64_t *b, int rb, c
     rt_shape_text(x, s[lo], r[lo]); rt_shape_text(y, s[next], r[next]);
     rt_fail(line, "array shape mismatch: %s vs %s", x, y);
 }
+
+/* ---- strings: ASCII text only (the compiler refuses anything else), NUL-terminated. A variable or a temporary owns
+   its buffer; a literal is a view that is never freed. Storing a string copies it. ---- */
+typedef struct { char *p; int64_t n; } rt_str;
+#define RT_LIT(s) ((rt_str){(char *)(s), (int64_t)(sizeof(s) - 1)})
+static inline const char *rt_cs(rt_str s) { return s.p ? s.p : ""; }
+static inline void rt_free_str(rt_str *s) { free(s->p); s->p = NULL; s->n = 0; }
+static rt_str rt_str_new(const char *p, int64_t n, int line) {
+    rt_str r;
+    r.p = (char *)malloc((size_t)n + 1);
+    if (!r.p) rt_fail(line, "out of memory");
+    if (n > 0) memcpy(r.p, p, (size_t)n);
+    r.p[n] = 0; r.n = n;
+    return r;
+}
+static void rt_str_set(rt_str *dst, rt_str src, int line) {
+    rt_str c = rt_str_new(rt_cs(src), src.n, line);
+    free(dst->p);
+    *dst = c;
+}
+static rt_str rt_str_cat(rt_str a, rt_str b, int line) {
+    rt_str r;
+    r.p = (char *)malloc((size_t)(a.n + b.n) + 1);
+    if (!r.p) rt_fail(line, "out of memory");
+    if (a.n > 0) memcpy(r.p, a.p, (size_t)a.n);
+    if (b.n > 0) memcpy(r.p + a.n, b.p, (size_t)b.n);
+    r.n = a.n + b.n; r.p[r.n] = 0;
+    return r;
+}
+/* the ordering of Python's strings: by code point, then by length (bytes, for ASCII) */
+static int rt_str_cmp(rt_str a, rt_str b) {
+    int64_t m = a.n < b.n ? a.n : b.n;
+    int c = m > 0 ? memcmp(a.p, b.p, (size_t)m) : 0;
+    if (c) return c < 0 ? -1 : 1;
+    return a.n < b.n ? -1 : a.n > b.n ? 1 : 0;
+}
+static void rt_write_string(rt_str s) { fputs(rt_cs(s), stdout); }
+static rt_str rt_str_upper(rt_str s, int line) {
+    rt_str r = rt_str_new(rt_cs(s), s.n, line);
+    for (int64_t i = 0; i < r.n; i++) if (r.p[i] >= 'a' && r.p[i] <= 'z') r.p[i] -= 32;
+    return r;
+}
+static rt_str rt_str_lower(rt_str s, int line) {
+    rt_str r = rt_str_new(rt_cs(s), s.n, line);
+    for (int64_t i = 0; i < r.n; i++) if (r.p[i] >= 'A' && r.p[i] <= 'Z') r.p[i] += 32;
+    return r;
+}
+static int64_t rt_len_trim(rt_str s) {
+    int64_t n = s.n;
+    while (n > 0 && s.p[n - 1] == ' ') n--;
+    return n;
+}
+static rt_str rt_str_trim(rt_str s, int line) { return rt_str_new(rt_cs(s), rt_len_trim(s), line); }
+static rt_str rt_str_repeat(rt_str s, int64_t k, int line) {
+    if (k < 0) rt_fail(line, "repeat(): the count must be a whole number of 0 or more, got %lld", (long long)k);
+    rt_str r;
+    r.p = (char *)malloc((size_t)(s.n * k) + 1);
+    if (!r.p) rt_fail(line, "out of memory");
+    for (int64_t i = 0; i < k; i++) if (s.n > 0) memcpy(r.p + i * s.n, s.p, (size_t)s.n);
+    r.n = s.n * k; r.p[r.n] = 0;
+    return r;
+}
+/* the first (or last) place `sub` occurs in `s`, counting from 1; 0 for none. An empty `sub` is found at 1 (at n+1 from the back). */
+static int64_t rt_str_index(rt_str s, rt_str sub, bool back) {
+    if (sub.n > s.n) return 0;
+    if (!back) {
+        for (int64_t i = 0; i + sub.n <= s.n; i++) if (sub.n == 0 || memcmp(s.p + i, sub.p, (size_t)sub.n) == 0) return i + 1;
+    } else {
+        for (int64_t i = s.n - sub.n; i >= 0; i--) if (sub.n == 0 || memcmp(s.p + i, sub.p, (size_t)sub.n) == 0) return i + 1;
+    }
+    return 0;
+}
+static bool rt_str_starts(rt_str s, rt_str sub) { return sub.n <= s.n && (sub.n == 0 || memcmp(s.p, sub.p, (size_t)sub.n) == 0); }
+static bool rt_str_ends(rt_str s, rt_str sub) { return sub.n <= s.n && (sub.n == 0 || memcmp(s.p + s.n - sub.n, sub.p, (size_t)sub.n) == 0); }
+/* s[i]: one character */
+static rt_str rt_str_char(rt_str s, int64_t i, int line) {
+    if (i < 1 || i > s.n) rt_fail(line, "index %lld out of bounds 1..%lld", (long long)i, (long long)s.n);
+    return rt_str_new(rt_cs(s) + i - 1, 1, line);
+}
+/* s[lo:hi], both ends given (the caller supplies 1 and the length for a missing one) */
+static rt_str rt_str_part(rt_str s, int64_t lo, int64_t hi, const char *name, int line) {
+    if (lo < 1 || hi > s.n || lo > hi + 1)
+        rt_fail(line, "substring %s[%lld:%lld] is outside the string (length %lld)", name, (long long)lo, (long long)hi, (long long)s.n);
+    return rt_str_new(rt_cs(s) + lo - 1, hi - lo + 1, line);
+}
+
+/* ---- formatting text: text, tf, right, left, fixed, scientific, general (ported from the interpreter's own) ---- */
+static rt_str rt_str_cstr(const char *s, int line) { return rt_str_new(s, (int64_t)strlen(s), line); }
+static rt_str rt_text_int(int64_t v, int line) { char b[32]; snprintf(b, sizeof b, "%lld", (long long)v); return rt_str_cstr(b, line); }
+static rt_str rt_text_real(double v, int line) { char b[48]; return rt_str_cstr(rt_real_text(v, b), line); }
+static rt_str rt_text_real32(float v, int line) { char b[48]; return rt_str_cstr(rt_real32_text(v, b), line); }
+static rt_str rt_text_bool(bool v, int line) { return rt_str_cstr(v ? "true" : "false", line); }
+static rt_str rt_str_copy(rt_str s, int line) { return rt_str_new(rt_cs(s), s.n, line); }
+static void rt_need_count(const char *fn, const char *what, int64_t n, int line) {
+    if (n < 0) rt_fail(line, "%s(): %s must be a whole number of 0 or more, got %lld", fn, what, (long long)n);
+}
+/* `n` characters of `s` right- or left-aligned in `width` (blank-filled unless `fill`), `s` returned as is when it is already as wide */
+static rt_str rt_align(const char *s, int64_t n, int64_t width, char fill, bool right, int line) {
+    if (n >= width) return rt_str_new(s, n, line);
+    rt_str r = rt_str_new("", 0, line);
+    free(r.p);
+    r.p = (char *)malloc((size_t)width + 1);
+    if (!r.p) rt_fail(line, "out of memory");
+    memset(r.p, fill, (size_t)width);
+    memcpy(r.p + (right ? width - n : 0), s, (size_t)n);
+    r.p[width] = 0; r.n = width;
+    return r;
+}
+static rt_str rt_stars(int64_t width, int line) {
+    rt_str r;
+    r.p = (char *)malloc((size_t)width + 1);
+    if (!r.p) rt_fail(line, "out of memory");
+    memset(r.p, '*', (size_t)width); r.p[width] = 0; r.n = width;
+    return r;
+}
+/* right(x, width [, fill]) / left(...): `text` is how x shows, `is_text` says whether x was text (cut) or a number (stars) */
+static rt_str rt_pad(const char *fn, rt_str text, bool is_text, int64_t width, rt_str fill, bool right, int line) {
+    rt_need_count(fn, "the width", width, line);
+    if (fill.n != 1) rt_fail(line, "%s(): the padding must be a one-character string", fn);
+    if (width == 0) return rt_str_copy(text, line);
+    if (text.n > width) return is_text ? rt_str_new(rt_cs(text), width, line) : rt_stars(width, line);
+    if (right && fill.p[0] == '0' && !is_text && text.n > 0 && (text.p[0] == '-' || text.p[0] == '+')) {      /* the sign stays in front: -0042 */
+        rt_str rest = rt_align(text.p + 1, text.n - 1, width - 1, '0', true, line);
+        rt_str out;
+        out.p = (char *)malloc((size_t)width + 1);
+        if (!out.p) rt_fail(line, "out of memory");
+        out.p[0] = text.p[0];
+        memcpy(out.p + 1, rest.p, (size_t)rest.n + 1);
+        out.n = rest.n + 1;
+        rt_free_str(&rest);
+        return out;
+    }
+    return rt_align(rt_cs(text), text.n, width, fill.p[0], right, line);
+}
+static char *rt_snprintf_alloc(int line, const char *fmt, int prec, double x) {
+    int n = snprintf(NULL, 0, fmt, prec, x);
+    char *p = (char *)malloc((size_t)n + 1);
+    if (!p) rt_fail(line, "out of memory");
+    snprintf(p, (size_t)n + 1, fmt, prec, x);
+    return p;
+}
+/* NaN / Infinity as the interpreter writes them in a field of `width` (-1: no width); 0 for an ordinary number */
+static int rt_special(double x, int64_t width, char *out) {
+    if (x != x) { if (width < 0 || width == 0 || width >= 3) strcpy(out, "NaN"); else { memset(out, '*', (size_t)width); out[width] = 0; } return 1; }
+    if (isinf(x)) {
+        int neg = x < 0;
+        int64_t full = neg ? 9 : 8, shortf = neg ? 4 : 3;
+        if (width < 0 || width == 0 || width >= full) strcpy(out, neg ? "-Infinity" : "Infinity");
+        else if (width >= shortf) strcpy(out, neg ? "-Inf" : "Inf");
+        else { memset(out, '*', (size_t)width); out[width] = 0; }
+        return 1;
+    }
+    return 0;
+}
+static rt_str rt_special_text(const char *s, int64_t width, int line) {
+    return rt_align(s, (int64_t)strlen(s), width > 0 ? width : 0, ' ', true, line);
+}
+/* "0." -> "." for the first occurrence, as Python's text.replace("0.", ".", 1) */
+static char *rt_drop_zero(const char *s, int line) {
+    char *p = (char *)malloc(strlen(s) + 1);
+    if (!p) rt_fail(line, "out of memory");
+    const char *q = strstr(s, "0.");
+    if (!q) { strcpy(p, s); return p; }
+    size_t head = (size_t)(q - s);
+    memcpy(p, s, head); strcpy(p + head, q + 1);
+    return p;
+}
+static rt_str rt_take(char *p) { rt_str r; r.p = p; r.n = (int64_t)strlen(p); return r; }
+static rt_str rt_fit_text(char *text, int64_t width, bool fortran, int line) {          /* consumes `text` */
+    int64_t n = (int64_t)strlen(text);
+    if (width <= 0 || n <= width) { rt_str r = rt_align(text, n, width > 0 ? width : 0, ' ', true, line); free(text); return r; }
+    if (fortran) { char *t = rt_drop_zero(text, line); free(text); text = t; n = (int64_t)strlen(text); }
+    rt_str r = n <= width ? rt_align(text, n, width, ' ', true, line) : rt_stars(width, line);
+    free(text);
+    return r;
+}
+static rt_str rt_fixed(double x, int64_t decimals, int64_t width, int line) {              /* INT64_MIN: no width */
+    rt_need_count("fixed", "the number of decimals", decimals, line);
+    if (width != INT64_MIN) rt_need_count("fixed", "the width", width, line);
+    char sp[16];
+    if (rt_special(x, width, sp)) return width > 0 ? rt_special_text(sp, width, line) : rt_str_cstr(sp, line);
+    char *text = rt_snprintf_alloc(line, "%.*f", (int)decimals, x);
+    if (decimals == 0) { char *t = (char *)malloc(strlen(text) + 2); strcpy(t, text); strcat(t, "."); free(text); text = t; }
+    if (width <= 0) return rt_take(text);
+    int64_t n = (int64_t)strlen(text);
+    if (n > width) {
+        const char *body = text + (text[0] == '-' ? 1 : 0);
+        while (*body == '-') body++;                                       /* lstrip("-") */
+        if (strncmp(body, "0.", 2) == 0) { char *t = rt_drop_zero(text, line); free(text); text = t; n = (int64_t)strlen(text); }
+    }
+    rt_str r = n <= width ? rt_align(text, n, width, ' ', true, line) : rt_stars(width, line);
+    free(text);
+    return r;
+}
+static const char *rt_minus(double x) { return signbit(x) ? "-" : ""; }
+static void rt_exp_text(char *out, int e, bool fortran) {
+    int a = e < 0 ? -e : e;
+    if (a <= 99 || !fortran) sprintf(out, "E%c%02d", e < 0 ? '-' : '+', a);
+    else sprintf(out, "%c%03d", e < 0 ? '-' : '+', a);
+}
+/* |x| to `digits` significant digits: the digit string (no point) and the exponent, |x| = d.ddd * 10**e */
+static void rt_significant(double x, int64_t digits, char *d, int *e) {
+    char *s = rt_snprintf_alloc(0, "%.*e", (int)(digits - 1), fabs(x));
+    char *ex = strchr(s, 'e');
+    int k = 0;
+    for (char *c = s; c < ex; c++) if (*c != '.') d[k++] = *c;
+    d[k] = 0;
+    *e = atoi(ex + 1);
+    free(s);
+}
+static char *rt_cat3(const char *a, const char *b, const char *c) {
+    char *p = (char *)malloc(strlen(a) + strlen(b) + strlen(c) + 1);
+    strcpy(p, a); strcat(p, b); strcat(p, c);
+    return p;
+}
+static char *rt_scientific_text(double x, int64_t digits, bool fortran) {
+    char ex[16];
+    if (fortran) {
+        if (x == 0) {
+            rt_exp_text(ex, 0, true);
+            char *zeros = (char *)malloc((size_t)digits + 1);
+            memset(zeros, '0', (size_t)digits); zeros[digits] = 0;
+            char *mid = rt_cat3("0.", zeros, ex);
+            char *r = rt_cat3(rt_minus(x), mid, "");
+            free(zeros); free(mid);
+            return r;
+        }
+        char *d = (char *)malloc((size_t)digits + 8);
+        int e;
+        rt_significant(x, digits, d, &e);
+        rt_exp_text(ex, e + 1, true);
+        char *mid = rt_cat3("0.", d, ex);
+        char *r = rt_cat3(rt_minus(x), mid, "");
+        free(d); free(mid);
+        return r;
+    }
+    char *s = rt_snprintf_alloc(0, "%.*e", (int)digits, fabs(x));
+    char *p = strchr(s, 'e');
+    int e = atoi(p + 1);
+    *p = 0;
+    rt_exp_text(ex, e, false);
+    char *r = rt_cat3(rt_minus(x), s, ex);
+    free(s);
+    return r;
+}
+static rt_str rt_scientific(double x, int64_t digits, int64_t width, bool fortran, int line) {
+    rt_need_count("scientific", "the number of digits", digits, line);
+    if (width != INT64_MIN) rt_need_count("scientific", "the width", width, line);
+    if (fortran && digits < 1) rt_fail(line, "scientific(): the \"fortran\" style needs at least 1 digit");
+    char sp[16];
+    if (rt_special(x, width, sp)) return width > 0 ? rt_special_text(sp, width, line) : rt_str_cstr(sp, line);
+    return rt_fit_text(rt_scientific_text(x, digits, fortran), width, fortran, line);
+}
+static void rt_strip_zeros(char *s) {
+    if (!strchr(s, '.')) return;
+    size_t n = strlen(s);
+    while (n > 0 && s[n - 1] == '0') s[--n] = 0;
+    if (n > 0 && s[n - 1] == '.') s[--n] = 0;
+}
+static rt_str rt_general(double x, int64_t digits, int64_t width, bool fortran, int line) {
+    rt_need_count("general", "the number of digits", digits, line);
+    if (width != INT64_MIN) rt_need_count("general", "the width", width, line);
+    if (digits < 1) rt_fail(line, "general(): needs at least 1 significant digit");
+    char sp[16];
+    if (rt_special(x, width, sp)) return width > 0 ? rt_special_text(sp, width, line) : rt_str_cstr(sp, line);
+    char dg[400]; int e = 0;
+    if (fortran) {
+        int k = 0;
+        if (x != 0) { char *d = (char *)malloc((size_t)digits + 8); rt_significant(x, digits, d, &e); free(d); k = e + 1; }
+        if (x == 0 || (0 <= k && k <= digits)) {
+            int64_t decimals = x == 0 ? digits - 1 : digits - k;
+            int64_t w = width > 0 ? (width - 4 > 0 ? width - 4 : 0) : INT64_MIN;
+            rt_str body = rt_fixed(x, decimals, w, line);
+            if (strchr(rt_cs(body), '*')) { rt_free_str(&body); return rt_stars(width, line); }
+            char *t = rt_cat3(rt_cs(body), "    ", "");
+            rt_free_str(&body);
+            rt_str r = rt_align(t, (int64_t)strlen(t), width > 0 ? width : 0, ' ', true, line);
+            free(t);
+            return r;
+        }
+        return rt_fit_text(rt_scientific_text(x, digits, true), width, true, line);
+    }
+    char *text;
+    if (x == 0) text = rt_cat3(rt_minus(x), "0", "");
+    else {
+        char *d = (char *)malloc((size_t)digits + 8);
+        rt_significant(x, digits, d, &e);
+        free(d);
+        if (e < -4 || e >= digits) {
+            char *s = rt_snprintf_alloc(line, "%.*e", (int)(digits - 1), fabs(x));
+            *strchr(s, 'e') = 0;
+            rt_strip_zeros(s);
+            char ex[16]; rt_exp_text(ex, e, false);
+            text = rt_cat3(rt_minus(x), s, ex);
+            free(s);
+        } else {
+            char *s = rt_snprintf_alloc(line, "%.*f", (int)(digits - 1 - e), fabs(x));
+            rt_strip_zeros(s);
+            text = rt_cat3(rt_minus(x), s, "");
+            free(s);
+        }
+    }
+    (void)dg;
+    return rt_fit_text(text, width, false, line);
+}
