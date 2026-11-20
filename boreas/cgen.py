@@ -64,8 +64,13 @@ def all_functions(c):
     return [*c.unit.functions.values(), *c.methods.values()]
 
 
+def akind(t):
+    """The name of the array runtime (rt_<name>_arr, rt_alloc_<name> ...) for an array of type `t`: the kind, or ra_<record>."""
+    return f"ra_{t.name}" if t.kind == "record" else t.kind
+
+
 def ctype(t):
-    return cscalar(t) if t.rank == 0 else f"rt_{t.kind}_arr"
+    return cscalar(t) if t.rank == 0 else f"rt_{akind(t)}_arr"
 
 
 def cscalar(t):
@@ -122,7 +127,7 @@ class Compiler:
         if t is None or not t.known:
             return False
         if t.kind == "record":
-            return t.rank == 0 and not t.optional and t.name in self.records
+            return t.rank in (0, 1) and not t.optional and t.name in self.records
         if t.kind == "string":
             return t.rank == 0 and not t.optional
         return t.kind in KINDS and 0 <= t.rank <= MAX_RANK
@@ -230,6 +235,8 @@ class Compiler:
             return None
         if typ in self.records:
             return Type("record", 0, False, typ)
+        if typ.endswith("[]") and typ[:-2] in self.records:
+            return Type("record", 1, False, typ[:-2])
         t = parse(typ, None)
         if t.known and t.kind == "string" and t.rank == 0 and not t.optional:
             return t
@@ -267,7 +274,7 @@ class Compiler:
                     what = "allocatable " if s.allocatable else ""
                     self.refuse(f"the declaration of '{s.name}' ({what}{s.type})", s)
                 if t.kind == "record" and s.init is not None:
-                    self.same_record(s.init, s.type, s)
+                    self.same_record(s.init, s.type, s, t.rank)
             elif kind is Assign:
                 root = s.target
                 if isinstance(root, FieldAccess):
@@ -292,8 +299,11 @@ class Compiler:
                 tt = self.vars_type(root.name, body, f)
                 if tt is not None and tt.kind == "record":
                     if isinstance(root, Apply):
-                        self.refuse("a subscript on a record", s)
-                    self.same_record(s.value, tt.name, s)
+                        if tt.rank != 1 or not self.record_element(root):
+                            self.refuse("a subscript on a record", s)
+                        self.same_record(s.value, tt.name, s)
+                    else:
+                        self.same_record(s.value, tt.name, s, tt.rank)
                 if tt is not None and tt.kind == "string":
                     vt = self.types.get(id(s.value))
                     if isinstance(root, Apply):
@@ -326,10 +336,11 @@ class Compiler:
                 return self.decl_type(d)
         return None
 
-    def same_record(self, value, name, node):
-        """`value` must be a record of the type `name` (anything else is the interpreter's runtime error: refused)."""
+    def same_record(self, value, name, node, rank=0):
+        """`value` must be a record of the type `name` (anything else is the interpreter's runtime error: refused). Stored in an
+        array of records (rank 1) it may also be a single one, which fills the array."""
         t = self.types.get(id(value))
-        if t is None or t.kind != "record" or t.name != name or t.rank != 0:
+        if t is None or t.kind != "record" or t.name != name or t.rank not in ((0, 1) if rank == 1 else (0,)):
             self.refuse(f"a value that is not a {name}", node)
 
     FITS = {"int": ("int", "int32"), "int32": ("int", "int32"), "real": ("int", "int32", "real", "real32"),
@@ -355,7 +366,16 @@ class Compiler:
             return e.name
         if self.is_method_call(e) or (isinstance(e, Apply) and not e.bracket):
             return None
+        if self.record_element(e):
+            return None
         self.refuse("a field of an element", node)
+
+    def record_element(self, e):
+        """Is `e` one element `a[i]` of an array of records (a variable `a`, a single subscript that is not a range)?"""
+        if not (isinstance(e, Apply) and e.bracket and not e.chain and len(e.args) == 1 and not isinstance(e.args[0], Slice)):
+            return False
+        t = self.types.get(id(e))
+        return t is not None and t.kind == "record" and t.rank == 0
 
     def field_root(self, e, node):
         """The variable a chain of fields `a.b.c` starts at (anything but a plain variable is refused)."""
@@ -363,6 +383,8 @@ class Compiler:
             if e.args is not None or e.call or e.chain:
                 self.refuse("a field with subscripts or a record's function", node)
             e = e.base
+        if self.record_element(e):
+            return e.name
         if not isinstance(e, Var):
             self.refuse("a field of a computed value or of an element", node)
         return e.name
@@ -375,8 +397,8 @@ class Compiler:
                     self.refuse(f"the call of '{f.name}' with an argument that is not what the parameter takes", node)
                 continue
             if pt is not None and pt.kind == "record":
-                if at is None or at.kind != "record" or at.name != pt.name or at.rank != 0:
-                    self.refuse(f"the call of '{f.name}' with an argument that is not a {pt.name}", node)
+                if at is None or at.kind != "record" or at.name != pt.name or at.rank != pt.rank:
+                    self.refuse(f"the call of '{f.name}' with an argument that is not a {pt}", node)
                 continue
             if at is None or pt is None or (at.rank != pt.rank) or (at.kind != pt.kind and at.rank > 0):
                 self.refuse(f"the call of '{f.name}' with an argument that is not what the parameter takes", node)
@@ -421,6 +443,8 @@ class Compiler:
 
     def decl_type(self, d):
         if d.type in self.records:
+            if d.dims is not None and len(d.dims) == 1 and not d.allocatable and not d.const:      # a fixed-size array of records
+                return Type("record", 1, False, d.type)
             return None if d.dims is not None or d.allocatable or d.const else Type("record", 0, False, d.type)
         if d.type == "string":
             return None if d.dims is not None or d.allocatable or d.const else Type("string")
@@ -486,6 +510,8 @@ class Compiler:
             self.refuse(f"the operator '{e.op}'", e)
         if kind is Binary and e.op not in ("+", "-", "*", "/", "**", "==", "/=", "<", "<=", ">", ">=", "and", "or"):
             self.refuse(f"the operator '{e.op}'", e)
+        if kind is MatrixLit and self.types.get(id(e)) is not None and self.types[id(e)].kind == "record":
+            self.refuse("a matrix of records", e)
         if kind in (ArrayLit, MatrixLit):
             items = e.items if kind is ArrayLit else [x for row in e.rows for x in row]
             if any(self.types.get(id(x)) is None or self.types[id(x)].rank != 0 or self.types[id(x)].kind == "string"
@@ -498,6 +524,8 @@ class Compiler:
                 self.refuse("part of an array", e)
             if e.bracket:
                 rt = self.types.get(id(e))
+                if rt is not None and rt.kind == "record" and not self.record_element(e):
+                    self.refuse("part of an array of records", e)
                 if rt is not None and rt.kind == "string":                  # s[i] or s[lo:hi] of a text variable
                     a = e.args[0] if len(e.args) == 1 else None
                     if a is None or (isinstance(a, Slice) and a.step is not None):
@@ -515,6 +543,8 @@ class Compiler:
             else:
                 for a in e.args:
                     at = self.types.get(id(a))
+                    if at is not None and at.kind == "record" and at.rank == 1 and e.name == "size":
+                        continue
                     if at is not None and (at.kind == "record" or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS)):
                         self.refuse(f"{'a record' if at.kind == 'record' else 'text'} as an argument of '{e.name}'", e)
                 self.check_builtin(e)
@@ -909,6 +939,14 @@ class Compiler:
     def array_literal(self, e):
         rank = 1 if isinstance(e, ArrayLit) else 2
         kind = self.types[id(e)].kind
+        if kind == "record":
+            name = self.types[id(e)].name
+            res = self.tmp_array(f"ra_{name}", 1)
+            self.emit(f"rt_alloc_ra_{name}(&{res}, 1, {len(e.items)}, 1, 1, {self.line});")
+            for n, x in enumerate(e.items):                                 # worked out in order, then each stored as a copy
+                atom = self.value(x).atom
+                self.store(f"{res}.data[{n}]", atom, name)
+            return V(Type("record", 1, False, name), res)
         if isinstance(e, ArrayLit):
             items, rows, cols = e.items, len(e.items), 1
         else:
@@ -1009,6 +1047,8 @@ class Compiler:
         t = self.vars[e.name][0]
         arr = self.vars[e.name][1]
         off = self.subscripts(e, arr)
+        if t.kind == "record":                                      # a view of the element, not a copy
+            return V(Type("record", 0, False, t.name), self.tmp(f"r_{t.name}", f"{arr}.data[{off}]"))
         return V(Type(t.kind), self.tmp(CSCALAR[t.kind], f"{arr}.data[{off}]"))
 
     # -- calls and built-in functions -----------------------------------------------------------------------------------
@@ -1046,6 +1086,8 @@ class Compiler:
         """The C lvalue of `a.b.c` (a chain of fields of a variable)."""
         if isinstance(e, Var):
             return self.vars[e.name][1]
+        if isinstance(e, Apply):                                      # an element of an array of records
+            return self.lvalue(e)
         return f"{self.field_lvalue(e.base)}.m_{e.field}"
 
     def constructor(self, e):
@@ -1551,6 +1593,23 @@ class Compiler:
         x = self.narrow(self.elem(src, k), src.t.kind, dst_kind, line, what)
         self.emit(f"for (int64_t {k} = 0; {k} < {dst}.n; {k}++) {dst}.data[{k}] = {x};")
 
+    def fill_records(self, dst, src, name):
+        k = self.loop_var()
+        self.emit(f"for (int64_t {k} = 0; {k} < {dst}.n; {k}++) {{")
+        self.depth += 1
+        self.store(f"{dst}.data[{k}]", src, name)
+        self.depth -= 1
+        self.emit("}")
+
+    def copy_records(self, dst, src, name):
+        """Store every element of the array of records `src` in `dst` (shapes already agree), each one a copy."""
+        k = self.loop_var()
+        self.emit(f"for (int64_t {k} = 0; {k} < {dst}.n; {k}++) {{")
+        self.depth += 1
+        self.store(f"{dst}.data[{k}]", f"{src}.data[{k}]", name)
+        self.depth -= 1
+        self.emit("}")
+
     def st_decl(self, s):
         t = self.vars[s.name][0]
         name = c_name(s.name)
@@ -1576,7 +1635,16 @@ class Compiler:
         dims = [self.scalar(d, "int") for d in s.dims]
         dims = [self.tmp("int64_t", d) for d in dims]
         padded = dims + ["1"] * (3 - len(dims))
-        self.emit(f"rt_alloc_{t.kind}(&{name}, {t.rank}, {', '.join(padded)}, {line});")
+        self.emit(f"rt_alloc_{akind(t)}(&{name}, {t.rank}, {', '.join(padded)}, {line});")
+        if t.kind == "record":
+            if s.init is not None:
+                v = self.value(s.init)
+                if v.t.rank == 0:
+                    self.fill_records(name, v.atom, t.name)
+                else:
+                    self.emit(f'rt_init_shape_error({v.atom}.shape, {v.atom}.rank, {name}.shape, {name}.rank, "{s.name}", {line});')
+                    self.copy_records(name, v.atom, t.name)
+            return
         if s.init is not None:
             v = self.value(s.init)
             if v.t.rank == 0:                                           # one value in every element
@@ -1601,7 +1669,7 @@ class Compiler:
             return
         if isinstance(target, Apply):                                   # an element: its subscripts first
             lv = self.lvalue(target)
-            self.emit(f"{lv} = {self.scalar(s.value, t.kind, f'line {line}')};")
+            self.store(lv, self.scalar(s.value, t.kind, f'line {line}'), t.name if t.kind == "record" else t.kind)
             return
         name = self.vars[target.name][1]
         if t.kind == "string":
@@ -1613,6 +1681,13 @@ class Compiler:
                 self.emit(f"*set_{target.name} = true;")
             return
         v = self.value(s.value)
+        if t.kind == "record" and v.t.rank == 0:                        # one record in every element
+            self.fill_records(name, v.atom, t.name)
+            return
+        if t.kind == "record":                                          # an array of records: same shape, every element copied
+            self.emit(f"rt_same_shape({name}.shape, {name}.rank, {v.atom}.shape, {v.atom}.rank, 1, {line});")
+            self.copy_records(name, v.atom, t.name)
+            return
         if target.name in self.allocs:
             if v.t.rank == 0:
                 self.emit(f'rt_need_alloc({name}.data, "{target.name}", {line});')
@@ -1797,6 +1872,8 @@ class Compiler:
                 self.emit("rt_write_sep();")
             if rank == 0:
                 self.emit(f"{'w_' + kind[4:] if kind.startswith('rec:') else WRITERS[kind]}({atom});")
+            elif kind.startswith("rec:"):
+                self.emit(f"rt_write_ra_{kind[4:]}_arr(&{atom.atom});")
             elif atom.src is None or atom.src == kind:
                 self.emit(f"rt_write_{kind}_arr(&{atom.atom});")
             else:                                                     # stored as another kind: convert while writing
@@ -1844,7 +1921,7 @@ class Compiler:
         for typ, name, intent in f.params:
             t = self.param_type(typ)
             if t.rank > 0:
-                out.append(f"rt_{t.kind}_arr {c_name(name)}")
+                out.append(f"rt_{akind(t)}_arr {c_name(name)}")
             elif intent == "inout":
                 out.append(f"{cscalar(t)} *{c_name(name)}")
             elif intent == "out":
@@ -1864,14 +1941,14 @@ class Compiler:
                 if t.kind == "string":
                     self.emit(f"rt_str {c_name(d.name)} = {{0}};")
                     self.arrays.append(("str", c_name(d.name)))
-                elif t.kind == "record" and self.deep[t.name]:
+                elif t.kind == "record" and t.rank == 0 and self.deep[t.name]:
                     self.emit(f"r_{t.name} {c_name(d.name)} = {{0}};")
                     self.arrays.append((f"rec_{t.name}", c_name(d.name)))
                 elif t.rank == 0:
                     self.emit(f"{cscalar(t)} {c_name(d.name)};")
                 else:
-                    self.emit(f"rt_{t.kind}_arr {c_name(d.name)} = {{0}};")
-                    self.arrays.append((t.kind, c_name(d.name)))
+                    self.emit(f"rt_{akind(t)}_arr {c_name(d.name)} = {{0}};")
+                    self.arrays.append((akind(t), c_name(d.name)))
 
     def function(self, f):
         self.func = f
@@ -1915,6 +1992,20 @@ class Compiler:
             out.append(f"static r_{name} rt_copy_rec_{name}(r_{name} a) {{ r_{name} r = a; {copy} return r; }}")
             out.append(f"static void rt_set_rec_{name}(r_{name} *dst, r_{name} src) {{ r_{name} c = rt_copy_rec_{name}(src); "
                        f"rt_free_rec_{name}(dst); *dst = c; }}")
+        for name in self.rec_order:                           # arrays of the record: elements start as the defaults
+            free = f"for (int64_t i = 0; i < a->n; i++) rt_free_rec_{name}(&a->data[i]); " if self.deep[name] else ""
+            out.append(f"typedef struct {{ r_{name} *data; int64_t shape[3]; int rank; int64_t n; }} rt_ra_{name}_arr;")
+            out.append(f"static inline void rt_free_ra_{name}(rt_ra_{name}_arr *a) {{ {free}free(a->data); a->data = NULL; a->n = 0; }}")
+        for name in self.rec_order:
+            out.append(f"static r_{name} d_{name}(void);")
+            out.append(f"static void rt_alloc_ra_{name}(rt_ra_{name}_arr *a, int rank, int64_t d0, int64_t d1, int64_t d2, int line) {{")
+            out.append('    if (d0 < 0 || d1 < 0 || d2 < 0) rt_fail(line, "array dimensions must be non-negative integers");')
+            out.append(f"    rt_free_ra_{name}(a);")
+            out.append("    a->rank = rank; a->shape[0] = d0; a->shape[1] = d1; a->shape[2] = d2; a->n = d0 * d1 * d2;")
+            out.append(f"    a->data = (r_{name} *)calloc(a->n ? (size_t)a->n : 1, sizeof(r_{name}));")
+            out.append('    if (!a->data) rt_fail(line, "out of memory");')
+            out.append(f"    for (int64_t i = 0; i < a->n; i++) a->data[i] = d_{name}();")
+            out.append("}")
         for name in self.rec_order:
             r = self.records[name]
             body = []
@@ -1935,6 +2026,8 @@ class Compiler:
                 parts.append(f'rt_write_str({c_string((", " if i else "") + fd.name + "=")}); {writer}(r.m_{fd.name});')
             out.append(f"static void w_{name}(r_{name} r) {{ rt_write_str({c_string(name + '(')}); " + " ".join(parts)
                        + ' rt_write_str(")"); }')
+            out.append(f"static void rt_write_ra_{name}_arr(const rt_ra_{name}_arr *a) {{ rt_write_str(\"[\"); "
+                       f"for (int64_t i = 0; i < a->n; i++) {{ if (i) rt_write_str(\", \"); w_{name}(a->data[i]); }} rt_write_str(\"]\"); }}")
         return out
 
     def program(self):
