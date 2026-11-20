@@ -1,0 +1,82 @@
+! modules: public and private procedures, constants, variables written with @, records and interfaces, imports in procedures
+module consts
+  public const int :: n = 7
+  public const real :: tau = 6.28
+  public const string :: greeting = "hello"
+  const int :: hidden = 99
+
+  public function use_hidden() -> int
+    return hidden + n
+  end function
+
+  function helper(int :: x) -> int
+    return x + 1
+  end function
+
+  public function twice(int :: x) -> int
+    return helper(helper(x))
+  end function
+end module
+
+module counter
+  use consts: n, twice
+
+  public int :: hits = 0
+  public string :: log = "start"
+
+  function helper(int :: x) -> int
+    return x * 10
+  end function
+
+  public function scaled(int :: x) -> int
+    return helper(x) + twice(x) + n
+  end function
+
+  public subroutine hit(int :: by)
+    @hits = hits + by
+    @log = log + "!"
+  end subroutine
+
+  public subroutine into(inout int :: v)
+    @v = v + hits
+  end subroutine
+end module
+
+module shapes
+  public record pt
+    real :: x = 0.0
+    real :: y = 0.0
+  end record
+
+  public interface figure
+    function area(self) -> real
+  end interface
+
+  public record sq is figure
+    real :: s = 2.0
+    function area(self) -> real
+      return self.s ** 2
+    end function
+  end record
+end module
+
+function inner(int :: k) -> int
+  use consts: n, twice
+  return twice(k) + n
+end function
+
+program demo
+  use consts: n, tau, greeting, use_hidden, twice
+  use counter: hits, log, hit, scaled, into
+  use shapes: pt, figure, sq
+  println(n, tau, greeting, use_hidden(), twice(5), scaled(3), inner(2))
+  call hit(3)
+  call hit(4)
+  println(hits, log)
+  int :: x = 1
+  call into(@x)
+  @hits = hits * 10
+  println(x, hits)
+  figure :: f = sq(3.0)
+  println(f.area(), pt(1.0, 2.0), f)
+end program
