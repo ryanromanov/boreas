@@ -1,0 +1,38 @@
+! text in records: defaults, copies, nested records, functions that return them, text fields through inout
+record person
+  string :: name = "anon"
+  int :: age = 3
+  string :: tag
+
+  function greet(self) -> string
+    return "hi " + self.name + "/" + self.tag
+  end function
+
+  function older(self, int :: by) -> person
+    return person(self.name + "+", self.age + by, upper(self.tag))
+  end function
+end record
+
+record team
+  person :: lead
+  person :: other
+  string :: title = "team"
+end record
+
+subroutine grow(inout team :: t)
+  @t.title = t.title + "!"
+  @t.lead.name = t.lead.name + "?"
+end subroutine
+
+program t
+  person :: p = person("bob", 41, "t")
+  person :: q = p
+  q.name = "changed"
+  println(p, q)
+  println(p.older(2).greet())
+  team :: u = team(p, q)
+  call grow(@u)
+  println(u)
+  p = person("x", 1, "y")
+  println(u.lead.name, p.name)
+end program
