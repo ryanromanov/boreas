@@ -950,15 +950,15 @@ values or arrays, passed `in`, `inout` or `out` (the last two in subroutines); a
 `dot_product` and `matmul` (two real, two real32 or two int arrays), the inverse and hyperbolic trigonometric functions, `atan2`,
 `erf`, `floor`, `ceiling`, `nint`, `aint`, `anint`, `sign`, `modulo`, `dim`, `int32`, `int64`, `real64`, `huge`, `epsilon`, `tiny`,
 and `reshape` (with the shape written out), `transpose`, `flatten`, `shape`, `merge`, `any`, `all`, `count`, `maxloc`,
-`minloc` and `cshift`; and records whose fields are numbers, logicals or other records (defaults, constructors with
+`minloc` and `cshift`; and records whose fields are numbers, logicals, text or other records (defaults, constructors with
 positional or named values, `p.x = ...`, `a.b.c`, printing, as `in` or `inout` parameters and as function results, and a
 record's own functions: `x.area()`, `call @x.grow(2)`). Text (ASCII only): `string` variables, parameters and results, `+`, the
 comparisons, `s[i]`, `s[lo:hi]`, `len`, `len_trim`, `trim`, `upper`, `lower`, `repeat`, `index`, `contains`, `starts_with`,
 `ends_with`, and the formatting functions `text`, `tf`, `right`, `left`, `fixed`, `scientific` and `general` (with the
-`"fortran"` style). A program that uses anything else (text inside records, arrays or maps of text, arrays of records,
+`"fortran"` style). A program that uses anything else (arrays or maps of text, arrays of records,
 interfaces, modules, functions that return arrays, ...) is refused as a
 whole, with a message that names the construct and its line ("not supported by the compiler yet: field 's' of record
-'p' (string) (line 3)"): run it with the
+'p' (string[2]) (line 3)"): run it with the
 interpreter instead, or wait for the next slice. Nothing is ever compiled halfway.
 
 A `real32` in a compiled program is worked out as the interpreter works it out: `+ - * /` between singles, or between a

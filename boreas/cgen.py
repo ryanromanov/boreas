@@ -111,6 +111,7 @@ class Compiler:
         self.rec_order = []             # their names, fields before the records that hold them
         self.methods = {}               # (record name, function name) -> Function: a record's own functions
         self.cnames = {}                # id(Function) -> the C name it is compiled under
+        self.deep = {}                  # record name -> does it own text (so that copying and freeing it take work)
 
     # -- refusing what is not handled ---------------------------------------------------------------------------
     def refuse(self, what, node=None, line=None):
@@ -137,7 +138,7 @@ class Compiler:
                 self.methods[(name, fname)] = f
                 self.cnames[id(f)] = f"f_{name}__{fname}"
             for fd in r.fields:
-                if fd.dims is not None or fd.allocatable or (fd.type not in KINDS and fd.type not in todo):
+                if fd.dims is not None or fd.allocatable or (fd.type not in KINDS and fd.type != "string" and fd.type not in todo):
                     self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type})", line=fd.line)
                 if fd.init is not None:
                     self.field_default(fd, todo)
@@ -157,10 +158,16 @@ class Compiler:
             self.rec_order.append(name)
         for name in todo:
             visit(name)
+        for name in self.rec_order:                                   # holds text, directly or in a record it holds
+            self.deep[name] = any(fd.type == "string" or self.deep.get(fd.type) for fd in self.records[name].fields)
 
     def field_default(self, fd, todo):
         """The C text of the default of field `fd` (a literal of the field's own kind, or a whole number for a real)."""
         e = fd.init
+        if fd.type == "string":
+            if not isinstance(e, Str) or not all(0 < ord(ch) < 128 for ch in e.value):
+                self.refuse(f"the default of field '{fd.name}'", line=fd.line)
+            return f"rt_str_new({c_string(e.value)}, {len(e.value)}, 0)"
         neg = False
         if isinstance(e, Unary) and e.op == "-" and isinstance(e.operand if hasattr(e, "operand") else None, Num):
             neg, e = True, e.operand
@@ -326,7 +333,7 @@ class Compiler:
             self.refuse(f"a value that is not a {name}", node)
 
     FITS = {"int": ("int", "int32"), "int32": ("int", "int32"), "real": ("int", "int32", "real", "real32"),
-            "real32": ("int", "int32", "real", "real32"), "logical": ("logical",)}
+            "real32": ("int", "int32", "real", "real32"), "logical": ("logical",), "string": ("string",)}
 
     def fits(self, value, kind, what, node):
         """A single value of the kind `value` has can be stored in `what` (a field) of `kind`, as the interpreter does."""
@@ -1059,8 +1066,20 @@ class Compiler:
                 atom = self.value(value).atom
             else:
                 atom = self.scalar(value, ft, f"field '{fname}' of {e.name}")
-            self.emit(f"{res}.m_{fname} = {atom};")
+            self.store(f"{res}.m_{fname}", atom, ft)
+        if self.deep[e.name]:
+            self.temps.append((f"rec_{e.name}", res))
         return V(Type("record", 0, False, e.name), res)
+
+    def store(self, lv, atom, kind, line=0):
+        """`lv = atom` for something of kind `kind` (a kind name, or a record name): a text or a record that owns text is
+        copied, and what `lv` held is freed."""
+        if kind == "string":
+            self.emit(f"rt_str_set(&{lv}, {atom}, {line or self.line});")
+        elif self.deep.get(kind):
+            self.emit(f"rt_set_rec_{kind}(&{lv}, {atom});")
+        else:
+            self.emit(f"{lv} = {atom};")
 
     def lvalue(self, target):
         """A C lvalue for a variable or an array element (evaluating and checking its subscripts first)."""
@@ -1154,6 +1173,8 @@ class Compiler:
         rt = self.param_type(f.ret)
         call = f"{self.cnames[id(f)]}({', '.join(args)})"
         result = self.tmp_str(call) if rt.kind == "string" else self.tmp(cscalar(rt), call)
+        if rt.kind == "record" and self.deep[rt.name]:
+            self.temps.append((f"rec_{rt.name}", result))
         self.emit("rt_call_out();")
         return V(rt, result)
 
@@ -1539,7 +1560,9 @@ class Compiler:
             if s.init is not None and t.kind == "string":
                 self.emit(f"rt_str_set(&{name}, {self.scalar(s.init, 'string')}, {line});")
             elif s.init is not None:
-                self.emit(f"{name} = {self.scalar(s.init, t.kind, f'line {line}')};")
+                self.store(name, self.scalar(s.init, t.kind, f'line {line}'), t.name if t.kind == "record" else t.kind)
+            elif t.kind == "record" and self.deep[t.name]:
+                self.emit(f"rt_free_rec_{t.name}(&{name}); {name} = d_{t.name}();")
             elif t.kind == "record":
                 self.emit(f"{name} = d_{t.name}();")
             elif t.kind == "string":
@@ -1570,7 +1593,7 @@ class Compiler:
         if isinstance(target, FieldAccess):
             ft = self.types[id(target)]
             lv = self.field_lvalue(target)
-            self.emit(f"{lv} = {self.scalar(s.value, ft.kind, f'line {line}')};")
+            self.store(lv, self.scalar(s.value, ft.kind, f'line {line}'), ft.name if ft.kind == "record" else ft.kind)
             return
         t = self.vars[target.name][0]
         if isinstance(target, Apply) and any(isinstance(a, Slice) for a in target.args):
@@ -1585,7 +1608,7 @@ class Compiler:
             self.emit(f"rt_str_set(&{name}, {self.scalar(s.value, 'string')}, {line});")
             return
         if t.rank == 0:
-            self.emit(f"{name} = {self.scalar(s.value, t.kind, f'line {line}')};")
+            self.store(name, self.scalar(s.value, t.kind, f'line {line}'), t.name if t.kind == "record" else t.kind)
             if target.name in self.outs:
                 self.emit(f"*set_{target.name} = true;")
             return
@@ -1755,7 +1778,7 @@ class Compiler:
             if rt.kind == "string":
                 self.emit(f"rt_str_set(&ret, {self.scalar(s.value, 'string')}, {self.line});")
             else:
-                self.emit(f"ret = {self.scalar(s.value, rt.kind, f'function {self.func.name}')};")
+                self.store("ret", self.scalar(s.value, rt.kind, f'function {self.func.name}'), rt.name if rt.kind == "record" else rt.kind)
         self.emit("goto fn_end;")
 
     def st_stop(self, s):
@@ -1841,6 +1864,9 @@ class Compiler:
                 if t.kind == "string":
                     self.emit(f"rt_str {c_name(d.name)} = {{0}};")
                     self.arrays.append(("str", c_name(d.name)))
+                elif t.kind == "record" and self.deep[t.name]:
+                    self.emit(f"r_{t.name} {c_name(d.name)} = {{0}};")
+                    self.arrays.append((f"rec_{t.name}", c_name(d.name)))
                 elif t.rank == 0:
                     self.emit(f"{cscalar(t)} {c_name(d.name)};")
                 else:
@@ -1876,6 +1902,19 @@ class Compiler:
             out.append("typedef struct { " + " ".join(
                 f"{f'r_{fd.type}' if fd.type in self.records else CSCALAR[fd.type]} m_{fd.name};" for fd in r.fields)
                 + f" }} r_{name};")
+        for name in self.rec_order:                           # records that own text: free, copy and store (copy, then free the old)
+            if not self.deep[name]:
+                continue
+            fields = self.records[name].fields
+            free = " ".join(f"rt_free_str(&r->m_{fd.name});" if fd.type == "string" else f"rt_free_rec_{fd.type}(&r->m_{fd.name});"
+                            for fd in fields if fd.type == "string" or self.deep.get(fd.type))
+            copy = " ".join(f"r.m_{fd.name} = rt_str_new(rt_cs(a.m_{fd.name}), a.m_{fd.name}.n, 0);" if fd.type == "string"
+                            else f"r.m_{fd.name} = rt_copy_rec_{fd.type}(a.m_{fd.name});"
+                            for fd in fields if fd.type == "string" or self.deep.get(fd.type))
+            out.append(f"static void rt_free_rec_{name}(r_{name} *r) {{ {free} }}")
+            out.append(f"static r_{name} rt_copy_rec_{name}(r_{name} a) {{ r_{name} r = a; {copy} return r; }}")
+            out.append(f"static void rt_set_rec_{name}(r_{name} *dst, r_{name} src) {{ r_{name} c = rt_copy_rec_{name}(src); "
+                       f"rt_free_rec_{name}(dst); *dst = c; }}")
         for name in self.rec_order:
             r = self.records[name]
             body = []
@@ -1884,6 +1923,8 @@ class Compiler:
                     value = self.field_default(fd, self.records)
                 elif fd.type in self.records:
                     value = f"d_{fd.type}()"
+                elif fd.type == "string":
+                    value = "rt_str_new(\"\", 0, 0)"
                 else:
                     value = "false" if fd.type == "logical" else "0"
                 body.append(f"r.m_{fd.name} = {value};")
