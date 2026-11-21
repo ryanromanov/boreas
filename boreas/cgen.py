@@ -357,8 +357,8 @@ class Compiler:
             self.members[name] = [r for r in self.rec_order if not conformance(self.records[r], idef)]
             for fname, f in idef.functions.items():
                 self.cnames[id(f)] = f"iv_{name}__{fname}"
-                if f.ret is not None and not isinstance(f.ret, str):
-                    self.refuse(f"function '{fname}' of interface '{name}' returns several values", line=idef.line)
+                if f.ret is not None and (not isinstance(f.ret, str) or (self.param_type(f.ret) or Type("int")).rank != 0):
+                    self.refuse(f"function '{fname}' of interface '{name}' returns several values or an array", line=idef.line)
         for name in self.records:                                # a record that says it fits must (the interpreter checks it too)
             for iname, _ in self.records[name].implements:
                 if iname not in self.ifaces:
@@ -491,7 +491,7 @@ class Compiler:
                 self.multi_types(f)                      # (refuses what it cannot handle)
             elif f.ret is not None:
                 rt = self.param_type(f.ret)
-                if rt is None or rt.rank != 0:
+                if rt is None or (rt.rank != 0 and (rt.kind not in KINDS or rt.optional or not isinstance(f.ret, str))):
                     self.refuse(f"function '{f.name}' returns {f.ret if isinstance(f.ret, str) else str(f.ret) if isinstance(f.ret, (MapType, SetType)) else 'several values'}")
             for typ, name, intent in f.params:
                 pt = self.param_type(typ)
@@ -637,6 +637,10 @@ class Compiler:
                     self.check_store(s.value, self.param_type(f.ret), s)
                 elif f.ret in self.records or f.ret in self.ifaces:
                     self.same_record(s.value, f.ret, s)
+                elif self.param_type(f.ret).rank != 0:           # an array: the rank the header says, elements that fit its kind
+                    rt, vt = self.param_type(f.ret), self.types.get(id(s.value))
+                    if vt is None or vt.rank != rt.rank or vt.kind not in self.FITS.get(rt.kind, ()) or vt.optional:
+                        self.refuse(f"a result that is not a {f.ret}", s)
                 continue
             if kind is Do and s.var in fixed:
                 self.refuse(f"a loop over the constant or parameter '{s.var}'", s)
@@ -2344,7 +2348,11 @@ class Compiler:
         self.emit(f'rt_call_in({line}, "{f.name}");')
         rt = self.param_type(f.ret)
         call = f"{self.cnames[id(f)]}({', '.join(args)})"
-        result = self.tmp_str(call) if rt.kind == "string" and not rt.optional else self.tmp(cscalar(rt), call)
+        if rt.rank != 0:                                           # an array: a temporary that owns it
+            result = self.tmp_array(akind(rt), rt.rank)
+            self.emit(f"{result} = {call};")
+        else:
+            result = self.tmp_str(call) if rt.kind == "string" and not rt.optional else self.tmp(cscalar(rt), call)
         if rt.kind in COLLECTIONS:
             self.temps.append(("map", result))
         elif (isrec(rt) or rt.optional) and self.deep[skind(rt)]:
@@ -3472,6 +3480,12 @@ class Compiler:
             rt = self.param_type(self.func.ret)
             if rt.kind in COLLECTIONS:
                 self.emit(f"rt_map_set(&ret, &{self.coll_value(s.value, rt)}, {self.line});")
+            elif rt.rank != 0:                                   # an array: a copy of the value, as the header's type (shape from the value)
+                v = self.value(s.value)
+                saved, self.line = self.line, "call_line"       # (an element that does not fit is the caller's error)
+                self.emit(f"rt_like_{rt.kind}(&ret, {v.atom}.shape, {v.atom}.rank, {self.line});")
+                self.copy_into("ret", rt.kind, v, self.line, f"function {self.func.name}")
+                self.line = saved
             else:
                 self.store("ret", self.typed(s.value, rt, f'function {self.func.name}'), skind(rt))
         for k, name in self.temps:                 # this statement's temporaries, which the jump would skip
@@ -3680,15 +3694,15 @@ class Compiler:
         self.declare_vars(f.params, f.body)
         many = self.multi_types(f) if isinstance(f.ret, ResultList) else None
         rt = self.param_type(f.ret) if f.ret and many is None else None
-        ctype = f"res_{self.cnames[id(f)]}" if many else cscalar(rt) if rt else "void"
+        ctype = f"res_{self.cnames[id(f)]}" if many else f"rt_{akind(rt)}_arr" if rt and rt.rank != 0 else cscalar(rt) if rt else "void"
         head = f"static {ctype} {self.cnames[id(f)]}({self.c_params(f)})"
         self.lines, self.depth, self.line, self.arrays = [], 1, 0, []
         if many:
             self.emit(f"{ctype} ret = {{0}};")
             self.emit("int call_line = rt_call_line;")
         elif rt:
-            start = "{0}" if rt.optional or rt.kind in COLLECTIONS else f"d_{rt.name}()" if isrec(rt) else "{0}" if rt.kind == "string" else "false" if rt.kind == "logical" else "0"
-            self.emit(f"{cscalar(rt)} ret = {start};")
+            start = "{0}" if rt.optional or rt.kind in COLLECTIONS or rt.rank != 0 else f"d_{rt.name}()" if isrec(rt) else "{0}" if rt.kind == "string" else "false" if rt.kind == "logical" else "0"
+            self.emit(f"{ctype} ret = {start};")
             if rt.kind in COLLECTIONS:
                 self.emit(f"ret.kk = {KEYKINDS[rt.args[0]]}; ret.vk = {VALKINDS[rt.args[1]] if rt.kind == 'map' else -1};")
             self.emit("int call_line = rt_call_line;")
@@ -3701,7 +3715,7 @@ class Compiler:
         if many:
             self.emit(f'rt_fail(call_line, "function {f.name} must return {len(many)} values: return a, b");')
         elif f.ret is not None:
-            rname = str(f.ret) if isinstance(f.ret, (MapType, SetType)) else f.ret if f.ret in self.records or f.ret in self.ifaces or f.ret.endswith("?") else self.param_type(f.ret).kind
+            rname = str(f.ret) if isinstance(f.ret, (MapType, SetType)) or rt.rank != 0 else f.ret if f.ret in self.records or f.ret in self.ifaces or f.ret.endswith("?") else self.param_type(f.ret).kind
             self.emit(f'rt_fail(call_line, "function {f.name} must return a {rname}");')
         self.emit("fn_end: ;")
         for k, name in self.arrays:
