@@ -2757,10 +2757,10 @@ class Compiler:
         was = 1 if x.t.kind in ("int", "int32") else 0
         if len(vals) == 2:                                        # jn(n, x): n as a C int, as the interpreter passes it
             n = self.tmp("int64_t", self.cast(vals[0].atom, vals[0].t.kind, "int"))
-            call = f"{BESSEL[name]}((int){n}, {xd})"
+            call = f"rt_fp_{BESSEL[name]}((int){n}, {xd})"
             has_n = "true"
         else:
-            n, call, has_n = "0", f"{BESSEL[name]}({xd})", "false"
+            n, call, has_n = "0", f"rt_fp_{BESSEL[name]}({xd})", "false"
         r = f'rt_bessel("{name}", {call}, {"true" if name[7] == "y" else "false"}, {has_n}, {n}, {xd}, {was}, {line})'
         return V(Type("real"), self.tmp("double", r))
 

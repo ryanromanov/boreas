@@ -327,6 +327,14 @@ static inline double rt_math1(const char *name, double r, double x, int was_int,
 #endif
     return r;
 }
+/* The Bessel functions are called through volatile pointers: a compiler that knows j0 and jn (gcc does) works a constant argument out
+   itself, correctly rounded (and, for jn of a big order, very slowly), where the C library's own answer differs in the last digit. */
+static double (*volatile rt_fp_j0)(double) = j0;
+static double (*volatile rt_fp_j1)(double) = j1;
+static double (*volatile rt_fp_y0)(double) = y0;
+static double (*volatile rt_fp_y1)(double) = y1;
+static double (*volatile rt_fp_jn)(int, double) = jn;
+static double (*volatile rt_fp_yn)(int, double) = yn;
 /* the C library's Bessel functions, with the interpreter's errors: NaN (and y at 0) has no real answer, any other infinity is too large */
 static double rt_bessel(const char *name, double r, bool is_y, bool has_n, int64_t n, double x, int was_int, int line) {
     if (r == r && !isinf(r)) return r;
