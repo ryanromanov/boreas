@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <math.h>
+#include <sys/stat.h>
 
 typedef __int128 rt_i128;
 
@@ -325,6 +326,30 @@ static inline double rt_math1(const char *name, double r, double x, int was_int,
     }
 #endif
     return r;
+}
+/* The Bessel functions are called through volatile pointers: a compiler that knows j0 and jn (gcc does) works a constant argument out
+   itself, correctly rounded (and, for jn of a big order, very slowly), where the C library's own answer differs in the last digit. */
+static double (*volatile rt_fp_j0)(double) = j0;
+static double (*volatile rt_fp_j1)(double) = j1;
+static double (*volatile rt_fp_y0)(double) = y0;
+static double (*volatile rt_fp_y1)(double) = y1;
+static double (*volatile rt_fp_jn)(int, double) = jn;
+static double (*volatile rt_fp_yn)(int, double) = yn;
+/* the C library's Bessel functions, with the interpreter's errors: NaN (and y at 0) has no real answer, any other infinity is too large */
+static double rt_bessel(const char *name, double r, bool is_y, bool has_n, int64_t n, double x, int was_int, int line) {
+    if (r == r && !isinf(r)) return r;
+    bool domain = r != r || (is_y && x == 0.0);
+#ifdef BOREAS_IEEE
+    (void)name; (void)has_n; (void)n; (void)was_int; (void)line;
+    if (!domain) return INFINITY;
+    return r == r ? -INFINITY : NAN;
+#else
+    char b[48], nb[32];
+    if (has_n) snprintf(nb, sizeof nb, "%lld, ", (long long)n); else nb[0] = 0;
+    if (domain) rt_fail(line, "%s(%s%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, nb, rt_shown(x, was_int, b));
+    rt_fail(line, "%s(%s%s) is too large for a real (a file that says `use ieee` gets Infinity instead)", name, nb, rt_shown(x, was_int, b));
+    return r;
+#endif
 }
 static inline double rt_sqrt(double x, int was_int, int line) {
 #ifndef BOREAS_IEEE
@@ -1409,3 +1434,12 @@ static void rt_write_collection(rt_map m) {                            /* {ann: 
     }
     fputc('}', stdout);
 }
+
+/* the command line and the file system */
+static int rt_argc = 1;
+static char **rt_argv = NULL;
+static rt_str rt_argument(int64_t i, int line) {            /* argument(i) for i >= 1: the text, or "" past the last */
+    if (i < rt_argc && rt_argv) return rt_str_new(rt_argv[i], (int64_t)strlen(rt_argv[i]), line);
+    return rt_str_new("", 0, line);
+}
+static bool rt_exists(rt_str name) { struct stat st; return stat(rt_cs(name), &st) == 0; }
