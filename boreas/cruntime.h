@@ -1191,3 +1191,181 @@ static rt_str rt_general(double x, int64_t digits, int64_t width, bool fortran, 
     (void)dg;
     return rt_fit_text(text, width, false, line);
 }
+
+/* ---- maps and sets: a hash table that remembers the order the keys were added in ----
+   A key is a whole number (kind 0) or text (kind 1); a map's value is a whole number (0), real (1), text (2) or logical (3),
+   and a set has no value (-1). The entries sit in the order they were added; a removed one leaves a gap until the table is
+   compacted, so the order never changes, and a key added again after being removed goes to the end (as in a Python dict). */
+typedef union { int64_t i; double d; bool b; rt_str s; } rt_cell;
+typedef struct { rt_cell key, val; uint64_t hash; bool live; } rt_entry;
+typedef struct {
+    int kk, vk;                      /* key kind, value kind */
+    rt_entry *e; int64_t n, cap;     /* the entries (gaps included) and how many there is room for */
+    int64_t size;                    /* the live entries */
+    int64_t *idx, icap;              /* the index: entry number + 1 (0 = empty), a power of two at least twice cap */
+} rt_map;
+static inline rt_cell rt_ki(int64_t x) { rt_cell c; memset(&c, 0, sizeof c); c.i = x; return c; }
+static inline rt_cell rt_ks(rt_str x) { rt_cell c; memset(&c, 0, sizeof c); c.s = x; return c; }
+static inline rt_cell rt_vd(double x) { rt_cell c; memset(&c, 0, sizeof c); c.d = x; return c; }
+static inline rt_cell rt_vb(bool x) { rt_cell c; memset(&c, 0, sizeof c); c.b = x; return c; }
+static uint64_t rt_hash_key(int kk, rt_cell k) {
+    uint64_t z;
+    if (kk == 0) z = (uint64_t)k.i + 0x9e3779b97f4a7c15ULL;
+    else { z = 1469598103934665603ULL; for (int64_t i = 0; i < k.s.n; i++) z = (z ^ (unsigned char)k.s.p[i]) * 1099511628211ULL; z += 0x9e3779b97f4a7c15ULL; }
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+static inline bool rt_key_eq(int kk, rt_cell a, rt_cell b) {
+    return kk == 0 ? a.i == b.i : (a.s.n == b.s.n && (a.s.n == 0 || memcmp(a.s.p, b.s.p, (size_t)a.s.n) == 0));
+}
+static inline rt_cell rt_cell_copy(bool text, rt_cell c) {
+    if (text) c.s = rt_str_new(rt_cs(c.s), c.s.n, 0);
+    return c;
+}
+static void rt_map_free(rt_map *m) {
+    for (int64_t i = 0; i < m->n; i++) if (m->e[i].live) {
+        if (m->kk == 1) free(m->e[i].key.s.p);
+        if (m->vk == 2) free(m->e[i].val.s.p);
+    }
+    free(m->e); free(m->idx);
+    m->e = NULL; m->idx = NULL; m->n = m->cap = m->size = m->icap = 0;
+}
+static inline void rt_free_map(rt_map *m) { rt_map_free(m); }          /* (the name the generated code frees a map by) */
+static void rt_map_reset(rt_map *m, int kk, int vk) { rt_map_free(m); m->kk = kk; m->vk = vk; }
+static int64_t rt_map_find(const rt_map *m, rt_cell key, uint64_t h) {
+    if (m->icap == 0) return -1;
+    uint64_t mask = (uint64_t)m->icap - 1, p = h & mask;
+    for (;;) {
+        int64_t k = m->idx[p];
+        if (k == 0) return -1;
+        const rt_entry *en = &m->e[k - 1];
+        if (en->live && en->hash == h && rt_key_eq(m->kk, en->key, key)) return k - 1;
+        p = (p + 1) & mask;
+    }
+}
+static void rt_map_index(rt_map *m, int line) {               /* (re)build the index of the entries there are */
+    free(m->idx);
+    m->icap = m->cap * 2;
+    m->idx = (int64_t *)calloc((size_t)m->icap, sizeof(int64_t));
+    if (!m->idx) rt_fail(line, "out of memory");
+    for (int64_t i = 0; i < m->n; i++) {
+        uint64_t mask = (uint64_t)m->icap - 1, p = m->e[i].hash & mask;
+        while (m->idx[p]) p = (p + 1) & mask;
+        m->idx[p] = i + 1;
+    }
+}
+static void rt_map_room(rt_map *m, int line) {                /* make room for one more entry: close the gaps, and grow if more than half is used */
+    int64_t o = 0;
+    for (int64_t i = 0; i < m->n; i++) if (m->e[i].live) { if (o != i) m->e[o] = m->e[i]; o++; }
+    m->n = o;
+    if (m->cap == 0 || m->size * 2 >= m->cap) {
+        int64_t cap = m->cap ? m->cap * 2 : 8;
+        rt_entry *e = (rt_entry *)realloc(m->e, (size_t)cap * sizeof(rt_entry));
+        if (!e) rt_fail(line, "out of memory");
+        m->e = e; m->cap = cap;
+    }
+    rt_map_index(m, line);
+}
+/* store `val` under `key` (both copied): a new key goes at the end, an old one keeps its place */
+static void rt_map_put(rt_map *m, rt_cell key, rt_cell val, int line) {
+    uint64_t h = rt_hash_key(m->kk, key);
+    int64_t k = rt_map_find(m, key, h);
+    if (k >= 0) {
+        if (m->vk == 2) { rt_cell c = rt_cell_copy(true, val); free(m->e[k].val.s.p); m->e[k].val = c; }
+        else if (m->vk >= 0) m->e[k].val = val;
+        return;
+    }
+    if (m->n == m->cap) rt_map_room(m, line);
+    rt_entry *en = &m->e[m->n];
+    en->key = rt_cell_copy(m->kk == 1, key);
+    if (m->vk >= 0) en->val = rt_cell_copy(m->vk == 2, val); else memset(&en->val, 0, sizeof en->val);
+    en->hash = h; en->live = true;
+    uint64_t mask = (uint64_t)m->icap - 1, p = h & mask;
+    while (m->idx[p]) p = (p + 1) & mask;
+    m->idx[p] = m->n + 1;
+    m->n++; m->size++;
+}
+static rt_entry *rt_map_get(const rt_map *m, rt_cell key) {   /* the entry of `key`, or NULL */
+    int64_t k = rt_map_find(m, key, rt_hash_key(m->kk, key));
+    return k < 0 ? NULL : &m->e[k];
+}
+static char *rt_key_show(int kk, rt_cell key) {                /* a key as a message shows it: 5 or "ann" (never freed: the program stops) */
+    char *b = (char *)malloc(kk == 1 ? (size_t)key.s.n + 48 : 48);
+    if (kk == 0) snprintf(b, 48, "%lld", (long long)key.i);
+    else snprintf(b, (size_t)key.s.n + 48, "\"%.*s\"", (int)key.s.n, rt_cs(key.s));
+    return b;
+}
+static rt_entry *rt_map_at(const rt_map *m, rt_cell key, const char *name, int line) {
+    rt_entry *en = rt_map_get(m, key);
+    if (!en) rt_fail(line, "the map '%s' has no key %s (test with has(%s, key), or use get(%s, key) ?? default)", name, rt_key_show(m->kk, key), name, name);
+    return en;
+}
+static void rt_map_remove(rt_map *m, rt_cell key, const char *name, int line) {
+    int64_t k = rt_map_find(m, key, rt_hash_key(m->kk, key));
+    if (k < 0) rt_fail(line, "cannot remove %s: '%s' has no such %s (test with has first)", rt_key_show(m->kk, key), name, m->vk >= 0 ? "key" : "member");
+    if (m->kk == 1) free(m->e[k].key.s.p);
+    if (m->vk == 2) free(m->e[k].val.s.p);
+    m->e[k].live = false;
+    m->size--;
+}
+static void rt_map_copy(rt_map *dst, const rt_map *src, int line) {   /* dst is empty (zeroed) */
+    dst->kk = src->kk; dst->vk = src->vk;
+    for (int64_t i = 0; i < src->n; i++) if (src->e[i].live) rt_map_put(dst, src->e[i].key, src->e[i].val, line);
+}
+static void rt_map_set(rt_map *dst, const rt_map *src, int line) {    /* dst = src: copy first, so `a = a` is safe */
+    rt_map c; memset(&c, 0, sizeof c);
+    rt_map_copy(&c, src, line);
+    rt_map_free(dst);
+    *dst = c;
+}
+static bool rt_map_equal(const rt_map *a, const rt_map *b) {          /* the same keys with equal values, in any order */
+    if (a->size != b->size) return false;
+    for (int64_t i = 0; i < a->n; i++) if (a->e[i].live) {
+        rt_entry *o = rt_map_get(b, a->e[i].key);
+        if (!o) return false;
+        if (a->vk == 0 && a->e[i].val.i != o->val.i) return false;
+        if (a->vk == 1 && !(a->e[i].val.d == o->val.d)) return false;
+        if (a->vk == 3 && a->e[i].val.b != o->val.b) return false;
+        if (a->vk == 2 && !rt_key_eq(1, a->e[i].val, o->val)) return false;
+    }
+    return true;
+}
+/* the entries as they are when a `do key, value in m` loop starts (the loop walks this, so the body may change the map) */
+typedef struct { rt_cell *k, *v; int64_t n; int kk, vk; } rt_snap;
+static void rt_free_snap(rt_snap *s) {
+    for (int64_t i = 0; i < s->n; i++) {
+        if (s->kk == 1) free(s->k[i].s.p);
+        if (s->vk == 2) free(s->v[i].s.p);
+    }
+    free(s->k); free(s->v);
+    s->k = s->v = NULL; s->n = 0;
+}
+static void rt_snap_take(rt_snap *s, const rt_map *m, int line) {
+    rt_free_snap(s);
+    s->kk = m->kk; s->vk = m->vk; s->n = m->size;
+    s->k = (rt_cell *)malloc(((size_t)m->size + 1) * sizeof(rt_cell));
+    s->v = (rt_cell *)malloc(((size_t)m->size + 1) * sizeof(rt_cell));
+    if (!s->k || !s->v) rt_fail(line, "out of memory");
+    int64_t o = 0;
+    for (int64_t i = 0; i < m->n; i++) if (m->e[i].live) {
+        s->k[o] = rt_cell_copy(m->kk == 1, m->e[i].key);
+        if (m->vk >= 0) s->v[o] = rt_cell_copy(m->vk == 2, m->e[i].val); else memset(&s->v[o], 0, sizeof s->v[o]);
+        o++;
+    }
+}
+static void rt_write_cell(int kind, rt_cell c, bool key) {
+    if (key) { if (kind == 0) rt_write_int(c.i); else rt_write_string(c.s); return; }
+    if (kind == 0) rt_write_int(c.i); else if (kind == 1) rt_write_real(c.d); else if (kind == 2) rt_write_string(c.s); else rt_write_bool(c.b);
+}
+static void rt_write_collection(rt_map m) {                            /* {ann: 31, bob: 27} and {x, y} */
+    bool first = true;
+    fputc('{', stdout);
+    for (int64_t i = 0; i < m.n; i++) if (m.e[i].live) {
+        if (!first) fputs(", ", stdout);
+        first = false;
+        rt_write_cell(m.kk, m.e[i].key, true);
+        if (m.vk >= 0) { fputs(": ", stdout); rt_write_cell(m.vk, m.e[i].val, false); }
+    }
+    fputc('}', stdout);
+}

@@ -20,6 +20,7 @@ class Type:
     rank: int = 0
     optional: bool = False
     name: str = ""
+    args: tuple = ()           # a map's (key kind, value type) or a set's (member kind,), as the declaration spells them
 
     def __str__(self):
         base = self.name or self.kind
@@ -80,9 +81,9 @@ def parse(typ, scope=None, rank=0):
     if isinstance(typ, ProcType):
         return Type("proc")
     if isinstance(typ, MapType):
-        return Type("map")
+        return Type("map", 0, False, "", (kind_name(typ.key), kind_name(typ.value) if isinstance(typ.value, str) else str(typ.value)))
     if isinstance(typ, SetType):
-        return Type("set")
+        return Type("set", 0, False, "", (kind_name(typ.elem),))
     if isinstance(typ, ArrayOf):
         elem = parse(typ.elem, scope)
         return Type(elem.kind, typ.rank, False, elem.name) if elem.known else UNKNOWN
