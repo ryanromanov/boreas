@@ -1,0 +1,44 @@
+! Complex numbers: Python's own arithmetic, mixed with whole numbers and reals, arrays, records, results, and the errors
+record phasor
+  complex :: amp
+  real :: freq = 50.0
+end record
+
+function rotate(complex :: z, real :: angle) -> complex
+  return z * cmplx(cos(angle), sin(angle))
+end function
+
+subroutine roots(real :: a, real :: b, out complex :: r1, out complex :: r2)
+  @r1 = cmplx(a, b)
+  @r2 = conjg(cmplx(a, b))
+end subroutine
+
+function powers(complex :: z) -> complex[]
+  complex[3] :: p
+  int :: i
+  do i = 1, 3
+    p[i] = z ** i
+  end do
+  return p
+end function
+
+program complex_demo
+  complex :: z = cmplx(3.0, 4.0)
+  complex :: w = cmplx(1.0, -2.0)
+  complex :: r1
+  complex :: r2
+  complex[2] :: v = [cmplx(1.0, 1.0), cmplx(2.0, 0.0)]
+  complex[2, 2] :: m = reshape([z, w, w, z], [2, 2])
+  phasor :: p
+
+  println(z + w, z - w, z * w, z / w, -z)
+  println(z + 1, 2 * z, z / 2, 1 / z, z ** 2, z ** 0.5, z ** w)
+  println(abs(z), real(z), aimag(z), conjg(z), z == cmplx(3.0, 4.0), z /= w)
+  call roots(1.0, 2.0, @r1, @r2)
+  println(r1, r2, rotate(z, 0.5), powers(w))
+  println(sum(v), product(v), dot_product(v, v), v * 2, abs(v))
+  println(matmul(m, m), transpose(m))
+  p.amp = rotate(cmplx(1.0, 0.0), 1.0)
+  println(p)
+  println(cmplx(0.0, 0.0) ** -1)
+end program complex_demo
