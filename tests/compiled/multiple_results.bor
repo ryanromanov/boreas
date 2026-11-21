@@ -1,0 +1,52 @@
+! Functions with several results: unpacking into variables, array elements and outputs, `_` for a result thrown away
+function divmod(int :: a, int :: b) -> (int :: quotient, int :: remainder)
+  return a / b, mod(a, b)
+end function
+
+function bounds(real :: x) -> (real :: lo, real :: hi)
+  return x - 1.0, x + 1.0
+end function
+
+function walk(int :: n) -> (int :: steps, logical :: reached)
+  int :: x = n
+  int :: s = 0
+  do while x > 1 and s < 100
+    if mod(x, 2) == 0 then
+      x = x / 2
+    else
+      x = 3 * x + 1
+    end if
+    s = s + 1
+  end do
+  return s, x == 1
+end function
+
+subroutine fill(inout int :: acc, out int :: rest)
+  int :: q
+  (q, @rest) = divmod(acc, 7)
+  @acc = acc + q
+end subroutine
+
+program multiple_results
+  int :: q
+  int :: r
+  real :: lo
+  real :: hi
+  int[3] :: parts
+  logical :: ok
+  int :: acc = 100
+  int :: rest
+
+  (q, r) = divmod(17, 5)
+  println(q, r)
+  (q, _) = divmod(100, 7)
+  (lo, hi) = bounds(2.5)
+  println(q, lo, hi)
+  (parts[2], parts[3]) = divmod(9, 4)
+  println(parts)
+  (q, ok) = walk(27)
+  println(q, ok)
+  call fill(@acc, @rest)
+  println(acc, rest)
+  (q, r) = divmod(1, 0)
+end program multiple_results

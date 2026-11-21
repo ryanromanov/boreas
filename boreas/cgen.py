@@ -15,7 +15,7 @@ import sys
 import subprocess
 import tempfile
 from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, CollLit, Comment, Cycle, Deallocate, Decl, Do, DoEach, DoWhile, MapType, SetType, Exit, FieldAccess, If, IsType,
-                     MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType, Select, SelectExpr, Arm, literal_value, NOT_LITERAL, Null)
+                     MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType, Select, SelectExpr, Arm, literal_value, NOT_LITERAL, Null, MultiAssign, ResultList, ReturnMany)
 from .effects import mark_problem
 from .interp import conformance
 from .tree import statements_in, walk
@@ -130,6 +130,11 @@ def c_string(text):
     return '"' + "".join(out) + '"'
 
 
+class Pre:
+    """A value that is already computed (one result of an unpacking), standing where an expression would."""
+    __slots__ = ("v",)
+
+
 class V:
     """A computed value: the type the program wants it as (`t`), a C atom, and (for an array whose stored kind is not the
     wanted one) the kind its elements are stored as (`src`)."""
@@ -165,6 +170,7 @@ class Compiler:
         self.type_order = []            # records and interfaces, each after the types it is made of
         self.has_iface = {}             # name -> can a value of it hold an interface value (which may have no value yet)
         self.optionals = []             # the types of which an optional value is used
+        self.multi = {}                 # each unpacking -> its (assignment, value, result number)
         self.deep = {}                  # record name -> does it own text (so that copying and freeing it take work)
 
     # -- refusing what is not handled ---------------------------------------------------------------------------
@@ -481,7 +487,9 @@ class Compiler:
             for f in mod.functions.values():
                 self.cnames[id(f)] = f"f_{mod.name}__{f.name}"
         for f in all_functions(self):
-            if f.ret is not None:
+            if isinstance(f.ret, ResultList):
+                self.multi_types(f)                      # (refuses what it cannot handle)
+            elif f.ret is not None:
                 rt = self.param_type(f.ret)
                 if rt is None or rt.rank != 0:
                     self.refuse(f"function '{f.name}' returns {f.ret if isinstance(f.ret, str) else str(f.ret) if isinstance(f.ret, (MapType, SetType)) else 'several values'}")
@@ -500,6 +508,19 @@ class Compiler:
                 if isinstance(f.ret, str):
                     self.visible(f.ret, None)
             self.check_body((f.body if f else u.program.body), f)
+
+    def multi_types(self, f):
+        """The Types of the results of `f` (`-> (int :: q, real :: r)`): single numbers and logicals, in a function that is not a
+        record's or interface's."""
+        out = []
+        for t in f.ret.types:
+            pt = self.param_type(t) if isinstance(t, str) else None
+            if pt is None or pt.rank != 0 or pt.optional or pt.kind not in KINDS:
+                self.refuse(f"function '{f.name}' returns several values ({f.ret})")
+            out.append(pt)
+        if any(f is m for m in self.methods.values()) or any(self.cnames.get(id(f), "").startswith("iv_") for _ in (0,)):
+            self.refuse(f"function '{f.name}' of a record returns several values")
+        return out
 
     def param_type(self, typ):
         """The Type of a parameter or result written `real`, `int[]`, `real[,]`, or None when it is not handled."""
@@ -655,98 +676,18 @@ class Compiler:
                 elif s.init is not None and self.is_optional_value(s.init):
                     self.check_store(s.init, t, s)
             elif kind is Assign:
-                root = s.target
-                self.opt_ok.update((id(root), id(s.value)))
-                if isinstance(root, FieldAccess) and (self.map_sub_type(root) is not None or self.is_coll_var(root)):
-                    rn = self.root_name(root)
-                    if rn in fixed:
-                        self.refuse(f"an assignment to a field of the parameter '{rn}'", s)
-                    if self.map_sub_type(root) is not None:             # r.m[key] = value
-                        self.coll_ok_nodes.add(id(root))
-                        mt = self.map_sub_type(root)
-                        self.key_ok(mt, root.args[0], s)
-                        self.value_ok(mt, s.value, s)
-                    else:
-                        self.coll_ok_nodes.add(id(root))
-                        self.check_coll_value(s.value, self.types[id(root)], s)
-                    continue
-                if isinstance(root, FieldAccess):
-                    name = self.field_root(root, s)
-                    if self.types.get(id(root)) is None or not self.kind_ok(self.types[id(root)]):
-                        self.refuse("a field of a type that is not handled", s)
-                    ft = self.types[id(root)]
-                    if ft.rank != 0:
-                        self.refuse("an assignment to a whole array field", s)
-                    if root.args is not None:
-                        if not self.field_element(root):
-                            self.refuse("a field with subscripts", s)
-                    b = root.base
-                    while isinstance(b, FieldAccess) or isinstance(b, Var):      # not through a record that may be absent
-                        if self.types.get(id(b)) is not None and self.types[id(b)].optional:
-                            self.refuse("an assignment through a record that may be absent", s)
-                        if isinstance(b, Var):
-                            break
-                        b = b.base
-                    if ft.optional or self.is_optional_value(s.value):
-                        self.check_store(s.value, ft, s)
-                    elif isrec(ft):
-                        self.same_record(s.value, ft.name, s)
-                    else:
-                        self.fits(s.value, ft.kind, f"the field '{root.field}'", s)
-                    if name in fixed:
-                        self.refuse(f"an assignment to a field of the parameter '{name}'", s)
-                    continue
-                if isinstance(root, Apply):
-                    if not root.bracket:
-                        self.refuse("an assignment to anything but a variable or an array element", s)
-                elif not isinstance(root, Var):
-                    self.refuse("an assignment to anything but a variable or an array element", s)
-                if root.name in fixed:
-                    self.refuse(f"an assignment to the constant or parameter '{root.name}'", s)
-                if root.name in self.typevars:
-                    self.refuse(f"an assignment to '{root.name}', the copy a select type or `is` made", s)
-                if root.name not in self.locals_of_body and root.name not in self.scope.consts:
-                    self.refuse(f"an assignment to '{root.name}', which is not declared", s)
-                if root.name in self.scope.consts and root.name not in self.locals_of_body and self.scope.consts[root.name][3] == "const":
-                    self.refuse(f"an assignment to the constant '{root.name}'", s)
-                if root.name in self.bad_globals and root.name not in self.locals_of_body:
-                    self.refuse(f"the module variable '{root.name}' (of a kind not handled)", s)
-                if root.name in self.scope.consts and root.name not in self.locals_of_body:       # a module variable: written with `@`
-                    if (self.scope.consts[root.name][3] == "module") != s.update:
-                        self.refuse(f"an assignment to '{root.name}' with the wrong `@` mark", s)
-                if isinstance(root, Apply) and root.chain:                  # m["a"][i] = x
-                    self.check_entry_element(root)
-                    self.fits(s.value, self.nested_type(self.entry_map(root, True).args[1]).kind, "the array element", s)
-                    continue
-                tt = self.vars_type(root.name, body, f)
-                if tt is not None and tt.kind in COLLECTIONS:
-                    if isinstance(root, Apply):                  # age["ann"] = 31
-                        self.coll_ok_nodes.add(id(root))
-                        if tt.kind != "map" or len(root.args) != 1 or isinstance(root.args[0], (Slice, NamedArg)):
-                            self.refuse("an assignment to part of a set or a map in any way but m[key] = value", s)
-                        self.key_ok(tt, root.args[0], s)
-                        self.value_ok(tt, s.value, s)
-                    else:
-                        self.coll_ok_nodes.add(id(root))
-                        self.check_coll_value(s.value, tt, s)
-                    continue
-                if tt is not None and (tt.optional or self.is_optional_value(s.value)):
-                    if isinstance(root, Apply):
-                        self.refuse("a subscript on an optional value", s)
-                    self.check_store(s.value, tt, s)
-                elif isrec(tt):
-                    if isinstance(root, Apply):
-                        if tt.rank != 1 or not self.record_element(root):
-                            self.refuse("a subscript on a record", s)
-                        self.same_record(s.value, tt.name, s)
-                    else:
-                        self.same_record(s.value, tt.name, s, tt.rank)
-                if tt is not None and tt.kind == "string" and not tt.optional and not self.is_optional_value(s.value):
-                    vt = self.types.get(id(s.value))
-                    if isinstance(root, Apply):
-                        self.refuse("an assignment to part of a text", s)
-                    if vt is None or vt.kind != "string" or vt.rank != 0:
-                        self.refuse("a value that is not text stored in a text", s)
+                self.check_assign(s, fixed, body, f)
+            elif kind is ReturnMany:
+                if f is None or not isinstance(f.ret, ResultList):
+                    self.refuse("a return of several values where the function does not give several", s)
+                types = self.multi_types(f)
+                if len(s.values) != len(types):
+                    self.refuse("a return with the wrong number of values", s)
+                for v, t in zip(s.values, types):
+                    self.opt_ok.add(id(v))
+                    self.fits(v, t.kind, "a result", s)
+            elif kind is MultiAssign:
+                self.check_multi(s, fixed, body, f)
             elif kind is Print:
                 if s.to is not None:
                     self.refuse("printing to a file", s)
@@ -768,6 +709,129 @@ class Compiler:
                 self.refuse(f"a {kind.__name__} statement", s)
         for node in walk(body):
             self.check_expr(node, strings)
+
+    def check_multi(self, s, fixed, body, f):
+        """`(q, @r, _) = f(x)`: a call of a function that gives back several numbers, each result then assigned like a single one."""
+        call = s.value
+        if not (isinstance(call, Apply) and not call.bracket and not call.chain and call.name not in self.locals_of_body
+                and self.fn(call.name) is not None):
+            self.refuse("an unpacking of anything but a call of a function", s)
+        callee = self.fn(call.name)
+        if not isinstance(callee.ret, ResultList):
+            self.refuse("an unpacking of a function that does not give several results", s)
+        types = self.multi_types(callee)
+        if len(types) != len(s.targets):
+            self.refuse("an unpacking with the wrong number of targets", s)
+        if any(isinstance(a, NamedArg) for a in call.args):
+            self.refuse("a named argument in an unpacked call", s)
+        self.opt_ok.update(id(a) for a in call.args)
+        self.check_call_args(callee, call.args, s)
+        self.skip.add(id(call))                          # (its arguments are checked on their own)
+        assigns = []
+        for i, ((target, update), t) in enumerate(zip(s.targets, types)):
+            if target is None:
+                continue
+            pre = Pre()
+            self.types[id(pre)] = t
+            a = Assign(target, pre, s.line, update)
+            self.check_assign(a, fixed, body, f)
+            assigns.append((a, pre, i))
+        self.multi[id(s)] = assigns
+
+    def check_assign(self, s, fixed, body, f):
+        """One assignment (`s.target = s.value`): what it needs to be handled, or the refusal."""
+        root = s.target
+        self.opt_ok.update((id(root), id(s.value)))
+        if isinstance(root, FieldAccess) and (self.map_sub_type(root) is not None or self.is_coll_var(root)):
+            rn = self.root_name(root)
+            if rn in fixed:
+                self.refuse(f"an assignment to a field of the parameter '{rn}'", s)
+            if self.map_sub_type(root) is not None:             # r.m[key] = value
+                self.coll_ok_nodes.add(id(root))
+                mt = self.map_sub_type(root)
+                self.key_ok(mt, root.args[0], s)
+                self.value_ok(mt, s.value, s)
+            else:
+                self.coll_ok_nodes.add(id(root))
+                self.check_coll_value(s.value, self.types[id(root)], s)
+            return
+        if isinstance(root, FieldAccess):
+            name = self.field_root(root, s)
+            if self.types.get(id(root)) is None or not self.kind_ok(self.types[id(root)]):
+                self.refuse("a field of a type that is not handled", s)
+            ft = self.types[id(root)]
+            if ft.rank != 0:
+                self.refuse("an assignment to a whole array field", s)
+            if root.args is not None:
+                if not self.field_element(root):
+                    self.refuse("a field with subscripts", s)
+            b = root.base
+            while isinstance(b, FieldAccess) or isinstance(b, Var):      # not through a record that may be absent
+                if self.types.get(id(b)) is not None and self.types[id(b)].optional:
+                    self.refuse("an assignment through a record that may be absent", s)
+                if isinstance(b, Var):
+                    break
+                b = b.base
+            if ft.optional or self.is_optional_value(s.value):
+                self.check_store(s.value, ft, s)
+            elif isrec(ft):
+                self.same_record(s.value, ft.name, s)
+            else:
+                self.fits(s.value, ft.kind, f"the field '{root.field}'", s)
+            if name in fixed:
+                self.refuse(f"an assignment to a field of the parameter '{name}'", s)
+            return
+        if isinstance(root, Apply):
+            if not root.bracket:
+                self.refuse("an assignment to anything but a variable or an array element", s)
+        elif not isinstance(root, Var):
+            self.refuse("an assignment to anything but a variable or an array element", s)
+        if root.name in fixed:
+            self.refuse(f"an assignment to the constant or parameter '{root.name}'", s)
+        if root.name in self.typevars:
+            self.refuse(f"an assignment to '{root.name}', the copy a select type or `is` made", s)
+        if root.name not in self.locals_of_body and root.name not in self.scope.consts:
+            self.refuse(f"an assignment to '{root.name}', which is not declared", s)
+        if root.name in self.scope.consts and root.name not in self.locals_of_body and self.scope.consts[root.name][3] == "const":
+            self.refuse(f"an assignment to the constant '{root.name}'", s)
+        if root.name in self.bad_globals and root.name not in self.locals_of_body:
+            self.refuse(f"the module variable '{root.name}' (of a kind not handled)", s)
+        if root.name in self.scope.consts and root.name not in self.locals_of_body:       # a module variable: written with `@`
+            if (self.scope.consts[root.name][3] == "module") != s.update:
+                self.refuse(f"an assignment to '{root.name}' with the wrong `@` mark", s)
+        if isinstance(root, Apply) and root.chain:                  # m["a"][i] = x
+            self.check_entry_element(root)
+            self.fits(s.value, self.nested_type(self.entry_map(root, True).args[1]).kind, "the array element", s)
+            return
+        tt = self.vars_type(root.name, body, f)
+        if tt is not None and tt.kind in COLLECTIONS:
+            if isinstance(root, Apply):                  # age["ann"] = 31
+                self.coll_ok_nodes.add(id(root))
+                if tt.kind != "map" or len(root.args) != 1 or isinstance(root.args[0], (Slice, NamedArg)):
+                    self.refuse("an assignment to part of a set or a map in any way but m[key] = value", s)
+                self.key_ok(tt, root.args[0], s)
+                self.value_ok(tt, s.value, s)
+            else:
+                self.coll_ok_nodes.add(id(root))
+                self.check_coll_value(s.value, tt, s)
+            return
+        if tt is not None and (tt.optional or self.is_optional_value(s.value)):
+            if isinstance(root, Apply):
+                self.refuse("a subscript on an optional value", s)
+            self.check_store(s.value, tt, s)
+        elif isrec(tt):
+            if isinstance(root, Apply):
+                if tt.rank != 1 or not self.record_element(root):
+                    self.refuse("a subscript on a record", s)
+                self.same_record(s.value, tt.name, s)
+            else:
+                self.same_record(s.value, tt.name, s, tt.rank)
+        if tt is not None and tt.kind == "string" and not tt.optional and not self.is_optional_value(s.value):
+            vt = self.types.get(id(s.value))
+            if isinstance(root, Apply):
+                self.refuse("an assignment to part of a text", s)
+            if vt is None or vt.kind != "string" or vt.rank != 0:
+                self.refuse("a value that is not text stored in a text", s)
 
     def vars_type(self, name, body, f):
         """The Type of the parameter or declared variable `name` (None if there is none)."""
@@ -996,7 +1060,7 @@ class Compiler:
             return None
         return Type(d.type, rank)
 
-    STATEMENTS = (Decl, Assign, If, Do, DoEach, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Select, Break)
+    STATEMENTS = (MultiAssign, ReturnMany, Decl, Assign, If, Do, DoEach, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Select, Break)
 
     @staticmethod
     def allocs_of(body, f):
@@ -1663,6 +1727,8 @@ class Compiler:
 
     def raw(self, e):
         t = type(e)
+        if t is Pre:
+            return e.v
         if t is Num:
             if isinstance(e.value, float):
                 return V(Type("real"), repr(e.value))
@@ -3412,6 +3478,31 @@ class Compiler:
             self.emit(f"rt_free_{k}(&{name});")
         self.emit("goto fn_end;")
 
+    def st_returnmany(self, s):
+        types = self.multi_types(self.func)
+        vals = [self.value(v) for v in s.values]                  # all of them first, then each converted to its type
+        saved, self.line = self.line, "call_line"                 # (a result that does not fit is the caller's error)
+        for i, (v, t) in enumerate(zip(vals, types)):
+            self.store(f"ret.m{i}", self.coerce(v, t, f"function {self.func.name}"), skind(t))
+        self.line = saved
+        for k, name in self.temps:
+            self.emit(f"rt_free_{k}(&{name});")
+        self.emit("goto fn_end;")
+
+    def st_multiassign(self, s):
+        call = s.value
+        f = self.fn(call.name)
+        if not self.arity_ok(f, len(call.args)):
+            raise NotCompiled(f"a call of '{f.name}' with missing arguments", s.line)
+        args = self.call_args(f, call.args)
+        self.emit(f'rt_call_in({s.line}, "{f.name}");')
+        res = self.tmp(f"res_{self.cnames[id(f)]}", f"{self.cnames[id(f)]}({', '.join(args)})")
+        self.emit("rt_call_out();")
+        types = self.multi_types(f)
+        for a, pre, i in self.multi[id(s)]:
+            pre.v = V(types[i], f"{res}.m{i}")
+            self.st_assign(a)
+
     def st_stop(self, s):
         if s.code is None:
             self.emit("rt_stop(0);")
@@ -3587,10 +3678,15 @@ class Compiler:
         self.func = f
         self.set_scope(f)
         self.declare_vars(f.params, f.body)
-        rt = self.param_type(f.ret) if f.ret else None
-        head = f"static {cscalar(rt) if rt else 'void'} {self.cnames[id(f)]}({self.c_params(f)})"
+        many = self.multi_types(f) if isinstance(f.ret, ResultList) else None
+        rt = self.param_type(f.ret) if f.ret and many is None else None
+        ctype = f"res_{self.cnames[id(f)]}" if many else cscalar(rt) if rt else "void"
+        head = f"static {ctype} {self.cnames[id(f)]}({self.c_params(f)})"
         self.lines, self.depth, self.line, self.arrays = [], 1, 0, []
-        if rt:
+        if many:
+            self.emit(f"{ctype} ret = {{0}};")
+            self.emit("int call_line = rt_call_line;")
+        elif rt:
             start = "{0}" if rt.optional or rt.kind in COLLECTIONS else f"d_{rt.name}()" if isrec(rt) else "{0}" if rt.kind == "string" else "false" if rt.kind == "logical" else "0"
             self.emit(f"{cscalar(rt)} ret = {start};")
             if rt.kind in COLLECTIONS:
@@ -3602,13 +3698,15 @@ class Compiler:
             if pt.kind in COLLECTIONS and intent == "out":
                 self.emit(f"rt_map_reset({c_name(name)}, {KEYKINDS[pt.args[0]]}, {VALKINDS[pt.args[1]] if pt.kind == 'map' else -1});")
         self.block(f.body)
-        if f.ret is not None:
+        if many:
+            self.emit(f'rt_fail(call_line, "function {f.name} must return {len(many)} values: return a, b");')
+        elif f.ret is not None:
             rname = str(f.ret) if isinstance(f.ret, (MapType, SetType)) else f.ret if f.ret in self.records or f.ret in self.ifaces or f.ret.endswith("?") else self.param_type(f.ret).kind
             self.emit(f'rt_fail(call_line, "function {f.name} must return a {rname}");')
         self.emit("fn_end: ;")
         for k, name in self.arrays:
             self.emit(f"rt_free_{k}(&{name});")
-        self.emit("return ret;" if rt else "return;")
+        self.emit("return ret;" if rt or many else "return;")
         return head + ";", "\n".join([head + " {"] + self.lines + ["}"])
 
     def field_ctype(self, fd):
@@ -3734,6 +3832,10 @@ class Compiler:
                 out.extend(self.optional_block(n[len(OPT):]))
             else:
                 out.extend(self.iface_block(n) if n in self.ifaces else self.record_block(n))
+        for f in all_functions(self):                          # what a function with several results gives back
+            if isinstance(f.ret, ResultList):
+                members = " ".join(f"{CSCALAR[t.kind]} m{i};" for i, t in enumerate(self.multi_types(f)))
+                out.append(f"typedef struct {{ {members} }} res_{self.cnames[id(f)]};")
         return out
 
     def optional_block(self, base):
