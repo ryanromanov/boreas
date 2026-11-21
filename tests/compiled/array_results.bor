@@ -1,0 +1,33 @@
+! Functions that return arrays: the result has the rank the header says, and is used like any array
+function squares(int :: n) -> int[]
+  allocatable int[] :: r
+  int :: i
+  allocate r[n]
+  do i = 1, n
+    r[i] = i * i
+  end do
+  return r
+end function
+
+function scaled(real[] :: v, real :: k) -> real[]
+  return v * k
+end function
+
+function table(int :: n) -> real[,]
+  return reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3]) * n
+end function
+
+function above(real[] :: v, real :: limit) -> logical[]
+  return v > limit
+end function
+
+program array_results
+  allocatable int[] :: s
+  real[3] :: v = [1.0, 2.5, 4.0]
+  s = squares(5)
+  println(s, sum(squares(10)), size(squares(0)))
+  println(scaled(v, 2.0), sum(scaled(scaled(v, 2.0), 0.5)))
+  println(table(2), shape(table(1)))
+  println(above(v, 2.0), count(above(v, 2.0)))
+  println(squares(-1))
+end program array_results
