@@ -53,6 +53,8 @@ MAX_RANK = 3
 COLLECTIONS = ("map", "set")
 KEYKINDS = {"int": 0, "string": 1}                          # the keys a compiled map or set can have, and the number the runtime knows each by
 VALKINDS = {"int": 0, "real": 1, "string": 2, "logical": 3}  # the values a compiled map can have
+NESTED = {"set[string]": 4, "set[int]": 4, "int[]": 5, "real[]": 6}   # (or a set, or an array of whole numbers or reals: heap objects it owns)
+VALKINDS.update(NESTED)
 CSCALAR.update(map="rt_map", set="rt_map")
 WRITERS.update(map="rt_write_collection", set="rt_write_collection")
 
@@ -481,7 +483,7 @@ class Compiler:
         for f in all_functions(self):
             if f.ret is not None:
                 rt = self.param_type(f.ret)
-                if rt is None or rt.rank != 0 or rt.kind in COLLECTIONS:
+                if rt is None or rt.rank != 0:
                     self.refuse(f"function '{f.name}' returns {f.ret if isinstance(f.ret, str) else str(f.ret) if isinstance(f.ret, (MapType, SetType)) else 'several values'}")
             for typ, name, intent in f.params:
                 pt = self.param_type(typ)
@@ -601,6 +603,12 @@ class Compiler:
                     self.refuse("a return that does not match its procedure", s)
                 if s.value is None:                              # a plain `return` in a subroutine
                     continue
+                if isinstance(f.ret, (MapType, SetType)):          # a map or set: a variable (copied out) or a literal
+                    rt = self.param_type(f.ret)
+                    if rt is None:
+                        self.refuse("a return of a map or set of a kind not handled", s)
+                    self.check_coll_value(s.value, rt, s)
+                    continue
                 if not isinstance(f.ret, str):
                     self.refuse("a return of several values", s)
                 self.opt_ok.add(id(s.value))
@@ -654,6 +662,7 @@ class Compiler:
                     if rn in fixed:
                         self.refuse(f"an assignment to a field of the parameter '{rn}'", s)
                     if self.map_sub_type(root) is not None:             # r.m[key] = value
+                        self.coll_ok_nodes.add(id(root))
                         mt = self.map_sub_type(root)
                         self.key_ok(mt, root.args[0], s)
                         self.value_ok(mt, s.value, s)
@@ -705,9 +714,14 @@ class Compiler:
                 if root.name in self.scope.consts and root.name not in self.locals_of_body:       # a module variable: written with `@`
                     if (self.scope.consts[root.name][3] == "module") != s.update:
                         self.refuse(f"an assignment to '{root.name}' with the wrong `@` mark", s)
+                if isinstance(root, Apply) and root.chain:                  # m["a"][i] = x
+                    self.check_entry_element(root)
+                    self.fits(s.value, self.nested_type(self.entry_map(root, True).args[1]).kind, "the array element", s)
+                    continue
                 tt = self.vars_type(root.name, body, f)
                 if tt is not None and tt.kind in COLLECTIONS:
                     if isinstance(root, Apply):                  # age["ann"] = 31
+                        self.coll_ok_nodes.add(id(root))
                         if tt.kind != "map" or len(root.args) != 1 or isinstance(root.args[0], (Slice, NamedArg)):
                             self.refuse("an assignment to part of a set or a map in any way but m[key] = value", s)
                         self.key_ok(tt, root.args[0], s)
@@ -935,7 +949,7 @@ class Compiler:
                 self.refuse("a record or text passed as out", s)
             if intent in ("out", "inout") and (
                     (isinstance(a, Apply) and a.bracket and a.name in self.vtypes and self.vtypes[a.name].kind in COLLECTIONS)
-                    or self.map_sub_type(a) is not None):
+                    or self.map_sub_type(a) is not None) and not (intent == "inout" and self.is_coll_var(a)):
                 self.refuse(f"an entry of a map passed as {intent}", s)
             if intent in ("out", "inout") and isinstance(a, Apply) and any(isinstance(x, Slice) for x in a.args):
                 self.refuse(f"a section of '{a.name}' passed as {intent}", s)
@@ -1002,6 +1016,9 @@ class Compiler:
 
     def is_coll_var(self, e):
         """Is `e` a map or set that is a parameter or declared variable of this procedure, or a field of one of its records?"""
+        em = self.entry_map(e)
+        if em is not None:                               # g[key]: a set that lives in the map
+            return em.args[1].startswith("set[")
         if isinstance(e, FieldAccess):
             t = self.types.get(id(e))
             return e.args is None and not e.chain and t is not None and t.kind in COLLECTIONS and t.rank == 0 \
@@ -1009,8 +1026,36 @@ class Compiler:
         return isinstance(e, Var) and e.name in self.locals_of_body and self.vtypes.get(e.name) is not None \
             and self.vtypes[e.name].kind in COLLECTIONS
 
+    def is_coll_result(self, e):
+        """Is `e` a call of a function that gives back a map or set?"""
+        if not (isinstance(e, Apply) and not e.bracket and self.fn(e.name) is not None and self.fn(e.name).ret is not None):
+            return False
+        t = self.param_type(self.fn(e.name).ret)
+        return t is not None and t.kind in COLLECTIONS
+
     def coll_type(self, e):
+        if self.is_coll_result(e):
+            return self.param_type(self.fn(e.name).ret)
+        if self.entry_map(e) is not None:
+            return self.nested_type(self.entry_map(e).args[1])
         return self.types[id(e)] if isinstance(e, FieldAccess) else self.vtypes[e.name]
+
+    @staticmethod
+    def nested_type(vs):
+        """The Type of what a map's entries are when they are sets or arrays (`set[string]`, `int[]`)."""
+        return Type("set", 0, False, "", (vs[4:-1],)) if vs.startswith("set[") else Type(vs[:-2], 1)
+
+    def entry_map(self, e, chained=False):
+        """For `g[key]` or `r.m[key]` (with `[i]` after it, if `chained`) where the map's entries are sets or arrays: the map's
+        Type, else None."""
+        if isinstance(e, Apply) and e.bracket and (e.chain is not None) == chained and e.name in self.locals_of_body \
+                and len(e.args) == 1 and not isinstance(e.args[0], (Slice, NamedArg)):
+            vt = self.vtypes.get(e.name)
+        elif isinstance(e, FieldAccess) and not chained:
+            vt = self.map_sub_type(e)
+        else:
+            return None
+        return vt if vt is not None and vt.kind == "map" and vt.args[1] in NESTED else None
 
     def map_sub_type(self, e):
         """For `r.m[key]` (a subscripted map field of a record): the map's Type, else None."""
@@ -1036,6 +1081,13 @@ class Compiler:
         """The value `node` can be stored in the map `ct` (a whole number goes into a real map as a real)."""
         vt = self.types.get(id(node))
         want = ct.args[1]
+        if want in NESTED:
+            nt = self.nested_type(want)
+            if nt.kind == "set":
+                self.check_coll_value(node, nt, where)
+            elif vt is None or vt.kind != nt.kind or vt.rank != 1 or vt.optional:
+                self.refuse(f"a value that is not what the map holds ({want})", where)
+            return
         ok = vt is not None and vt.rank == 0 and not vt.optional and (
             vt.kind in ("int", "int32") if want == "int" else vt.kind in ("int", "int32", "real") if want == "real" else vt.kind == want)
         if not ok:
@@ -1044,6 +1096,8 @@ class Compiler:
     def check_coll_value(self, e, target, where):
         """`e` stored in, compared with or passed as a collection of type `target`: a variable of exactly that type, or a literal."""
         if isinstance(e, CollLit):
+            if target.kind == "map" and target.args[1] in NESTED:
+                self.refuse("a map literal whose values are sets or arrays", where)
             self.coll_ok_nodes.add(id(e))
             if (e.kind == "map" and target.kind == "set") or (e.kind == "set" and target.kind == "map"):
                 self.refuse(f"a {e.kind} literal where a {target.kind} is needed", where)
@@ -1053,13 +1107,31 @@ class Compiler:
                 for x in e.values:
                     self.value_ok(target, x, where)
             return
-        t = self.types.get(id(e))
-        if t is None or t.kind != target.kind or t.args != target.args or not self.is_coll_var(e):
+        if isinstance(e, Apply) and not e.bracket and self.fn(e.name) is not None:      # what a function gives back
+            t = self.param_type(self.fn(e.name).ret) if self.fn(e.name).ret is not None else None
+            if t is None or t.kind != target.kind or t.args != target.args:
+                self.refuse("a map or set that is not a variable of the same type", where)
+            self.coll_ok_nodes.add(id(e))
+            return
+        t = self.coll_type(e) if self.is_coll_var(e) else None
+        if t is None or t.kind != target.kind or t.args != target.args:
             self.refuse("a map or set that is not a variable of the same type", where)
+        if target.kind == "map" and target.args[1] in ("int[]", "real[]") and where is not None and isinstance(where, Binary):
+            self.refuse("== of maps whose values are arrays", where)
         self.coll_ok_nodes.add(id(e))
 
     def is_coll_call(self, s):
         return s.receiver is None and s.name in ("add", "remove") and self.fn(s.name) is None and s.name not in self.vtypes
+
+    def check_entry_element(self, e):
+        """`m["a"][i]`: one element of an array that lives in a map (a single whole-number subscript, no ranges)."""
+        em = self.entry_map(e, True)
+        if em is None or not em.args[1].endswith("[]") or len(e.chain) != 1 or isinstance(e.chain[0], (Slice, NamedArg)):
+            self.refuse("a chained subscript", e)
+        it = self.types.get(id(e.chain[0]))
+        if it is None or it.rank != 0 or it.kind not in ("int", "int32"):
+            self.refuse("an array subscript that is not a whole number", e)
+        self.key_ok(em, e.args[0], e)
 
     def check_coll_call(self, s):
         """`call add(@seen, x)` and `call remove(@age, key)`: a variable of this procedure (not an `in` parameter) is changed."""
@@ -1081,6 +1153,8 @@ class Compiler:
         st = self.types.get(id(src))
         if self.is_coll_var(src):
             ct = self.coll_type(src)
+            if ct.kind == "map" and ct.args[1] in NESTED:
+                self.refuse("a do ... in loop over a map whose values are sets or arrays", s)
             self.coll_ok_nodes.add(id(src))
             kinds_ = [ct.args[0]] + ([ct.args[1]] if ct.kind == "map" else [])
         elif st is not None and st.rank >= 1 and st.kind in ("int", "int32", "real", "real32", "logical"):
@@ -1098,12 +1172,14 @@ class Compiler:
     def check_coll_builtin(self, e):
         name = e.name
         need = {"has": 2, "get": 2, "keys": 1, "values": 1, "size": 1}[name]
-        if len(e.args) != need or not self.is_coll_var(e.args[0]):
+        if len(e.args) != need or not (self.is_coll_var(e.args[0]) or self.is_coll_result(e.args[0])):
             self.refuse(f"{name}() of anything but a map or set variable", e)
         ct = self.coll_type(e.args[0])
         self.coll_ok_nodes.add(id(e.args[0]))
         if name in ("get", "values") and ct.kind != "map":
             self.refuse(f"{name}() of a set", e)
+        if name in ("get", "values") and ct.args[1] in NESTED:
+            self.refuse(f"{name}() of a map whose values are sets or arrays", e)
         if name in ("has", "get"):
             self.key_ok(ct, e.args[1], e)
 
@@ -1242,7 +1318,7 @@ class Compiler:
                 self.refuse("an array literal of anything but single values", e)
         if kind is Apply:
             if e.chain:
-                self.refuse("a chained subscript", e)
+                self.check_entry_element(e)
             if any(isinstance(a, Slice) for a in e.args) and not e.bracket:
                 self.refuse("part of an array", e)
             vt = self.vtypes.get(e.name) if e.name in self.locals_of_body else None
@@ -1361,8 +1437,8 @@ class Compiler:
             if len(e.args) != 1 or not isinstance(e.args[0], Var) or e.args[0].name not in self.allocs:
                 self.refuse("allocated() of anything but the name of an allocatable array", e)
             return
-        if name in COLLFUNCS or (name == "size" and e.args and self.types.get(id(e.args[0])) is not None
-                                 and self.types[id(e.args[0])].kind in COLLECTIONS):
+        if name in COLLFUNCS or (name == "size" and e.args and ((self.types.get(id(e.args[0])) is not None
+                                 and self.types[id(e.args[0])].kind in COLLECTIONS) or self.is_coll_var(e.args[0]) or self.is_coll_result(e.args[0]))):
             self.check_coll_builtin(e)
             return
         ranks = [self.types[id(a)].rank for a in e.args]
@@ -2102,6 +2178,9 @@ class Compiler:
     def apply(self, e):
         line = self.line
         vt = self.vars[e.name][0] if e.name in self.vars else None
+        if e.bracket and vt is not None and vt.kind in COLLECTIONS and e.chain:
+            arr, i = self.map_element(e)
+            return V(Type(arr.t.kind), self.tmp(CSCALAR[arr.t.kind], f"{arr.atom}.data[{i} - 1]"))
         if e.bracket and vt is not None and vt.kind in COLLECTIONS:
             return self.map_read(e)
         if e.bracket and self.types[id(e)].kind == "string":
@@ -2200,7 +2279,9 @@ class Compiler:
         rt = self.param_type(f.ret)
         call = f"{self.cnames[id(f)]}({', '.join(args)})"
         result = self.tmp_str(call) if rt.kind == "string" and not rt.optional else self.tmp(cscalar(rt), call)
-        if (isrec(rt) or rt.optional) and self.deep[skind(rt)]:
+        if rt.kind in COLLECTIONS:
+            self.temps.append(("map", result))
+        elif (isrec(rt) or rt.optional) and self.deep[skind(rt)]:
             self.temps.append((f"rec_{skind(rt)}", result))
         self.emit("rt_call_out();")
         return V(rt, result)
@@ -2484,7 +2565,8 @@ class Compiler:
 
     def builtin(self, e):
         line, name = self.line, e.name
-        if name in COLLFUNCS or (name == "size" and self.types[id(e.args[0])].kind in COLLECTIONS):
+        if name in COLLFUNCS or (name == "size" and (self.types[id(e.args[0])].kind in COLLECTIONS or self.entry_map(e.args[0]) is not None
+                                                     and self.entry_map(e.args[0]).args[1].startswith("set["))):
             return self.coll_builtin(e)
         if name == "present":                                     # is there a value (a plain value always is)
             v = self.value(e.args[0])
@@ -2743,8 +2825,18 @@ class Compiler:
         return name
 
     def coll_ref(self, e):
-        """(Type, C lvalue, name in messages) of the map or set `e` stands for: a variable, `r.m` (a field), or either one
-        subscripted (`age["ann"]`, `r.m["ann"]`: then the map itself)."""
+        """(Type, C lvalue, name in messages) of the map or set `e` stands for: a variable, `r.m` (a field), or a set that lives
+        in a map (`g["a"]`: looked up now)."""
+        if self.entry_map(e) is not None:
+            v = self.map_read(e)
+            return v.t, v.atom, self.map_of(e)[2]
+        if self.is_coll_result(e):                                          # what a function gives back (a temporary)
+            v = self.value(e)
+            return v.t, v.atom, e.name
+        return self.map_of(e)
+
+    def map_of(self, e):
+        """(Type, C lvalue, name in messages) of the map `e` is, or (subscripted: `age["ann"]`, `r.m["ann"]`) the map it is read from."""
         if isinstance(e, Apply):
             return self.vars[e.name][0], self.vars[e.name][1], e.name
         if isinstance(e, Var):
@@ -2755,13 +2847,37 @@ class Compiler:
 
     def map_read(self, e):
         """`age["ann"]`: the value, or the interpreter's error for a key that is not there."""
-        vt, m, mname = self.coll_ref(e)
+        vt, m, mname = self.map_of(e)
         key = self.key_cell(self.value(e.args[0]), vt)
         ent = self.tmp("rt_entry *", f'rt_map_at(&{m}, {key}, "{mname}", {self.line})')
         want = vt.args[1]
+        if want in NESTED:                                  # a set or array that lives in the map: the place itself
+            nt = self.nested_type(want)
+            return V(nt, f"(*(rt_map *){ent}->val.p)" if nt.kind == "set" else f"(*(rt_{nt.kind}_arr *){ent}->val.p)")
         if want == "string":
             return V(Type("string"), self.tmp_str(f"rt_str_copy({ent}->val.s, {self.line})"))
         return V(Type(want), self.tmp(CSCALAR[want], f"{ent}->val.{ {'int': 'i', 'real': 'd', 'logical': 'b'}[want] }"))
+
+    def map_element(self, e):
+        """`m["a"][i]` of an array in a map: the element (the key is looked up first, then the subscript checked)."""
+        arr = self.map_read(e)
+        i = self.tmp("int64_t", self.scalar(e.chain[0], "int"))
+        self.emit(f"rt_check_index({i}, {arr.atom}.shape[0], 1, 1, {self.line});")
+        return arr, i
+
+    def store_cell(self, node, ct):
+        """The value `node`, to be stored in the map `ct`, as the runtime's cell (a set or array: a pointer to the source, which the
+        map copies)."""
+        want = ct.args[1]
+        if want in NESTED:
+            nt = self.nested_type(want)
+            if nt.kind == "set":
+                return f"rt_vp(&{self.coll_value(node, nt)})"
+            v = self.value(node)
+            if getattr(v, "src", None) not in (None, nt.kind):
+                raise NotCompiled("an array stored as another kind", self.line)
+            return f"rt_vp(&{v.atom})"
+        return self.val_cell(self.value(node), ct)
 
     def coll_builtin(self, e):
         """has, get, size, keys and values of a map or set variable."""
@@ -2885,8 +3001,8 @@ class Compiler:
         line = self.line
         target = s.target
         if isinstance(target, FieldAccess) and self.map_sub_type(target) is not None:      # r.m[key] = value
-            t, m, _ = self.coll_ref(target)
-            val = self.val_cell(self.value(s.value), t)
+            t, m, _ = self.map_of(target)
+            val = self.store_cell(s.value, t)
             key = self.key_cell(self.value(target.args[0]), t)
             self.emit(f"rt_map_put(&{m}, {key}, {val}, {line});")
             return
@@ -2900,10 +3016,15 @@ class Compiler:
             self.store(lv, self.typed(s.value, ft, f'line {line}'), skind(ft))
             return
         t = self.vars[target.name][0]
+        if t.kind in COLLECTIONS and isinstance(target, Apply) and target.chain:      # m["a"][i] = x
+            arr, i = self.map_element(target)
+            kind = arr.t.kind
+            self.store(f"{arr.atom}.data[{i} - 1]", self.typed(s.value, Type(kind), f"line {line}"), kind)
+            return
         if t.kind in COLLECTIONS:
             m = self.vars[target.name][1]
             if isinstance(target, Apply):                                   # age["ann"] = 31
-                val = self.val_cell(self.value(s.value), t)
+                val = self.store_cell(s.value, t)
                 key = self.key_cell(self.value(target.args[0]), t)
                 self.emit(f"rt_map_put(&{m}, {key}, {val}, {line});")
             else:                                                           # b = a, or b = {...}
@@ -3283,7 +3404,10 @@ class Compiler:
     def st_return(self, s):
         if self.func is not None and self.func.ret is not None:
             rt = self.param_type(self.func.ret)
-            self.store("ret", self.typed(s.value, rt, f'function {self.func.name}'), skind(rt))
+            if rt.kind in COLLECTIONS:
+                self.emit(f"rt_map_set(&ret, &{self.coll_value(s.value, rt)}, {self.line});")
+            else:
+                self.store("ret", self.typed(s.value, rt, f'function {self.func.name}'), skind(rt))
         for k, name in self.temps:                 # this statement's temporaries, which the jump would skip
             self.emit(f"rt_free_{k}(&{name});")
         self.emit("goto fn_end;")
@@ -3467,8 +3591,10 @@ class Compiler:
         head = f"static {cscalar(rt) if rt else 'void'} {self.cnames[id(f)]}({self.c_params(f)})"
         self.lines, self.depth, self.line, self.arrays = [], 1, 0, []
         if rt:
-            start = "{0}" if rt.optional else f"d_{rt.name}()" if isrec(rt) else "{0}" if rt.kind == "string" else "false" if rt.kind == "logical" else "0"
+            start = "{0}" if rt.optional or rt.kind in COLLECTIONS else f"d_{rt.name}()" if isrec(rt) else "{0}" if rt.kind == "string" else "false" if rt.kind == "logical" else "0"
             self.emit(f"{cscalar(rt)} ret = {start};")
+            if rt.kind in COLLECTIONS:
+                self.emit(f"ret.kk = {KEYKINDS[rt.args[0]]}; ret.vk = {VALKINDS[rt.args[1]] if rt.kind == 'map' else -1};")
             self.emit("int call_line = rt_call_line;")
         self.local_declarations(f.params, f.body)
         for typ, name, intent in f.params:                  # an `out` map or set starts empty
@@ -3477,7 +3603,8 @@ class Compiler:
                 self.emit(f"rt_map_reset({c_name(name)}, {KEYKINDS[pt.args[0]]}, {VALKINDS[pt.args[1]] if pt.kind == 'map' else -1});")
         self.block(f.body)
         if f.ret is not None:
-            self.emit(f'rt_fail(call_line, "function {f.name} must return a {f.ret if f.ret in self.records or f.ret in self.ifaces or f.ret.endswith("?") else self.param_type(f.ret).kind}");')
+            rname = str(f.ret) if isinstance(f.ret, (MapType, SetType)) else f.ret if f.ret in self.records or f.ret in self.ifaces or f.ret.endswith("?") else self.param_type(f.ret).kind
+            self.emit(f'rt_fail(call_line, "function {f.name} must return a {rname}");')
         self.emit("fn_end: ;")
         for k, name in self.arrays:
             self.emit(f"rt_free_{k}(&{name});")

@@ -544,6 +544,10 @@ class Checker:
         args = [self.expr(a, env) for a in arg_nodes]
         if e.chain:
             self.expr(e.chain, env)
+            mt = env.get(e.name)
+            if mt is not None and mt.kind == "map" and len(mt.args) == 2 and mt.args[1] in ("int[]", "real[]") and e.bracket \
+                    and len(args) == 1 and len(e.chain) == 1:                  # m["a"][i]: one element of an array in a map
+                return Type(mt.args[1][:-2])
             return UNKNOWN
         name = e.name
         scope = self.scope
@@ -560,6 +564,12 @@ class Checker:
             if t.kind in ("map", "set"):                      # age["ann"]: the value type, when it is a single value
                 if t.kind == "map" and e.bracket and len(args) == 1 and len(t.args) == 2 and t.args[1] in TAKES_SCALAR:
                     return Type(t.args[1])
+                if t.kind == "map" and e.bracket and len(args) == 1 and len(t.args) == 2:     # a set or array that lives in the map
+                    v = t.args[1]
+                    if v in ("set[string]", "set[int]"):
+                        return Type("set", 0, False, "", (v[4:-1],))
+                    if v in ("int[]", "real[]"):
+                        return Type(v[:-2], 0 if getattr(e, "chain", None) else 1)
                 return UNKNOWN
             if t.rank > 0 and e.bracket:
                 for a in arg_nodes:
@@ -645,6 +655,9 @@ class Checker:
             return UNKNOWN
         ft = self.decl_type(field, self.interp.owner.get(id(rdef), scope) if hasattr(self.interp, "owner") else scope)
         if e.args is not None and e.bracket:
+            if ft.kind == "map" and len(ft.args) == 2 and len(arg_nodes) == 1 and ft.args[1] in ("set[string]", "set[int]", "int[]", "real[]"):
+                v = ft.args[1]                                  # a set or array that lives in the map
+                return Type("set", 0, False, "", (v[4:-1],)) if v.startswith("set[") else Type(v[:-2], 1)
             return self.index_type(ft, arg_nodes)
         return ft
 

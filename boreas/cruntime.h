@@ -1196,7 +1196,7 @@ static rt_str rt_general(double x, int64_t digits, int64_t width, bool fortran, 
    A key is a whole number (kind 0) or text (kind 1); a map's value is a whole number (0), real (1), text (2) or logical (3),
    and a set has no value (-1). The entries sit in the order they were added; a removed one leaves a gap until the table is
    compacted, so the order never changes, and a key added again after being removed goes to the end (as in a Python dict). */
-typedef union { int64_t i; double d; bool b; rt_str s; } rt_cell;
+typedef union { int64_t i; double d; bool b; rt_str s; void *p; } rt_cell;
 typedef struct { rt_cell key, val; uint64_t hash; bool live; } rt_entry;
 typedef struct {
     int kk, vk;                      /* key kind, value kind */
@@ -1207,6 +1207,7 @@ typedef struct {
 static inline rt_cell rt_ki(int64_t x) { rt_cell c; memset(&c, 0, sizeof c); c.i = x; return c; }
 static inline rt_cell rt_ks(rt_str x) { rt_cell c; memset(&c, 0, sizeof c); c.s = x; return c; }
 static inline rt_cell rt_vd(double x) { rt_cell c; memset(&c, 0, sizeof c); c.d = x; return c; }
+static inline rt_cell rt_vp(void *x) { rt_cell c; memset(&c, 0, sizeof c); c.p = x; return c; }
 static inline rt_cell rt_vb(bool x) { rt_cell c; memset(&c, 0, sizeof c); c.b = x; return c; }
 static uint64_t rt_hash_key(int kk, rt_cell k) {
     uint64_t z;
@@ -1223,10 +1224,22 @@ static inline rt_cell rt_cell_copy(bool text, rt_cell c) {
     if (text) c.s = rt_str_new(rt_cs(c.s), c.s.n, 0);
     return c;
 }
+/* a map's value can be a set (kind 4), or an array of whole numbers (5) or reals (6): a heap object the cell points to, owned by the map */
+static void *rt_nested_copy(int vk, const void *src, int line);
+static void rt_nested_free(int vk, void *p);
+static inline rt_cell rt_val_copy(int vk, rt_cell c, int line) {
+    if (vk == 2) return rt_cell_copy(true, c);
+    if (vk >= 4) c.p = rt_nested_copy(vk, c.p, line);
+    return c;
+}
+static inline void rt_val_free(int vk, rt_cell c) {
+    if (vk == 2) free(c.s.p);
+    else if (vk >= 4) rt_nested_free(vk, c.p);
+}
 static void rt_map_free(rt_map *m) {
     for (int64_t i = 0; i < m->n; i++) if (m->e[i].live) {
         if (m->kk == 1) free(m->e[i].key.s.p);
-        if (m->vk == 2) free(m->e[i].val.s.p);
+        rt_val_free(m->vk, m->e[i].val);
     }
     free(m->e); free(m->idx);
     m->e = NULL; m->idx = NULL; m->n = m->cap = m->size = m->icap = 0;
@@ -1272,14 +1285,14 @@ static void rt_map_put(rt_map *m, rt_cell key, rt_cell val, int line) {
     uint64_t h = rt_hash_key(m->kk, key);
     int64_t k = rt_map_find(m, key, h);
     if (k >= 0) {
-        if (m->vk == 2) { rt_cell c = rt_cell_copy(true, val); free(m->e[k].val.s.p); m->e[k].val = c; }
+        if (m->vk == 2 || m->vk >= 4) { rt_cell c = rt_val_copy(m->vk, val, line); rt_val_free(m->vk, m->e[k].val); m->e[k].val = c; }
         else if (m->vk >= 0) m->e[k].val = val;
         return;
     }
     if (m->n == m->cap) rt_map_room(m, line);
     rt_entry *en = &m->e[m->n];
     en->key = rt_cell_copy(m->kk == 1, key);
-    if (m->vk >= 0) en->val = rt_cell_copy(m->vk == 2, val); else memset(&en->val, 0, sizeof en->val);
+    if (m->vk >= 0) en->val = rt_val_copy(m->vk, val, line); else memset(&en->val, 0, sizeof en->val);
     en->hash = h; en->live = true;
     uint64_t mask = (uint64_t)m->icap - 1, p = h & mask;
     while (m->idx[p]) p = (p + 1) & mask;
@@ -1305,7 +1318,7 @@ static void rt_map_remove(rt_map *m, rt_cell key, const char *name, int line) {
     int64_t k = rt_map_find(m, key, rt_hash_key(m->kk, key));
     if (k < 0) rt_fail(line, "cannot remove %s: '%s' has no such %s (test with has first)", rt_key_show(m->kk, key), name, m->vk >= 0 ? "key" : "member");
     if (m->kk == 1) free(m->e[k].key.s.p);
-    if (m->vk == 2) free(m->e[k].val.s.p);
+    rt_val_free(m->vk, m->e[k].val);
     m->e[k].live = false;
     m->size--;
 }
@@ -1319,6 +1332,7 @@ static void rt_map_set(rt_map *dst, const rt_map *src, int line) {    /* dst = s
     rt_map_free(dst);
     *dst = c;
 }
+static bool rt_map_equal(const rt_map *a, const rt_map *b);
 static bool rt_map_equal(const rt_map *a, const rt_map *b) {          /* the same keys with equal values, in any order */
     if (a->size != b->size) return false;
     for (int64_t i = 0; i < a->n; i++) if (a->e[i].live) {
@@ -1328,11 +1342,33 @@ static bool rt_map_equal(const rt_map *a, const rt_map *b) {          /* the sam
         if (a->vk == 1 && !(a->e[i].val.d == o->val.d)) return false;
         if (a->vk == 3 && a->e[i].val.b != o->val.b) return false;
         if (a->vk == 2 && !rt_key_eq(1, a->e[i].val, o->val)) return false;
+        if (a->vk == 4 && !rt_map_equal((const rt_map *)a->e[i].val.p, (const rt_map *)o->val.p)) return false;
     }
     return true;
 }
 /* the entries as they are when a `do key, value in m` loop starts (the loop walks this, so the body may change the map) */
 typedef struct { rt_cell *k, *v; int64_t n; int kk, vk; } rt_snap;
+static void *rt_nested_copy(int vk, const void *src, int line) {
+    if (vk == 4) { rt_map *d = (rt_map *)calloc(1, sizeof(rt_map)); if (!d) rt_fail(line, "out of memory"); rt_map_copy(d, (const rt_map *)src, line); return d; }
+    if (vk == 5) {
+        const rt_int_arr *a = (const rt_int_arr *)src; rt_int_arr *d = (rt_int_arr *)calloc(1, sizeof(rt_int_arr));
+        if (!d) rt_fail(line, "out of memory");
+        rt_alloc_int(d, a->rank, a->shape[0], a->shape[1], a->shape[2], line);
+        if (a->n) memcpy(d->data, a->data, (size_t)a->n * sizeof(int64_t));
+        return d;
+    }
+    const rt_real_arr *a = (const rt_real_arr *)src; rt_real_arr *d = (rt_real_arr *)calloc(1, sizeof(rt_real_arr));
+    if (!d) rt_fail(line, "out of memory");
+    rt_alloc_real(d, a->rank, a->shape[0], a->shape[1], a->shape[2], line);
+    if (a->n) memcpy(d->data, a->data, (size_t)a->n * sizeof(double));
+    return d;
+}
+static void rt_nested_free(int vk, void *p) {
+    if (vk == 4) rt_map_free((rt_map *)p);
+    else if (vk == 5) rt_free_int((rt_int_arr *)p);
+    else rt_free_real((rt_real_arr *)p);
+    free(p);
+}
 static void rt_free_snap(rt_snap *s) {
     for (int64_t i = 0; i < s->n; i++) {
         if (s->kk == 1) free(s->k[i].s.p);
@@ -1350,11 +1386,15 @@ static void rt_snap_take(rt_snap *s, const rt_map *m, int line) {
     int64_t o = 0;
     for (int64_t i = 0; i < m->n; i++) if (m->e[i].live) {
         s->k[o] = rt_cell_copy(m->kk == 1, m->e[i].key);
-        if (m->vk >= 0) s->v[o] = rt_cell_copy(m->vk == 2, m->e[i].val); else memset(&s->v[o], 0, sizeof s->v[o]);
+        if (m->vk >= 0 && m->vk < 4) s->v[o] = rt_cell_copy(m->vk == 2, m->e[i].val); else memset(&s->v[o], 0, sizeof s->v[o]);
         o++;
     }
 }
+static void rt_write_collection(rt_map m);
 static void rt_write_cell(int kind, rt_cell c, bool key) {
+    if (!key && kind == 4) { rt_write_collection(*(rt_map *)c.p); return; }
+    if (!key && kind == 5) { rt_write_int_arr((const rt_int_arr *)c.p); return; }
+    if (!key && kind == 6) { rt_write_real_arr((const rt_real_arr *)c.p); return; }
     if (key) { if (kind == 0) rt_write_int(c.i); else rt_write_string(c.s); return; }
     if (kind == 0) rt_write_int(c.i); else if (kind == 1) rt_write_real(c.d); else if (kind == 2) rt_write_string(c.s); else rt_write_bool(c.b);
 }

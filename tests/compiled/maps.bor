@@ -21,6 +21,16 @@ record shelf
   set[string] :: tags
 end record
 
+function groups() -> map[string, set[string]]
+  map[string, set[string]] :: g
+  set[string] :: s
+  call add(@s, "ann")
+  g["a"] = s                                ! the map keeps its own copy
+  call add(@s, "bob")
+  g["b"] = s
+  return g
+end function
+
 program maps
   map[string, int] :: count
   set[string] :: seen
@@ -53,4 +63,11 @@ program maps
   shelf :: b = a                            ! copying the record copies its maps
   b.stock["dune"] = 9
   println(a, b.stock["dune"], has(a.tags, "scifi"))
+
+  map[string, set[string]] :: team = groups()
+  call add(@team["a"], "cy")                ! a set inside a map is changed in place
+  map[string, int[]] :: rows
+  rows["k"] = [1, 2, 3]
+  rows["k"][2] = 20
+  println(team, size(team["b"]), rows, sum(rows["k"]))
 end program maps
