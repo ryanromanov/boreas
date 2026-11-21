@@ -200,12 +200,24 @@ class Compiler:
         """The type of a field without its `?`."""
         return fd.type[:-1] if isinstance(fd.type, str) and fd.type.endswith("?") else fd.type
 
+    def fcoll(self, fd):
+        """The Type of a field that is a map or set of the kinds the runtime has (else None)."""
+        if isinstance(fd.type, (MapType, SetType)):
+            from .types import parse
+            t = parse(fd.type)
+            return t if self.coll_ok(t) else None
+        return None
+
     def ftype(self, fd):
         """The name a field's type goes by in the C text: the type, or opt__<type> for an optional one."""
+        if not isinstance(fd.type, str):
+            return str(fd.type)
         return OPT + fd.type[:-1] if fd.type.endswith("?") else fd.type
 
     def field_type(self, fd):
         """The Type of one value of the field `fd`."""
+        if self.fcoll(fd) is not None:
+            return self.fcoll(fd)
         base = self.fbase(fd)
         kind = "record" if base in self.records else "interface" if base in self.ifaces else base
         return Type(kind, 0, self.fopt(fd), base if kind in ("record", "interface") else "")
@@ -290,8 +302,10 @@ class Compiler:
                 self.methods[(name, fname)] = f
                 self.cnames[id(f)] = f"f_{name}__{fname}"
             for fd in r.fields:
-                if not isinstance(fd.type, str):                            # a map or set field
-                    self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type})", line=fd.line)
+                if not isinstance(fd.type, str):                            # a map or set field: empty at first
+                    if self.fcoll(fd) is None or fd.dims is not None or fd.allocatable or fd.init is not None:
+                        self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type})", line=fd.line)
+                    continue
                 base = self.fbase(fd)
                 iface = base in self.all_ifaces
                 if fd.allocatable or (base not in KINDS and base != "string" and base not in todo and not iface):
@@ -324,7 +338,7 @@ class Compiler:
         for name in todo:
             visit(name)
         for name in self.rec_order:                                   # holds text, directly or in a record it holds
-            self.deep[name] = any(fd.type == "string" or self.deep.get(fd.type) for fd in self.records[name].fields)
+            self.deep[name] = any(fd.type == "string" or self.fcoll(fd) is not None or self.deep.get(fd.type) for fd in self.records[name].fields)
 
     def check_interfaces(self):
         """An interface value holds one of the records that fit the interface (tagged by its place in the list); its functions
@@ -410,7 +424,7 @@ class Compiler:
                 self.has_iface[n] = bool(self.has_iface.get(base))
             else:
                 fields = self.records[n].fields
-                self.deep[n] = any(self.fbase(fd) == "string" or self.deep.get(self.ftype(fd)) for fd in fields)
+                self.deep[n] = any(self.fbase(fd) == "string" or self.fcoll(fd) is not None or self.deep.get(self.ftype(fd)) for fd in fields)
                 self.has_iface[n] = any(self.fbase(fd) in self.ifaces or self.has_iface.get(self.ftype(fd)) for fd in fields)
 
     def iface_function(self, iname, fname):
@@ -635,6 +649,18 @@ class Compiler:
             elif kind is Assign:
                 root = s.target
                 self.opt_ok.update((id(root), id(s.value)))
+                if isinstance(root, FieldAccess) and (self.map_sub_type(root) is not None or self.is_coll_var(root)):
+                    rn = self.root_name(root)
+                    if rn in fixed:
+                        self.refuse(f"an assignment to a field of the parameter '{rn}'", s)
+                    if self.map_sub_type(root) is not None:             # r.m[key] = value
+                        mt = self.map_sub_type(root)
+                        self.key_ok(mt, root.args[0], s)
+                        self.value_ok(mt, s.value, s)
+                    else:
+                        self.coll_ok_nodes.add(id(root))
+                        self.check_coll_value(s.value, self.types[id(root)], s)
+                    continue
                 if isinstance(root, FieldAccess):
                     name = self.field_root(root, s)
                     if self.types.get(id(root)) is None or not self.kind_ok(self.types[id(root)]):
@@ -852,7 +878,7 @@ class Compiler:
             if pt is not None and pt.kind in COLLECTIONS:        # a map or set: a variable (or, for `in`, a literal) of the same type
                 if intent == "in":
                     self.check_coll_value(a, pt, node)
-                elif not self.is_coll_var(a) or at is None or at.kind != pt.kind or at.args != pt.args or a.name in self.fixed_names:
+                elif not self.is_coll_var(a) or at is None or at.kind != pt.kind or at.args != pt.args or self.root_name(a) in self.fixed_names:
                     self.refuse(f"the call of '{f.name}' with an argument that is not a variable of the type the parameter takes", node)
                 else:
                     self.coll_ok_nodes.add(id(a))
@@ -907,6 +933,10 @@ class Compiler:
                 self.field_root(a, s)
             if intent == "out" and (self.param_type(typ) or Type("int")).kind in ("record", "interface", "string"):
                 self.refuse("a record or text passed as out", s)
+            if intent in ("out", "inout") and (
+                    (isinstance(a, Apply) and a.bracket and a.name in self.vtypes and self.vtypes[a.name].kind in COLLECTIONS)
+                    or self.map_sub_type(a) is not None):
+                self.refuse(f"an entry of a map passed as {intent}", s)
             if intent in ("out", "inout") and isinstance(a, Apply) and any(isinstance(x, Slice) for x in a.args):
                 self.refuse(f"a section of '{a.name}' passed as {intent}", s)
         for (typ, pname, intent), root in zip(f.params, roots):
@@ -959,10 +989,41 @@ class Compiler:
         return {d.name for d in statements_in(body) if isinstance(d, Decl) and d.allocatable}
 
     # -- maps and sets ----------------------------------------------------------------------------------------------
+    def chain_ok(self, b):
+        """Is `b` a plain variable of this procedure holding a record, or a chain of plain record fields of one?"""
+        while isinstance(b, FieldAccess):
+            bt = self.types.get(id(b))
+            if b.args is not None or b.chain or bt is None or bt.optional or bt.kind != "record" or bt.rank != 0:
+                return False
+            b = b.base
+        bt = self.types.get(id(b))
+        return isinstance(b, Var) and b.name in self.locals_of_body and b.name not in self.typevars and bt is not None \
+            and bt.kind == "record" and bt.rank == 0 and not bt.optional
+
     def is_coll_var(self, e):
-        """Is `e` the name of a map or set that is a parameter or declared variable of this procedure?"""
+        """Is `e` a map or set that is a parameter or declared variable of this procedure, or a field of one of its records?"""
+        if isinstance(e, FieldAccess):
+            t = self.types.get(id(e))
+            return e.args is None and not e.chain and t is not None and t.kind in COLLECTIONS and t.rank == 0 \
+                and not t.optional and self.chain_ok(e.base)
         return isinstance(e, Var) and e.name in self.locals_of_body and self.vtypes.get(e.name) is not None \
             and self.vtypes[e.name].kind in COLLECTIONS
+
+    def coll_type(self, e):
+        return self.types[id(e)] if isinstance(e, FieldAccess) else self.vtypes[e.name]
+
+    def map_sub_type(self, e):
+        """For `r.m[key]` (a subscripted map field of a record): the map's Type, else None."""
+        if not (isinstance(e, FieldAccess) and e.bracket and e.args is not None and not e.chain and len(e.args) == 1):
+            return None
+        bt = self.types.get(id(e.base))
+        if bt is None or bt.kind != "record" or bt.rank != 0 or bt.optional or not self.chain_ok(e.base):
+            return None
+        for fd in self.records[bt.name].fields:
+            if fd.name == e.field:
+                t = self.fcoll(fd)
+                return t if t is not None and t.kind == "map" else None
+        return None
 
     def key_ok(self, ct, node, where):
         """The key `node` is of the kind the collection `ct` takes (anything else is a run-time error in the interpreter)."""
@@ -1006,9 +1067,9 @@ class Compiler:
         if len(s.args) != 2 or not marks[0] or marks[1]:
             self.refuse(f"a call of '{s.name}' that the interpreter rejects", s)
         first = s.args[0]
-        if not self.is_coll_var(first) or first.name in self.fixed_names:
+        if not self.is_coll_var(first) or self.root_name(first) in self.fixed_names:
             self.refuse(f"'{s.name}' of anything but a map or set variable that this procedure may change", s)
-        ct = self.vtypes[first.name]
+        ct = self.coll_type(first)
         if s.name == "add" and ct.kind != "set":
             self.refuse("add of a map (a map gets entries with m[key] = value)", s)
         self.coll_ok_nodes.add(id(first))
@@ -1019,7 +1080,7 @@ class Compiler:
         src = s.source
         st = self.types.get(id(src))
         if self.is_coll_var(src):
-            ct = self.vtypes[src.name]
+            ct = self.coll_type(src)
             self.coll_ok_nodes.add(id(src))
             kinds_ = [ct.args[0]] + ([ct.args[1]] if ct.kind == "map" else [])
         elif st is not None and st.rank >= 1 and st.kind in ("int", "int32", "real", "real32", "logical"):
@@ -1039,7 +1100,7 @@ class Compiler:
         need = {"has": 2, "get": 2, "keys": 1, "values": 1, "size": 1}[name]
         if len(e.args) != need or not self.is_coll_var(e.args[0]):
             self.refuse(f"{name}() of anything but a map or set variable", e)
-        ct = self.vtypes[e.args[0].name]
+        ct = self.coll_type(e.args[0])
         self.coll_ok_nodes.add(id(e.args[0]))
         if name in ("get", "values") and ct.kind != "map":
             self.refuse(f"{name}() of a set", e)
@@ -1092,6 +1153,15 @@ class Compiler:
             t = self.types.get(id(e))
             if not self.kind_ok(t):
                 self.refuse(f"a result of type {t if t is not None else 'unknown'}", e)
+            return
+        if kind is FieldAccess and self.map_sub_type(e) is not None:             # r.m[key]
+            self.key_ok(self.map_sub_type(e), e.args[0], e)
+            return
+        if kind is FieldAccess and t0 is not None and t0.kind in COLLECTIONS:     # r.m (used where its place is handled)
+            if not self.is_coll_var(e):
+                self.refuse("a map or set field of anything but a variable's record", e)
+            if id(e) not in self.coll_ok_nodes:
+                self.refuse("a map or set used in an expression", e)
             return
         if kind is FieldAccess and not self.is_method_call(e) and self.types.get(id(e.base)) is not None and self.types[id(e.base)].optional:
             if self.dotted(e.base) is None:
@@ -1238,6 +1308,10 @@ class Compiler:
         by_name = {f.name: f for f in r.fields}
         for fname, a in zip(given, pos + named):
             value = a.value if isinstance(a, NamedArg) else a
+            fc = self.fcoll(by_name[fname])
+            if fc is not None:
+                self.check_coll_value(value, fc, e)
+                continue
             ft = self.fbase(by_name[fname])
             if by_name[fname].dims is not None:
                 self.refuse(f"a call of {e.name}() giving the array field '{fname}'", e)
@@ -1554,6 +1628,10 @@ class Compiler:
                 self.emit(f"rt_check_index({i}, {self.field_size(self.types[id(e.base)].name, e.field)}, 1, 1, {self.line});")
                 place += f"[{i} - 1]"
             return V(ft, self.tmp(cscalar(ft), place))
+        if t is FieldAccess and self.map_sub_type(e) is not None:
+            return self.map_read(e)
+        if t is FieldAccess and self.types[id(e)].kind in COLLECTIONS:         # r.m: the map itself, in place
+            return V(self.types[id(e)], self.field_lvalue(e))
         if t is FieldAccess:
             ft = self.types[id(e)]
             if self.field_source(e, e) is None:                    # a field of what a call gives
@@ -1877,7 +1955,7 @@ class Compiler:
         for a, (typ, pname, intent) in zip(args, f.params):
             pt = self.param_type(typ)
             if pt.kind in COLLECTIONS:                       # passed by address (an `in` literal is built first)
-                out.append("&" + (self.coll_value(a, pt) if intent == "in" else self.vars[a.name][1]))
+                out.append("&" + (self.coll_value(a, pt) if intent == "in" else self.coll_ref(a)[1]))
                 continue
             if intent in ("inout", "out") and pt.rank == 0:
                 if isinstance(a, Var) and a.name in self.outs and intent == "inout":     # an unassigned out parameter is read
@@ -1947,6 +2025,9 @@ class Compiler:
         for fname, a in zip(names[:len(pos)] + [a.name for a in named], pos + named):
             value = a.value if isinstance(a, NamedArg) else a
             ftp = self.field_type(by_name[fname])
+            if ftp.kind in COLLECTIONS:
+                self.emit(f"rt_map_set(&{res}.m_{fname}, &{self.coll_value(value, ftp)}, {self.line});")
+                continue
             atom = self.typed(value, ftp, f"field '{fname}' of {e.name}")
             self.store(f"{res}.m_{fname}", atom, skind(ftp))
         if self.deep[e.name]:
@@ -2661,11 +2742,22 @@ class Compiler:
             self.emit(f"rt_map_put(&{name}, {kc}, {vc}, {line});")
         return name
 
+    def coll_ref(self, e):
+        """(Type, C lvalue, name in messages) of the map or set `e` stands for: a variable, `r.m` (a field), or either one
+        subscripted (`age["ann"]`, `r.m["ann"]`: then the map itself)."""
+        if isinstance(e, Apply):
+            return self.vars[e.name][0], self.vars[e.name][1], e.name
+        if isinstance(e, Var):
+            return self.vars[e.name][0], self.vars[e.name][1], e.name
+        if e.args is not None:                                            # r.m[key]
+            return self.map_sub_type(e), f"{self.field_lvalue(e.base)}.m_{e.field}", f"{self.dotted(e.base)}.{e.field}"
+        return self.types[id(e)], self.field_lvalue(e), self.dotted(e)
+
     def map_read(self, e):
         """`age["ann"]`: the value, or the interpreter's error for a key that is not there."""
-        vt, m = self.vars[e.name]
+        vt, m, mname = self.coll_ref(e)
         key = self.key_cell(self.value(e.args[0]), vt)
-        ent = self.tmp("rt_entry *", f'rt_map_at(&{m}, {key}, "{e.name}", {self.line})')
+        ent = self.tmp("rt_entry *", f'rt_map_at(&{m}, {key}, "{mname}", {self.line})')
         want = vt.args[1]
         if want == "string":
             return V(Type("string"), self.tmp_str(f"rt_str_copy({ent}->val.s, {self.line})"))
@@ -2674,7 +2766,7 @@ class Compiler:
     def coll_builtin(self, e):
         """has, get, size, keys and values of a map or set variable."""
         name, line = e.name, self.line
-        t, m = self.vars[e.args[0].name]
+        t, m, _ = self.coll_ref(e.args[0])
         if name == "size":
             return V(Type("int"), self.tmp("int64_t", f"{m}.size"))
         if name == "has":
@@ -2792,6 +2884,16 @@ class Compiler:
     def st_assign(self, s):
         line = self.line
         target = s.target
+        if isinstance(target, FieldAccess) and self.map_sub_type(target) is not None:      # r.m[key] = value
+            t, m, _ = self.coll_ref(target)
+            val = self.val_cell(self.value(s.value), t)
+            key = self.key_cell(self.value(target.args[0]), t)
+            self.emit(f"rt_map_put(&{m}, {key}, {val}, {line});")
+            return
+        if isinstance(target, FieldAccess) and self.types[id(target)].kind in COLLECTIONS:   # r.m = other
+            t, m, _ = self.coll_ref(target)
+            self.emit(f"rt_map_set(&{m}, &{self.coll_value(s.value, t)}, {line});")
+            return
         if isinstance(target, FieldAccess):
             ft = self.types[id(target)]
             lv = self.field_lvalue(target)
@@ -3231,12 +3333,12 @@ class Compiler:
 
     def st_call(self, s):
         if self.is_coll_call(s):
-            t, m = self.vars[s.args[0].name]
+            t, m, mname = self.coll_ref(s.args[0])
             key = self.key_cell(self.value(s.args[1]), t)
             if s.name == "add":
                 self.emit(f"rt_map_put(&{m}, {key}, rt_ki(0), {s.line});")
             else:
-                self.emit(f'rt_map_remove(&{m}, {key}, "{s.args[0].name}", {s.line});')
+                self.emit(f'rt_map_remove(&{m}, {key}, "{mname}", {s.line});')
             return
         f, nodes = self.call_target(s)
         if f.ret is not None:
@@ -3384,6 +3486,8 @@ class Compiler:
 
     def field_ctype(self, fd):
         t = self.ftype(fd)
+        if self.fcoll(fd) is not None:
+            return "rt_map"
         return f"r_{t}" if t in self.records or t in self.ifaces or t.startswith(OPT) else CSCALAR[t]
 
     def field_size(self, rec, field):
@@ -3403,11 +3507,14 @@ class Compiler:
             free, copy = [], []
             for fd in r.fields:
                 ft = self.ftype(fd)
-                own = ft == "string" or self.deep.get(ft)
+                own = ft == "string" or self.deep.get(ft) or self.fcoll(fd) is not None
                 if not own:
                     continue
                 m = f"m_{fd.name}"
-                if ft == "string":
+                if self.fcoll(fd) is not None:
+                    free.append(f"rt_map_free(&r->{m});")
+                    copy.append(f"memset(&r.{m}, 0, sizeof r.{m}); rt_map_copy(&r.{m}, &a.{m}, 0);")
+                elif ft == "string":
                     free.append(f"rt_free_str(&r->{m});")
                     copy.append(f"r.{m} = rt_str_new(rt_cs(a.{m}), a.{m}.n, 0);")
                 elif fd.dims:
@@ -3425,6 +3532,11 @@ class Compiler:
         body = []
         for fd in r.fields:
             m = f"r.m_{fd.name}"
+            fc = self.fcoll(fd)
+            if fc is not None:
+                kk, vk = KEYKINDS[fc.args[0]], VALKINDS[fc.args[1]] if fc.kind == "map" else -1
+                body.append(f"memset(&{m}, 0, sizeof {m}); {m}.kk = {kk}; {m}.vk = {vk};")
+                continue
             if self.ftype(fd) in self.records or self.ftype(fd) in self.ifaces or self.fopt(fd):
                 value = f"d_{self.ftype(fd)}()"
             elif fd.init is not None:
@@ -3441,7 +3553,8 @@ class Compiler:
         parts = []
         for i, fd in enumerate(r.fields):
             ft = self.ftype(fd)
-            writer = f"w_{ft}" if ft in self.records or ft in self.ifaces or self.fopt(fd) else WRITERS[ft]
+            writer = "rt_write_collection" if self.fcoll(fd) is not None else \
+                f"w_{ft}" if ft in self.records or ft in self.ifaces or self.fopt(fd) else WRITERS[ft]
             label = f'rt_write_str({c_string((", " if i else "") + fd.name + "=")});'
             if fd.dims:
                 parts.append(f'{label} rt_write_str("["); for (int i = 0; i < {fd.dims[0].value}; i++) {{ if (i) rt_write_str(", "); '

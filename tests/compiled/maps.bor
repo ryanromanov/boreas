@@ -15,6 +15,12 @@ subroutine tally(inout map[string, int] :: count, string :: word)
   @count[word] = (get(count, word) ?? 0) + 1
 end subroutine
 
+record shelf
+  string :: name = "fiction"
+  map[string, int] :: stock
+  set[string] :: tags
+end record
+
 program maps
   map[string, int] :: count
   set[string] :: seen
@@ -40,4 +46,11 @@ program maps
 
   map[int, logical] :: flags = {1: true, 2: false}
   println(flags, keys(flags), values(flags))
+
+  shelf :: a
+  a.stock["dune"] = 3                       ! a record's maps start empty and work like variables
+  call add(@a.tags, "scifi")
+  shelf :: b = a                            ! copying the record copies its maps
+  b.stock["dune"] = 9
+  println(a, b.stock["dune"], has(a.tags, "scifi"))
 end program maps
