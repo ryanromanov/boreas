@@ -40,10 +40,12 @@ CONSTANTS = {"huge", "epsilon", "tiny"}
 SPECIALS = {"nan", "infinity"}                       # take nothing, give a real
 FLOATTESTS = {"isnan", "isinf"}
 OTHERS = {"norm2"}
+BESSEL = {"bessel_j0": "j0", "bessel_j1": "j1", "bessel_y0": "y0", "bessel_y1": "y1", "bessel_jn": "jn", "bessel_yn": "yn"}   # the C library's
+SYSTEM = {"exists", "argument_count", "argument"}      # the file system and the command line
 COLLFUNCS = {"has", "get", "keys", "values"}        # of a map or set
 ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "findloc", "cshift", "lbound", "ubound", "pack", "spread"}
 BUILTINS |= STRFUNCS | FORMATFUNCS
-BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS | OTHERS | COLLFUNCS
+BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS | OTHERS | COLLFUNCS | set(BESSEL) | SYSTEM
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
                "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
                "acosh": "acoshf", "erf": "erff", "erfc": "erfcf"}
@@ -1499,7 +1501,7 @@ class Compiler:
                     at = self.types.get(id(a))
                     if isrec(at) and at.rank == 1 and e.name == "size":
                         continue
-                    if at is not None and (isrec(at) or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS | COLLFUNCS)):
+                    if at is not None and (isrec(at) or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS | COLLFUNCS | SYSTEM)):
                         self.refuse(f"{'a record' if at.kind == 'record' else 'text'} as an argument of '{e.name}'", e)
                 if any(isinstance(a, NamedArg) for a in e.args):
                     self.refuse(f"a named argument of {e.name}()", e)
@@ -1574,6 +1576,25 @@ class Compiler:
         if name in ("scientific", "general") and len(args) == 4 and not (isinstance(args[3], Str) and args[3].value == "fortran"):
             self.refuse(f"{name}() with a style other than \"fortran\"", e)
 
+    def check_system_function(self, e):
+        """bessel_*, exists, argument and argument_count: exactly the arguments each takes (anything else is an error of the interpreter's)."""
+        name, ts = e.name, [self.types[id(a)] for a in e.args]
+        if any(t.rank != 0 or t.optional for t in ts):
+            self.refuse(f"{name}() of an array or an optional value", e)
+        whole = lambda t: t.kind in ("int", "int32")
+        if name in BESSEL:
+            need = 2 if name in ("bessel_jn", "bessel_yn") else 1
+            if len(ts) != need or not all(t.kind in ("int", "int32", "real") for t in ts) or (need == 2 and not whole(ts[0])):
+                self.refuse(f"{name}() with arguments that are not a whole-number order and a real number", e)
+        elif name == "exists":
+            if len(ts) != 1 or ts[0].kind != "string":
+                self.refuse("exists() of anything but a text", e)
+        elif name == "argument_count":
+            if ts:
+                self.refuse("argument_count() with an argument", e)
+        elif len(ts) != 1 or not (isinstance(e.args[0], Num) and type(e.args[0].value) is int and e.args[0].value >= 1):
+            self.refuse("argument() of anything but a literal position from 1 (argument(0) is the program's name, which differs)", e)
+
     def check_builtin(self, e):
         name = e.name
         if name == "allocated":
@@ -1585,6 +1606,9 @@ class Compiler:
             self.check_coll_builtin(e)
             return
         ranks = [self.types[id(a)].rank for a in e.args]
+        if name in BESSEL or name in SYSTEM:
+            self.check_system_function(e)
+            return
         if name in STRFUNCS:
             self.check_string_function(e)
             return
@@ -2719,11 +2743,34 @@ class Compiler:
             return V(Type("real32"), self.tmp("float", f"rt_r32({r}, {line})"))
         return V(Type("real"), self.tmp("double", r))
 
+    def system_function(self, e):
+        name, line = e.name, self.line
+        vals = [self.value(a) for a in e.args]
+        if name == "exists":
+            return V(Type("logical"), self.tmp("bool", f"rt_exists({vals[0].atom})"))
+        if name == "argument_count":
+            return V(Type("int"), self.tmp("int64_t", "(int64_t)(rt_argc - 1)"))
+        if name == "argument":
+            return V(Type("string"), self.tmp_str(f"rt_argument({e.args[0].value}, {line})"))
+        x = vals[-1]
+        xd = self.cast(x.atom, x.t.kind, "real")
+        was = 1 if x.t.kind in ("int", "int32") else 0
+        if len(vals) == 2:                                        # jn(n, x): n as a C int, as the interpreter passes it
+            n = self.tmp("int64_t", self.cast(vals[0].atom, vals[0].t.kind, "int"))
+            call = f"{BESSEL[name]}((int){n}, {xd})"
+            has_n = "true"
+        else:
+            n, call, has_n = "0", f"{BESSEL[name]}({xd})", "false"
+        r = f'rt_bessel("{name}", {call}, {"true" if name[7] == "y" else "false"}, {has_n}, {n}, {xd}, {was}, {line})'
+        return V(Type("real"), self.tmp("double", r))
+
     def builtin(self, e):
         line, name = self.line, e.name
         if name in COLLFUNCS or (name == "size" and (self.types[id(e.args[0])].kind in COLLECTIONS or self.entry_map(e.args[0]) is not None
                                                      and self.entry_map(e.args[0]).args[1].startswith("set["))):
             return self.coll_builtin(e)
+        if name in BESSEL or name in SYSTEM:
+            return self.system_function(e)
         if name == "present":                                     # is there a value (a plain value always is)
             v = self.value(e.args[0])
             return V(Type("logical"), self.tmp("bool", f"{v.atom}.has" if v.t.optional else "false" if v.t.kind == "null" else "true"))
@@ -4047,7 +4094,7 @@ class Compiler:
         self.emit("fflush(stdout);")
         self.emit("return 0;")
         inits = [f"    {self.global_init(g)}" for g in self.globals.values() if g is not None]
-        main = ["int main(void) {"] + inits + self.lines + ["}"]
+        main = ["int main(int argc, char **argv) {", "    rt_argc = argc; rt_argv = argv;"] + inits + self.lines + ["}"]
         runtime = open(os.path.join(HERE, "cruntime.h")).read()
         flags = []
         if self.release:
