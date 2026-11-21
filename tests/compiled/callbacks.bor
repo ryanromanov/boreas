@@ -1,0 +1,60 @@
+! Procedure parameters (callbacks): a function or subroutine passed by name, called inside, passed on
+function square(real :: x) -> real
+  return x * x
+end function
+
+function cube(real :: x) -> real
+  return x * x * x
+end function
+
+function integrate(function(real :: x) -> real :: f, real :: a, real :: b) -> real
+  int :: i
+  real :: s = 0.0
+  do i = 0, 99
+    s = s + f(a + (b - a) * real(i) / 100.0)
+  end do
+  return s / 100.0
+end function
+
+function bounds(real :: x) -> (real :: lo, real :: hi)
+  return x - 1.0, x + 1.0
+end function
+
+function width(function(real :: x) -> (real :: lo, real :: hi) :: g, real :: at) -> real
+  real :: lo
+  real :: hi
+  (lo, hi) = g(at)
+  return hi - lo
+end function
+
+function sumsq(real[] :: v) -> real
+  return sum(v * v)
+end function
+
+function reduce(function(real[]) -> real :: f, real[] :: v) -> real
+  return f(v)
+end function
+
+function relay(function(real[]) -> real :: g, real[] :: v) -> real
+  return reduce(g, v)
+end function
+
+subroutine bump(inout int :: n)
+  @n = n + 1
+end subroutine
+
+subroutine times(int :: k, subroutine(inout int) :: cb, inout int :: n)
+  int :: i
+  do i = 1, k
+    call cb(@n)
+  end do
+end subroutine
+
+program callbacks
+  int :: n = 0
+  println(integrate(square, 0.0, 1.0), integrate(cube, 0.0, 1.0))
+  println(width(bounds, 3.0))
+  println(reduce(sumsq, [1.0, 2.0, 3.0]), relay(sumsq, [3.0, 4.0]))
+  call times(5, bump, @n)
+  println(n)
+end program callbacks

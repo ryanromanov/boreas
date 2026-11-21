@@ -15,7 +15,7 @@ import sys
 import subprocess
 import tempfile
 from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, CollLit, Comment, Cycle, Deallocate, Decl, Do, DoEach, DoWhile, MapType, SetType, Exit, FieldAccess, If, IsType,
-                     MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType, Select, SelectExpr, Arm, literal_value, NOT_LITERAL, Null, MultiAssign, ResultList, ReturnMany)
+                     MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType, Select, SelectExpr, Arm, literal_value, NOT_LITERAL, Null, MultiAssign, ResultList, ReturnMany, ProcType, signature_of)
 from .effects import mark_problem
 from .interp import conformance
 from .tree import statements_in, walk
@@ -130,6 +130,16 @@ def c_string(text):
     return '"' + "".join(out) + '"'
 
 
+class ProcFn:
+    """A procedure parameter (`function(real :: x) -> real :: f`) as the compiler sees a callee: what the signature says, called
+    through the pointer the parameter holds."""
+
+    def __init__(self, name, ptype):
+        self.name, self.ptype = name, ptype
+        self.params = [(t, f"a{i}", intent) for i, (t, intent) in enumerate(ptype.params)]
+        self.ret, self.is_sub, self.body = ptype.ret, ptype.is_sub, []
+
+
 class Pre:
     """A value that is already computed (one result of an unpacking), standing where an expression would."""
     __slots__ = ("v",)
@@ -170,6 +180,8 @@ class Compiler:
         self.type_order = []            # records and interfaces, each after the types it is made of
         self.has_iface = {}             # name -> can a value of it hold an interface value (which may have no value yet)
         self.optionals = []             # the types of which an optional value is used
+        self.procs = {}                 # each procedure parameter's signature (a ProcType) -> its number
+        self.procs_here = {}            # the procedure parameters of the procedure being written
         self.multi = {}                 # each unpacking -> its (assignment, value, result number)
         self.deep = {}                  # record name -> does it own text (so that copying and freeing it take work)
 
@@ -243,6 +255,8 @@ class Compiler:
     def set_scope(self, f):
         """From now on write the procedure `f` (None: the program), with what it can see."""
         self.scope = self.interp.scopes.get(id(f)) if f is not None else self.interp.program_scope
+        self.procs_here = {pname: ProcFn(pname, typ) for typ, pname, _ in (f.params if f is not None else ())
+                           if isinstance(typ, ProcType)}
         self.bad_globals = {name for name, slot in (self.scope.consts.items() if self.scope is not None else ())
                             if self.global_for(name, slot) is None}
 
@@ -256,7 +270,10 @@ class Compiler:
             self.refuse(f"the record or interface '{base}', which is not defined or imported here", node)
 
     def fn(self, name):
-        """The procedure `name` stands for in the procedure being written (its own, or one it imported)."""
+        """The procedure `name` stands for in the procedure being written (its own, or one it imported); a procedure parameter
+        of that name comes first."""
+        if name in self.procs_here:
+            return self.procs_here[name]
         return self.scope.funcs.get(name) if self.scope is not None else self.unit.functions.get(name)
 
     def global_for(self, name, slot):
@@ -509,6 +526,48 @@ class Compiler:
                     self.visible(f.ret, None)
             self.check_body((f.body if f else u.program.body), f)
 
+    def proc_type(self, ptype):
+        """The Type of a procedure parameter: the number of its signature; None when a type in it is not handled (a procedure
+        taking a procedure, a result that is not a number, array, map, set, record or several numbers)."""
+        pf = ProcFn("", ptype)
+        for typ, _, intent in pf.params:
+            t = self.param_type(typ)
+            if t is None or t.kind == "proc":
+                return None
+        if pf.ret is not None:
+            if isinstance(pf.ret, ResultList):
+                if any((self.param_type(x) or Type("proc")).kind not in KINDS or self.param_type(x).rank != 0 or self.param_type(x).optional
+                       for x in pf.ret.types if isinstance(x, str)) or not all(isinstance(x, str) for x in pf.ret.types):
+                    return None
+            else:
+                rt = self.param_type(pf.ret)
+                if rt is None or rt.kind == "proc" or (rt.rank != 0 and (rt.kind not in KINDS or rt.optional)):
+                    return None
+        if ptype not in self.procs:
+            self.procs[ptype] = len(self.procs)
+        return Type("proc", 0, False, f"pt{self.procs[ptype]}")
+
+    def res_name(self, f):
+        """The C struct several results come back in: named by the kinds, so any two functions that agree on them share one."""
+        return "res_" + "_".join(t.kind for t in self.multi_types(f))
+
+    def ret_ctype(self, f):
+        """The C type a procedure gives back."""
+        if f.ret is None:
+            return "void"
+        if isinstance(f.ret, ResultList):
+            return self.res_name(f)
+        rt = self.param_type(f.ret)
+        return f"rt_{akind(rt)}_arr" if rt.rank != 0 else cscalar(rt)
+
+    def callee_text(self, f):
+        """The C text that calls `f` (a procedure parameter is called through its pointer)."""
+        return f"{self.vars[f.name][1]}.fn" if isinstance(f, ProcFn) else self.cnames[id(f)]
+
+    def callee_label(self, f):
+        """The name a call reports (C text): the callee's own, which for a procedure parameter is only known at run time."""
+        return f"{self.vars[f.name][1]}.name" if isinstance(f, ProcFn) else c_string(f.name)
+
     def multi_types(self, f):
         """The Types of the results of `f` (`-> (int :: q, real :: r)`): single numbers and logicals, in a function that is not a
         record's or interface's."""
@@ -525,6 +584,8 @@ class Compiler:
     def param_type(self, typ):
         """The Type of a parameter or result written `real`, `int[]`, `real[,]`, or None when it is not handled."""
         from .types import parse
+        if isinstance(typ, ProcType):
+            return self.proc_type(typ)
         if isinstance(typ, (MapType, SetType)):
             t = parse(typ)
             return t if self.coll_ok(t) else None
@@ -717,8 +778,8 @@ class Compiler:
     def check_multi(self, s, fixed, body, f):
         """`(q, @r, _) = f(x)`: a call of a function that gives back several numbers, each result then assigned like a single one."""
         call = s.value
-        if not (isinstance(call, Apply) and not call.bracket and not call.chain and call.name not in self.locals_of_body
-                and self.fn(call.name) is not None):
+        if not (isinstance(call, Apply) and not call.bracket and not call.chain and self.fn(call.name) is not None
+                and (call.name not in self.locals_of_body or isinstance(self.fn(call.name), ProcFn))):
             self.refuse("an unpacking of anything but a call of a function", s)
         callee = self.fn(call.name)
         if not isinstance(callee.ret, ResultList):
@@ -949,6 +1010,17 @@ class Compiler:
             self.refuse("a field of a computed value or of an element", node)
         return e.name
 
+    def check_proc_arg(self, a, want, node):
+        """What a call passes for a procedure parameter: the name of a procedure (or of a procedure parameter of its own) whose
+        signature is exactly the parameter's, as the interpreter requires."""
+        src = self.fn(a.name) if isinstance(a, Var) else None
+        if src is None or (a.name in self.locals_of_body and not isinstance(src, ProcFn)):
+            self.refuse("an argument for a procedure parameter that is not the name of a procedure", node)
+        sig = src.ptype if isinstance(src, ProcFn) else signature_of(src)
+        if sig != want:
+            self.refuse("a procedure whose signature is not the parameter's", node)
+        self.skip.add(id(a))
+
     def check_call_args(self, f, args, node):
         for a, (typ, _, intent) in zip(args, f.params):
             at, pt = self.types.get(id(a)), self.param_type(typ)
@@ -956,6 +1028,9 @@ class Compiler:
                 if intent != "in":
                     self.refuse(f"the call of '{f.name}' with an optional value passed as {intent}", node)
                 self.check_store(a, pt, node)
+                continue
+            if pt is not None and pt.kind == "proc":             # a procedure parameter: the bare name of a procedure of exactly that signature
+                self.check_proc_arg(a, typ, node)
                 continue
             if pt is not None and pt.kind in COLLECTIONS:        # a map or set: a variable (or, for `in`, a literal) of the same type
                 if intent == "in":
@@ -2100,6 +2175,13 @@ class Compiler:
         self.after_call = []
         for a, (typ, pname, intent) in zip(args, f.params):
             pt = self.param_type(typ)
+            if pt.kind == "proc":                            # the function's address with its name (or the parameter passed on)
+                src = self.fn(a.name)
+                if isinstance(src, ProcFn):
+                    out.append(self.vars[a.name][1])
+                else:
+                    out.append(f"(({pt.name}){{&{self.cnames[id(src)]}, {c_string(src.name)}}})")
+                continue
             if pt.kind in COLLECTIONS:                       # passed by address (an `in` literal is built first)
                 out.append("&" + (self.coll_value(a, pt) if intent == "in" else self.coll_ref(a)[1]))
                 continue
@@ -2345,9 +2427,9 @@ class Compiler:
         if not self.arity_ok(f, len(nodes)):
             raise NotCompiled(f"a call of '{f.name}' with missing arguments", line)
         args = self.call_args(f, nodes)
-        self.emit(f'rt_call_in({line}, "{f.name}");')
+        self.emit(f'rt_call_in({line}, {self.callee_label(f)});')
         rt = self.param_type(f.ret)
-        call = f"{self.cnames[id(f)]}({', '.join(args)})"
+        call = f"{self.callee_text(f)}({', '.join(args)})"
         if rt.rank != 0:                                           # an array: a temporary that owns it
             result = self.tmp_array(akind(rt), rt.rank)
             self.emit(f"{result} = {call};")
@@ -3509,8 +3591,8 @@ class Compiler:
         if not self.arity_ok(f, len(call.args)):
             raise NotCompiled(f"a call of '{f.name}' with missing arguments", s.line)
         args = self.call_args(f, call.args)
-        self.emit(f'rt_call_in({s.line}, "{f.name}");')
-        res = self.tmp(f"res_{self.cnames[id(f)]}", f"{self.cnames[id(f)]}({', '.join(args)})")
+        self.emit(f'rt_call_in({s.line}, {self.callee_label(f)});')
+        res = self.tmp(self.res_name(f), f"{self.callee_text(f)}({', '.join(args)})")
         self.emit("rt_call_out();")
         types = self.multi_types(f)
         for a, pre, i in self.multi[id(s)]:
@@ -3576,8 +3658,8 @@ class Compiler:
             raise NotCompiled(f"a call of '{s.name}' with missing arguments", s.line)
         args = self.call_args(f, nodes)
         after = self.after_call
-        self.emit(f'rt_call_in({s.line}, "{s.name}");')
-        self.emit(f"{self.cnames[id(f)]}({', '.join(args)});")
+        self.emit(f'rt_call_in({s.line}, {self.callee_label(f)});')
+        self.emit(f"{self.callee_text(f)}({', '.join(args)});")
         self.emit("rt_call_out();")
         for text in after:
             self.emit(text)
@@ -3612,7 +3694,9 @@ class Compiler:
         out = []
         for typ, name, intent in f.params:
             t = self.param_type(typ)
-            if t.kind in COLLECTIONS:
+            if t.kind == "proc":
+                out.append(f"{t.name} {c_name(name)}")
+            elif t.kind in COLLECTIONS:
                 out.append(f"rt_map *{c_name(name)}")
             elif t.rank > 0:
                 out.append(f"rt_{akind(t)}_arr {c_name(name)}")
@@ -3694,7 +3778,7 @@ class Compiler:
         self.declare_vars(f.params, f.body)
         many = self.multi_types(f) if isinstance(f.ret, ResultList) else None
         rt = self.param_type(f.ret) if f.ret and many is None else None
-        ctype = f"res_{self.cnames[id(f)]}" if many else f"rt_{akind(rt)}_arr" if rt and rt.rank != 0 else cscalar(rt) if rt else "void"
+        ctype = self.ret_ctype(f)
         head = f"static {ctype} {self.cnames[id(f)]}({self.c_params(f)})"
         self.lines, self.depth, self.line, self.arrays = [], 1, 0, []
         if many:
@@ -3846,10 +3930,19 @@ class Compiler:
                 out.extend(self.optional_block(n[len(OPT):]))
             else:
                 out.extend(self.iface_block(n) if n in self.ifaces else self.record_block(n))
+        done = set()
         for f in all_functions(self):                          # what a function with several results gives back
             if isinstance(f.ret, ResultList):
                 members = " ".join(f"{CSCALAR[t.kind]} m{i};" for i, t in enumerate(self.multi_types(f)))
-                out.append(f"typedef struct {{ {members} }} res_{self.cnames[id(f)]};")
+                if self.res_name(f) not in done:
+                    done.add(self.res_name(f))
+                    out.append(f"typedef struct {{ {members} }} {self.res_name(f)};")
+        for ptype, k in self.procs.items():                    # what a procedure parameter holds: the function and its name
+            pf = ProcFn("", ptype)
+            if isinstance(pf.ret, ResultList) and self.res_name(pf) not in done:
+                done.add(self.res_name(pf))
+                out.append("typedef struct { " + " ".join(f"{CSCALAR[t.kind]} m{i};" for i, t in enumerate(self.multi_types(pf))) + f" }} {self.res_name(pf)};")
+            out.append(f"typedef struct {{ {self.ret_ctype(pf)} (*fn)({self.c_params(pf)}); const char *name; }} pt{k};")
         return out
 
     def optional_block(self, base):
