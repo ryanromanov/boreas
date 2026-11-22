@@ -20,6 +20,9 @@ class InterruptTests(unittest.TestCase):
             p = subprocess.Popen([sys.executable, "-m", "boreas", path], cwd=ROOT, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             self.assertEqual(p.stdout.readline(), "ready\n")      # arrived while the program still runs
+            # The program prints from a worker thread, so "ready" can arrive before the main thread has finished starting it
+            # (and is waiting for it); a Control-C in that instant is not what this test is about. Give it a moment.
+            time.sleep(0.5)
             p.send_signal(signal.SIGINT)
             _, err = p.communicate(timeout=20)
             self.assertEqual(p.returncode, 130)
