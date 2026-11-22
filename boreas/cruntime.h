@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <math.h>
 #include <sys/stat.h>
+#include <errno.h>
 
 typedef __int128 rt_i128;
 
@@ -469,11 +470,13 @@ static inline int32_t rt_narrow32(int64_t v, int line, const char *what) {
     static inline void rt_like_##NAME(rt_##NAME##_arr *a, const int64_t *shape, int rank, int line) {              \
         rt_alloc_##NAME(a, rank, shape[0], rank > 1 ? shape[1] : 1, rank > 2 ? shape[2] : 1, line);                 \
     }
+typedef struct { double re, im; } rt_cx;                 /* a complex number: two doubles (never C's _Complex: Python's arithmetic differs) */
 RT_DEFINE_ARRAY(int, int64_t)
 RT_DEFINE_ARRAY(int32, int32_t)
 RT_DEFINE_ARRAY(real, double)
 RT_DEFINE_ARRAY(real32, float)
 RT_DEFINE_ARRAY(logical, bool)
+RT_DEFINE_ARRAY(complex, rt_cx)
 
 /* a subscript: in range, or the interpreter's message ("in dimension 2" only for a matrix) */
 static inline void rt_check_index(int64_t i, int64_t n, int dim, int rank, int line) {
@@ -559,11 +562,175 @@ static void rt_init_shape_error(const int64_t *init, int ri, const int64_t *shap
             fputc(']', stdout);                                                                                    \
         }                                                                                                          \
     }
+/* ---- complex numbers: CPython's own arithmetic (Objects/complexobject.c, the same in 3.10 to 3.13), step by step ---------
+   The libm functions it calls go through volatile pointers, so that a compiler cannot work a constant out itself. */
+static double (*volatile rt_fp_hypot)(double, double) = hypot;
+static double (*volatile rt_fp_pow)(double, double) = pow;
+static double (*volatile rt_fp_atan2)(double, double) = atan2;
+static double (*volatile rt_fp_exp)(double) = exp;
+static double (*volatile rt_fp_log)(double) = log;
+/* sin and cos of one argument: CPython's complex functions are compiled with the pair fused into one call (clang: __sincos_stret, whose
+   last digit differs from sin() and cos() alone), so the same pair is written here; the argument is opaque so nothing is folded */
+static inline void rt_sincos(double x, double *s, double *c) {
+    double v = x;
+    __asm__ volatile("" : "+m"(v));
+    *s = sin(v);
+    *c = cos(v);
+}
+static inline rt_cx rt_cx_mk(double re, double im) { rt_cx r; r.re = re; r.im = im; return r; }
+static inline rt_cx rt_cx_add(rt_cx a, rt_cx b) { return rt_cx_mk(a.re + b.re, a.im + b.im); }
+static inline rt_cx rt_cx_sub(rt_cx a, rt_cx b) { return rt_cx_mk(a.re - b.re, a.im - b.im); }
+static inline rt_cx rt_cx_neg(rt_cx a) { return rt_cx_mk(-a.re, -a.im); }
+static inline rt_cx rt_cx_conj(rt_cx a) { return rt_cx_mk(a.re, -a.im); }
+static inline rt_cx rt_cx_mul(rt_cx a, rt_cx b) { return rt_cx_mk(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re); }
+static inline bool rt_cx_eq(rt_cx a, rt_cx b) { return a.re == b.re && a.im == b.im; }
+static inline bool rt_cx_eq_real(rt_cx a, double x) { return a.re == x && a.im == 0.0; }
+/* complex == whole number: Python compares the real part (a float) with the integer exactly, when the imaginary part is zero */
+static bool rt_cx_eq_int(rt_cx a, int64_t n) {
+    if (a.im != 0.0) return false;
+    double d = a.re;
+    if (!isfinite(d) || d != floor(d) || fabs(d) >= 9223372036854775808.0) return false;
+    return (int64_t)d == n;
+}
+/* _Py_c_quot: errno = EDOM when the divisor is zero */
+static rt_cx rt_cx_quot(rt_cx a, rt_cx b) {
+    rt_cx r;
+    const double abs_breal = b.re < 0 ? -b.re : b.re;
+    const double abs_bimag = b.im < 0 ? -b.im : b.im;
+    if (abs_breal >= abs_bimag) {
+        if (abs_breal == 0.0) { errno = EDOM; r.re = r.im = 0.0; }
+        else {
+            const double ratio = b.im / b.re;
+            const double denom = b.re + b.im * ratio;
+            r.re = (a.re + a.im * ratio) / denom;
+            r.im = (a.im - a.re * ratio) / denom;
+        }
+    } else if (abs_bimag >= abs_breal) {
+        const double ratio = b.re / b.im;
+        const double denom = b.re * ratio + b.im;
+        r.re = (a.re * ratio + a.im) / denom;
+        r.im = (a.im * ratio - a.re) / denom;
+    } else {
+        r.re = r.im = NAN;
+    }
+    return r;
+}
+static rt_cx rt_cx_div(rt_cx a, rt_cx b, int line) {
+    errno = 0;
+    rt_cx q = rt_cx_quot(a, b);
+    if (errno == EDOM) rt_fail(line, "division by zero");
+    return q;
+}
+/* _Py_c_pow */
+static rt_cx rt_cx_c_pow(rt_cx a, rt_cx b) {
+    rt_cx r;
+    double vabs, len, at, phase;
+    if (b.re == 0. && b.im == 0.) { r.re = 1.; r.im = 0.; }
+    else if (a.re == 0. && a.im == 0.) {
+        if (b.im != 0. || b.re < 0.) errno = EDOM;
+        r.re = 0.; r.im = 0.;
+    } else {
+        vabs = rt_fp_hypot(a.re, a.im);
+        len = rt_fp_pow(vabs, b.re);
+        at = rt_fp_atan2(a.im, a.re);
+        phase = at * b.re;
+        if (b.im != 0.0) {
+            len /= rt_fp_exp(at * b.im);
+            phase += b.im * rt_fp_log(vabs);
+        }
+        double sn, cs;
+        rt_sincos(phase, &sn, &cs);
+        r.re = len * cs;
+        r.im = len * sn;
+    }
+    return r;
+}
+static rt_cx rt_cx_powu(rt_cx x, long n) {
+    rt_cx r = rt_cx_mk(1.0, 0.0), p = x;
+    long mask = 1;
+    while (mask > 0 && n >= mask) {
+        if (n & mask) r = rt_cx_mul(r, p);
+        mask <<= 1;
+        p = rt_cx_mul(p, p);
+    }
+    return r;
+}
+static rt_cx rt_cx_powi(rt_cx x, long n) {
+    if (n > 0) return rt_cx_powu(x, n);
+    return rt_cx_quot(rt_cx_mk(1.0, 0.0), rt_cx_powu(x, -n));
+}
+/* Python's str() of a float (inf, nan, 3.0, 1e+16) and of a complex ((1e+200+0j), 2j), as an error message shows them */
+static const char *rt_py_float(double x, char *buf) {
+    if (x != x) strcpy(buf, "nan");
+    else if (isinf(x)) strcpy(buf, x < 0 ? "-inf" : "inf");
+    else rt_real_text(x, buf);
+    return buf;
+}
+static const char *rt_py_float_nodot(double x, char *buf) {            /* (complex shows 3.0 as 3) */
+    rt_py_float(x, buf);
+    size_t n = strlen(buf);
+    if (n > 2 && buf[n - 2] == '.' && buf[n - 1] == '0') buf[n - 2] = 0;
+    return buf;
+}
+static const char *rt_py_complex(rt_cx z, char *buf) {                 /* buf: 120 bytes */
+    char a[48], b[48];
+    if (z.re == 0.0 && !signbit(z.re)) { snprintf(buf, 120, "%sj", rt_py_float_nodot(z.im, b)); return buf; }
+    rt_py_float_nodot(z.re, a);
+    rt_py_float_nodot(z.im, b);
+    snprintf(buf, 120, "(%s%s%sj)", a, b[0] == '-' ? "" : "+", b);
+    return buf;
+}
+/* an operand in a message: kind 0 a real, 1 a whole number (ia), 2 a complex */
+static const char *rt_py_operand(rt_cx z, int kind, int64_t ia, char *buf) {
+    if (kind == 2) return rt_py_complex(z, buf);
+    if (kind == 1) { snprintf(buf, 120, "%lld", (long long)ia); return buf; }
+    return rt_py_float(z.re, buf);
+}
+/* a ** b the way complex_pow does it, with its errors (and, under `use ieee`, an overflow or a power of zero gives Infinity) */
+static rt_cx rt_cx_pow(rt_cx a, rt_cx b, int ka, int kb, int64_t ia, int64_t ib, int line) {
+    rt_cx p;
+    errno = 0;
+    if (b.im == 0.0 && b.re == floor(b.re) && fabs(b.re) <= 100.0) p = rt_cx_powi(a, (long)b.re);
+    else p = rt_cx_c_pow(a, b);
+    if (p.re == HUGE_VAL || p.re == -HUGE_VAL || p.im == HUGE_VAL || p.im == -HUGE_VAL) { if (errno == 0) errno = ERANGE; }
+    else if (errno == ERANGE) errno = 0;
+    if (errno == EDOM) {
+#ifdef BOREAS_IEEE
+        return rt_cx_mk(INFINITY, 0.0);
+#else
+        rt_fail(line, "division by zero");
+#endif
+    }
+    if (errno == ERANGE) {
+#ifdef BOREAS_IEEE
+        return rt_cx_mk(INFINITY, 0.0);
+#else
+        char x[120], y[120];
+        rt_fail(line, "%s ** %s is too large", rt_py_operand(a, ka, ia, x), rt_py_operand(b, kb, ib, y));
+#endif
+    }
+    return p;
+}
+/* abs(z): _Py_c_abs, with its overflow */
+static double rt_cx_abs(rt_cx z, int line) {
+    double result;
+    if (!isfinite(z.re) || !isfinite(z.im)) {
+        if (isinf(z.re)) return fabs(z.re);
+        if (isinf(z.im)) return fabs(z.im);
+        return NAN;
+    }
+    result = rt_fp_hypot(z.re, z.im);
+    if (!isfinite(result)) rt_fail(line, "abs(): absolute value too large");
+    return result;
+}
+static void rt_write_complex(rt_cx z) { char a[48], b[48]; printf("(%s, %s)", rt_py_float(z.re, a), rt_py_float(z.im, b)); }
+
 RT_DEFINE_WRITE(int, int64_t, rt_write_int)
 RT_DEFINE_WRITE(int32, int32_t, rt_write_int)
 RT_DEFINE_WRITE(real, double, rt_write_real)
 RT_DEFINE_WRITE(real32, float, rt_write_real32)
 RT_DEFINE_WRITE(logical, bool, rt_write_bool)
+RT_DEFINE_WRITE(complex, rt_cx, rt_write_complex)
 
 /* sum and product of whole numbers are worked out exactly and checked once at the end, as the interpreter does */
 static inline void rt_check_range(rt_i128 v, int64_t lo, int64_t hi, const char *name, int bits, int line) {

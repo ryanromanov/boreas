@@ -24,13 +24,16 @@ from .types import Type, NULL
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("int", "int32", "real", "real32", "logical")
-CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool", "string": "rt_str"}
+CKINDS = KINDS + ("complex",)                          # the kinds of a declared value; complex opts in where it is handled
+COMPLEX_OK = {"abs", "real", "aimag", "conjg", "cmplx", "sum", "product", "dot_product", "matmul", "transpose", "reshape", "size",
+              "shape", "flatten"}                      # the built-in functions that take a complex value
+CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool", "string": "rt_str", "complex": "rt_cx"}
 CONVERSIONS = {"to_integer": "int", "to_real": "real", "to_logical": "logical"}      # text to an optional number or logical
 STRFUNCS = {"trim", "upper", "lower", "len", "len_trim", "repeat", "contains", "starts_with", "ends_with", "index", "scan", "verify", "replace", "adjustl", "adjustr", "iachar"} | set(CONVERSIONS)
 FORMATFUNCS = {"text", "tf", "right", "left", "fixed", "scientific", "general"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
             "size", "maxval", "minval", "sum", "product", "matmul", "dot_product", "allocated", "present"}
-ELEMENTAL1 = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real", "real32", "real64", "asin", "acos", "atan",
+ELEMENTAL1 = {"aimag", "conjg", "sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real", "real32", "real64", "asin", "acos", "atan",
               "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "erf", "erfc", "floor", "ceiling", "nint", "aint", "anint",
               "int32", "int64"}
 ELEMENTAL2 = {"atan2", "sign", "modulo", "dim"}
@@ -45,7 +48,7 @@ SYSTEM = {"exists", "argument_count", "argument"}      # the file system and the
 COLLFUNCS = {"has", "get", "keys", "values"}        # of a map or set
 ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "findloc", "cshift", "lbound", "ubound", "pack", "spread"}
 BUILTINS |= STRFUNCS | FORMATFUNCS
-BUILTINS |= ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS | OTHERS | COLLFUNCS | set(BESSEL) | SYSTEM
+BUILTINS |= {"cmplx"} | ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS | OTHERS | COLLFUNCS | set(BESSEL) | SYSTEM
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
                "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
                "acosh": "acoshf", "erf": "erff", "erfc": "erfcf"}
@@ -58,7 +61,7 @@ VALKINDS = {"int": 0, "real": 1, "string": 2, "logical": 3}  # the values a comp
 NESTED = {"set[string]": 4, "set[int]": 4, "int[]": 5, "real[]": 6}   # (or a set, or an array of whole numbers or reals: heap objects it owns)
 VALKINDS.update(NESTED)
 CSCALAR.update(map="rt_map", set="rt_map")
-WRITERS.update(map="rt_write_collection", set="rt_write_collection")
+WRITERS.update(map="rt_write_collection", set="rt_write_collection", complex="rt_write_complex")
 
 
 class NotCompiled(Exception):
@@ -182,6 +185,8 @@ class Compiler:
         self.type_order = []            # records and interfaces, each after the types it is made of
         self.has_iface = {}             # name -> can a value of it hold an interface value (which may have no value yet)
         self.optionals = []             # the types of which an optional value is used
+        self.last_raw = {}              # the value of each node as computed, before any conversion
+        self.pow_ctx = None             # for a complex power: the operands before the conversion
         self.procs = {}                 # each procedure parameter's signature (a ProcType) -> its number
         self.procs_here = {}            # the procedure parameters of the procedure being written
         self.multi = {}                 # each unpacking -> its (assignment, value, result number)
@@ -204,7 +209,7 @@ class Compiler:
             return t.rank in (0, 1) and (t.name in self.records or t.name in self.ifaces)
         if t.kind == "string":
             return t.rank == 0
-        return t.kind in KINDS and 0 <= t.rank <= MAX_RANK
+        return t.kind in CKINDS and 0 <= t.rank <= MAX_RANK
 
     @staticmethod
     def coll_ok(t):
@@ -335,8 +340,10 @@ class Compiler:
                     continue
                 base = self.fbase(fd)
                 iface = base in self.all_ifaces
-                if fd.allocatable or (base not in KINDS and base != "string" and base not in todo and not iface):
+                if fd.allocatable or (base not in CKINDS and base != "string" and base not in todo and not iface):
                     self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type})", line=fd.line)
+                if fd.type == "complex" and fd.init is not None or base == "complex" and self.fopt(fd):
+                    self.refuse(f"the default or optional form of the complex field '{fd.name}'", line=fd.line)
                 if self.fopt(fd) and (iface or fd.dims is not None or fd.init is not None):
                     self.refuse(f"field '{fd.name}' of record '{name}' ({fd.type})", line=fd.line)
                 if fd.dims is not None:                        # a fixed-size array of numbers, records or interface values
@@ -488,7 +495,7 @@ class Compiler:
         self.refuse(f"the default of field '{fd.name}'", line=fd.line)
 
     def supported(self, t, what, node=None):
-        if t is None or not t.known or t.kind not in KINDS or not 0 <= t.rank <= MAX_RANK:
+        if t is None or not t.known or t.kind not in CKINDS or not 0 <= t.rank <= MAX_RANK:
             self.refuse(what if t is not None and t.known else f"an expression of unknown type", node)
 
     def check(self):
@@ -510,7 +517,7 @@ class Compiler:
                 self.multi_types(f)                      # (refuses what it cannot handle)
             elif f.ret is not None:
                 rt = self.param_type(f.ret)
-                if rt is None or (rt.rank != 0 and (rt.kind not in KINDS or rt.optional or not isinstance(f.ret, str))):
+                if rt is None or (rt.rank != 0 and (rt.kind not in CKINDS or rt.optional or not isinstance(f.ret, str))):
                     self.refuse(f"function '{f.name}' returns {f.ret if isinstance(f.ret, str) else str(f.ret) if isinstance(f.ret, (MapType, SetType)) else 'several values'}")
             for typ, name, intent in f.params:
                 pt = self.param_type(typ)
@@ -576,7 +583,7 @@ class Compiler:
         out = []
         for t in f.ret.types:
             pt = self.param_type(t) if isinstance(t, str) else None
-            if pt is None or pt.rank != 0 or pt.optional or pt.kind not in KINDS:
+            if pt is None or pt.rank != 0 or pt.optional or pt.kind not in CKINDS:
                 self.refuse(f"function '{f.name}' returns several values ({f.ret})")
             out.append(pt)
         if any(f is m for m in self.methods.values()) or any(self.cnames.get(id(f), "").startswith("iv_") for _ in (0,)):
@@ -608,7 +615,7 @@ class Compiler:
             return t
         if t.known and t.optional:
             return t if t.kind in KINDS and t.rank == 0 else None
-        if not t.known or t.kind not in KINDS or not 0 <= t.rank <= MAX_RANK:
+        if not t.known or t.kind not in CKINDS or not 0 <= t.rank <= MAX_RANK:
             return None
         return t
 
@@ -675,6 +682,8 @@ class Compiler:
         self.typevars = {n.var for n in walk(body) if isinstance(n, SelectType) and n.var} | \
                         {n.var for n in walk(body) if isinstance(n, IsType) and n.var}
         self.allocs = self.allocs_of(body, f)
+        self.fixed_arrays = {d.name for d in statements_in(body) if isinstance(d, Decl) and d.dims is not None and not d.allocatable
+                             and all(isinstance(x, Num) and type(x.value) is int and x.value >= 1 for x in d.dims)}
         self.skip = {id(x) for d in statements_in(body) if isinstance(d, Decl) and d.allocatable for x in d.dims}
         strings = ()
         fixed = {name for typ, name, intent in f.params if intent == "in"} if f is not None else set()
@@ -956,7 +965,7 @@ class Compiler:
         if t is None or t.kind != "record" or t.name != name or t.rank not in ((0, 1) if rank == 1 else (0,)):
             self.refuse(f"a value that is not a {name}", node)
 
-    FITS = {"int": ("int", "int32"), "int32": ("int", "int32"), "real": ("int", "int32", "real", "real32"),
+    FITS = {"complex": ("int", "int32", "real", "real32", "complex"), "int": ("int", "int32"), "int32": ("int", "int32"), "real": ("int", "int32", "real", "real32"),
             "real32": ("int", "int32", "real", "real32"), "logical": ("logical",), "string": ("string",)}
 
     def fits(self, value, kind, what, node):
@@ -1134,7 +1143,7 @@ class Compiler:
             return None if d.dims is not None or d.allocatable or d.const else Type("record", 0, False, d.type)
         if d.type == "string":
             return None if d.dims is not None or d.allocatable or d.const else Type("string")
-        if d.type not in KINDS:
+        if d.type not in CKINDS:
             return None
         rank = len(d.dims) if d.dims is not None else 0
         if rank > MAX_RANK:
@@ -1576,6 +1585,22 @@ class Compiler:
         if name in ("scientific", "general") and len(args) == 4 and not (isinstance(args[3], Str) and args[3].value == "fortran"):
             self.refuse(f"{name}() with a style other than \"fortran\"", e)
 
+    def check_cmplx(self, e):
+        """cmplx(re, im) or cmplx(re) or cmplx(z): single numbers (a complex only alone)."""
+        ts = [self.types[id(a)] for a in e.args]
+        if not 1 <= len(ts) <= 2 or any(t.rank != 0 or t.optional for t in ts) or any(isinstance(a, NamedArg) for a in e.args):
+            self.refuse("cmplx() of anything but one or two single numbers", e)
+        if len(ts) == 2 and not all(t.kind in ("int", "int32", "real", "real32") for t in ts):
+            self.refuse("cmplx() of two values that are not real numbers", e)
+        if len(ts) == 1 and ts[0].kind not in ("int", "int32", "real", "real32", "complex"):
+            self.refuse("cmplx() of something that is not a number", e)
+
+    def nonempty(self, node):
+        """Is `node` an array that certainly has an element: a variable declared with fixed sizes (each at least 1) or a literal?"""
+        if isinstance(node, (ArrayLit, MatrixLit)):
+            return True
+        return isinstance(node, Var) and node.name in self.fixed_arrays
+
     def check_system_function(self, e):
         """bessel_*, exists, argument and argument_count: exactly the arguments each takes (anything else is an error of the interpreter's)."""
         name, ts = e.name, [self.types[id(a)] for a in e.args]
@@ -1606,6 +1631,17 @@ class Compiler:
             self.check_coll_builtin(e)
             return
         ranks = [self.types[id(a)].rank for a in e.args]
+        if any(self.types[id(a)].kind == "complex" for a in e.args) and name not in COMPLEX_OK:
+            self.refuse(f"{name}() of a complex number", e)
+        if name in ("aimag", "conjg") and (len(e.args) != 1 or self.types[id(e.args[0])].kind != "complex"):
+            self.refuse(f"{name}() of anything but a complex number", e)
+        if name == "cmplx":
+            self.check_cmplx(e)
+            return
+        if name in ("sum", "product") and e.args and self.types[id(e.args[0])].kind == "complex" and not self.nonempty(e.args[0]):
+            self.refuse(f"{name}() of a complex array that may be empty (its sum would then be a whole number 0)", e)
+        if name in ("matmul", "dot_product") and e.args and self.types[id(e.args[0])].kind == "complex" and not all(self.nonempty(a) for a in e.args):
+            self.refuse(f"{name}() of complex arrays that may be empty", e)
         if name in BESSEL or name in SYSTEM:
             self.check_system_function(e)
             return
@@ -1658,7 +1694,7 @@ class Compiler:
                 self.refuse(f"{name}() of anything but a whole array", e)
         elif name in ("matmul", "dot_product"):
             ts = [self.types[id(a)] for a in e.args]
-            ok = len(ts) == 2 and ts[0].kind == ts[1].kind and ts[0].kind in ("real", "real32", "int")
+            ok = len(ts) == 2 and ts[0].kind == ts[1].kind and ts[0].kind in ("real", "real32", "int", "complex")
             if name == "dot_product":
                 ok = ok and ts[0].rank == 1 and ts[1].rank == 1
             else:
@@ -1777,6 +1813,8 @@ class Compiler:
     def cast(self, atom, kind, to):
         if kind == to or to is None:
             return atom
+        if to == "complex" and kind in ("int", "int32", "real", "real32"):        # (a real part and an imaginary part of zero)
+            return f"rt_cx_mk((double){atom}, 0.0)"
         if to == "real" and kind in ("int", "int32", "real32"):
             return f"((double){atom})"
         if to == "real32" and kind in ("int", "int32"):         # through a double, as the interpreter does (not int64 to float)
@@ -1803,6 +1841,7 @@ class Compiler:
         converts to real32 stays a whole number, because the interpreter works `int op real32` out in double precision
         and rounds once (16777217 + 0.5 is 16777218.0, not 16777216.0)."""
         v = self.raw(e)
+        self.last_raw[id(e)] = v                           # (before the checker's conversion: a complex power shows its operands as written)
         target = self.conv.get(id(e))
         if v.t.optional or v.t.kind == "null":
             return v
@@ -1924,14 +1963,15 @@ class Compiler:
             if e.op == "+":
                 return v
             call = {"int": f"rt_neg({v.atom}, {line})", "int32": f"rt_neg32({v.atom}, {line})", "real": f"-{v.atom}",
-                    "real32": f"-{v.atom}"}[kind]
+                    "real32": f"-{v.atom}", "complex": f"rt_cx_neg({v.atom})"}[kind]
             return V(Type(kind), self.tmp(CSCALAR[kind], call))
         out_kind = "logical" if e.op == "not" else kind
         res = self.array_like(v, out_kind)
         k = self.loop_var()
         x = self.elem(v, k)
         expr = {("not", "logical"): f"!{x}", ("+", kind): x, ("-", "real"): f"-{x}", ("-", "real32"): f"-{x}",
-                ("-", "int"): f"rt_neg({x}, {line})", ("-", "int32"): f"rt_neg32({x}, {line})"}[(e.op, kind)]
+                ("-", "int"): f"rt_neg({x}, {line})", ("-", "int32"): f"rt_neg32({x}, {line})",
+                ("-", "complex"): f"rt_cx_neg({x})", ("+", "complex"): x}[(e.op, kind)]
         self.emit(f"for (int64_t {k} = 0; {k} < {res}.n; {k}++) {res}.data[{k}] = {expr};")
         return V(Type(out_kind, v.t.rank), res)
 
@@ -1959,7 +1999,14 @@ class Compiler:
         lv, rv = self.value(e.left, exact=True), self.value(e.right, exact=True)
         if any(v.t.optional or v.t.kind == "null" for v in (lv, rv)):
             return self.optional_binary(op, lv, rv, flags, line)
-        return self.binary_values(op, lv, rv, flags, line)
+        if op == "**" and "complex" in (lv.t.kind, rv.t.kind):
+            self.pow_ctx = (self.last_raw.get(id(e.left), lv), self.last_raw.get(id(e.right), rv))
+            if any(v.t.kind == "real32" for v in self.pow_ctx):
+                raise NotCompiled("a complex power with a real32 operand", line)
+        try:
+            return self.binary_values(op, lv, rv, flags, line)
+        finally:
+            self.pow_ctx = None
 
     def optional_binary(self, op, lv, rv, flags, line):
         """An operator with an optional operand: `==` and `/=` say whether both are absent or both are present and equal; any
@@ -2020,6 +2067,10 @@ class Compiler:
             la, ra = lv.atom, rv.atom
             if logic:                                    # no short circuit: both sides are already computed
                 return V(Type("logical"), self.tmp("bool", f"({la} {'&&' if op == 'and' else '||'} {ra})"))
+            if compare and "complex" in (lv.t.kind, rv.t.kind):
+                if op not in ("==", "/="):
+                    raise NotCompiled(f"complex numbers ordered with '{op}'", line)
+                return V(Type("logical"), self.tmp("bool", self.complex_compare(op, lv.t.kind, la, rv.t.kind, ra)))
             if compare:
                 if lv.t.kind != rv.t.kind:                # whole numbers next to reals compare as reals
                     kind = "real" if {"real", "real32"} & {lv.t.kind, rv.t.kind} else "int"
@@ -2042,6 +2093,8 @@ class Compiler:
         ra = self.elem(rv, k) if rv.t.rank > 0 else rv.atom
         if logic:
             expr = f"({la} {'&&' if op == 'and' else '||'} {ra})"
+        elif compare and "complex" in (lv.t.kind, rv.t.kind):
+            expr = self.complex_compare(op, lv.t.kind, la, rv.t.kind, ra)
         elif compare:
             lk, rk = lv.t.kind, rv.t.kind
             if lk != rk:
@@ -2055,6 +2108,8 @@ class Compiler:
 
     def arith(self, op, kind, lk, la, rk, ra, flags, line):
         """The C expression for `la op ra` where the operands are of kinds `lk` and `rk` and the answer is of `kind`."""
+        if kind == "complex":
+            return self.complex_op(op, lk, la, rk, ra, line)
         if kind != "real32":
             return self.scalar_op(op, kind, self.cast(la, lk, kind), self.cast(ra, rk, kind), flags, line)
         if op == "**":                                       # a real32 base, to a whole number or to a real32
@@ -2067,9 +2122,53 @@ class Compiler:
         d = self.scalar_op(op, "real", self.cast(la, lk, "real"), self.cast(ra, rk, "real"), flags, line)
         return f"rt_r32({d}, {line})"
 
+    def complex_op(self, op, lk, la, rk, ra, line):
+        """`la op ra` where at least one operand is complex: Python's own arithmetic, the other operand widened (a real part,
+        an imaginary part of zero)."""
+        if "real32" in (lk, rk) and op == "**":
+            raise NotCompiled("a complex power with a real32 operand", line)
+        x, y = self.cast(la, lk, "complex"), self.cast(ra, rk, "complex")
+        if op == "+":
+            return f"rt_cx_add({x}, {y})"
+        if op == "-":
+            return f"rt_cx_sub({x}, {y})"
+        if op == "*":
+            return f"rt_cx_mul({x}, {y})"
+        if op == "/":
+            return f"rt_cx_div({x}, {y}, {line})"
+        if op == "**":
+            lo, ro = self.pow_ctx or (None, None)
+            if lo is not None and lo.t.rank == 0:               # a single operand: as it was written, not as widened
+                lk, la = lo.t.kind, lo.atom
+            if ro is not None and ro.t.rank == 0:
+                rk, ra = ro.t.kind, ro.atom
+            code = lambda k: 2 if k == "complex" else 1 if k in ("int", "int32") else 0
+            ia = f"(int64_t){la}" if lk in ("int", "int32") else "0"
+            ib = f"(int64_t){ra}" if rk in ("int", "int32") else "0"
+            return f"rt_cx_pow({x}, {y}, {code(lk)}, {code(rk)}, {ia}, {ib}, {line})"
+        raise NotCompiled(f"the operator '{op}' on a complex number", line)
+
+    def complex_compare(self, op, lk, la, rk, ra):
+        """`==` or `/=` where one side is complex (Python compares a real or a whole number with the complex's real part and a zero
+        imaginary part)."""
+        if lk != "complex":                                   # (symmetric: put the complex first)
+            lk, la, rk, ra = rk, ra, lk, la
+        if rk == "complex":
+            test = f"rt_cx_eq({la}, {ra})"
+        elif rk in ("real", "real32"):
+            test = f"rt_cx_eq_real({la}, (double){ra})"
+        else:
+            test = f"rt_cx_eq_int({la}, (int64_t){ra})"
+        return f"(!{test})" if op == "/=" else test
+
+    @staticmethod
+    def zero(kind):
+        """What a value of `kind` is before it is given one."""
+        return "false" if kind == "logical" else "rt_cx_mk(0.0, 0.0)" if kind == "complex" else "0"
+
     @staticmethod
     def widest(a, b):
-        order = ["int32", "int", "real32", "real"]
+        order = ["int32", "int", "real32", "real", "complex"]
         return order[max(order.index(a), order.index(b))]
 
     # -- array literals and elements ----------------------------------------------------------------------------------
@@ -2468,6 +2567,18 @@ class Compiler:
 
     def elemental(self, name, x, kind, was_int, line):
         """The C expression of the one-argument function `name` of the single value `x` (of `kind`), and its result kind."""
+        if kind == "complex":
+            if name == "abs":
+                return "real", f"rt_cx_abs({x}, {line})"
+            if name == "real":
+                return "real", f"({x}).re"
+            if name == "aimag":
+                return "real", f"({x}).im"
+            if name == "conjg":
+                return "complex", f"rt_cx_conj({x})"
+            raise NotCompiled(f"{name}() of a complex number", line)
+        if name in ("aimag", "conjg"):
+            raise NotCompiled(f"{name}() of anything but a complex number", line)
         if name == "abs":
             if kind == "int":
                 return "int", f"rt_abs({x}, {line})"
@@ -2771,6 +2882,13 @@ class Compiler:
             return self.coll_builtin(e)
         if name in BESSEL or name in SYSTEM:
             return self.system_function(e)
+        if name == "cmplx":
+            vals = [self.value(a) for a in e.args]
+            if len(vals) == 1 and vals[0].t.kind == "complex":
+                return vals[0]
+            re = self.cast(vals[0].atom, vals[0].t.kind, "real")
+            im = self.cast(vals[1].atom, vals[1].t.kind, "real") if len(vals) == 2 else "0.0"
+            return V(Type("complex"), self.tmp("rt_cx", f"rt_cx_mk({re}, {im})"))
         if name == "present":                                     # is there a value (a plain value always is)
             v = self.value(e.args[0])
             return V(Type("logical"), self.tmp("bool", f"{v.atom}.has" if v.t.optional else "false" if v.t.kind == "null" else "true"))
@@ -2881,6 +2999,10 @@ class Compiler:
             best = self.tmp(ct, f"{a.atom}.data[0]")
             self.emit(f"for (int64_t {k} = 1; {k} < {a.atom}.n; {k}++) if ({x} {'>' if name == 'maxval' else '<'} {best}) {best} = {x};")
             return V(Type(kind), best)
+        if kind == "complex":                              # added or multiplied one at a time from the left, from 0 or 1 as Python does
+            acc = self.tmp("rt_cx", "rt_cx_mk(1.0, 0.0)" if name == "product" else "rt_cx_mk(0.0, 0.0)")
+            self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = {'rt_cx_mul' if name == 'product' else 'rt_cx_add'}({acc}, {x});")
+            return V(Type(kind), acc)
         if kind in ("real", "real32"):                      # plain multiplication or addition, one at a time from the left
             op = '*' if name == 'product' else '+'
             if kind == "real32":                             # every step rounded to single, as in Fortran
@@ -2905,6 +3027,10 @@ class Compiler:
         if name == "dot_product":
             self.emit(f"rt_dot_shapes({a.atom}.shape, {b.atom}.shape, {line});")
             k = self.loop_var()
+            if kind == "complex":                        # the first is conjugated, as in Fortran
+                acc = self.tmp("rt_cx", "rt_cx_mk(0.0, 0.0)")
+                self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = rt_cx_add({acc}, rt_cx_mul(rt_cx_conj({a.atom}.data[{k}]), {b.atom}.data[{k}]));")
+                return V(Type(kind), acc)
             if kind == "real32":
                 acc = self.tmp("float", "0.0f")
                 self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) {acc} = rt_r32((double){acc} + (double)rt_r32((double){a.atom}.data[{k}] * (double){b.atom}.data[{k}], {line}), {line});")
@@ -2930,7 +3056,11 @@ class Compiler:
         self.emit(f"for (int64_t {j} = 0; {j} < {m}; {j}++) for (int64_t {i} = 0; {i} < {n}; {i}++) {{")
         self.depth += 1
         term = f"{a.atom}.data[{i} + {t} * {n}] * {b.atom}.data[{t} + {j} * {kk}]"
-        if kind == "real32":
+        if kind == "complex":
+            self.emit("rt_cx acc = rt_cx_mk(0.0, 0.0);")
+            self.emit(f"for (int64_t {t} = 0; {t} < {kk}; {t}++) acc = rt_cx_add(acc, rt_cx_mul({a.atom}.data[{i} + {t} * {n}], {b.atom}.data[{t} + {j} * {kk}]));")
+            self.emit(f"{res}.data[{i} + {j} * {n}] = acc;")
+        elif kind == "real32":
             self.emit("float acc = 0.0f;")
             self.emit(f"for (int64_t {t} = 0; {t} < {kk}; {t}++) acc = rt_r32((double)acc + (double)rt_r32((double){a.atom}.data[{i} + {t} * {n}] * (double){b.atom}.data[{t} + {j} * {kk}], {line}), {line});")
             self.emit(f"{res}.data[{i} + {j} * {n}] = acc;")
@@ -3172,7 +3302,7 @@ class Compiler:
             elif t.kind == "string":
                 self.emit(f'rt_str_set(&{name}, RT_LIT(""), {line});')
             else:
-                self.emit(f"{name} = {'false' if t.kind == 'logical' else '0'};")
+                self.emit(f"{name} = {self.zero(t.kind)};")
             return
         if s.allocatable:                                              # not allocated (again, if this runs in a loop)
             self.emit(f"rt_free_{t.kind}(&{name});")
@@ -3832,7 +3962,7 @@ class Compiler:
             self.emit(f"{ctype} ret = {{0}};")
             self.emit("int call_line = rt_call_line;")
         elif rt:
-            start = "{0}" if rt.optional or rt.kind in COLLECTIONS or rt.rank != 0 else f"d_{rt.name}()" if isrec(rt) else "{0}" if rt.kind == "string" else "false" if rt.kind == "logical" else "0"
+            start = "{0}" if rt.optional or rt.kind in COLLECTIONS or rt.rank != 0 else f"d_{rt.name}()" if isrec(rt) else "{0}" if rt.kind == "string" else self.zero(rt.kind)
             self.emit(f"{ctype} ret = {start};")
             if rt.kind in COLLECTIONS:
                 self.emit(f"ret.kk = {KEYKINDS[rt.args[0]]}; ret.vk = {VALKINDS[rt.args[1]] if rt.kind == 'map' else -1};")
@@ -3914,7 +4044,7 @@ class Compiler:
             elif fd.type == "string":
                 value = 'rt_str_new("", 0, 0)'
             else:
-                value = "false" if fd.type == "logical" else "0"
+                value = self.zero(fd.type)
             if fd.dims:
                 body.append(f"for (int i = 0; i < {fd.dims[0].value}; i++) {m}[i] = {value};")
             else:
