@@ -25,7 +25,8 @@ from .types import Type, NULL
 HERE = os.path.dirname(os.path.abspath(__file__))
 KINDS = ("int", "int32", "real", "real32", "logical")
 CKINDS = KINDS + ("complex",)                          # the kinds of a declared value; complex opts in where it is handled
-COMPLEX_OK = {"abs", "real", "aimag", "conjg", "cmplx", "sum", "product", "dot_product", "matmul", "transpose", "reshape", "size",
+CMATH = ["sqrt", "exp", "log", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh"]    # in the order of rt_cm_names
+COMPLEX_OK = {*CMATH, "abs", "real", "aimag", "conjg", "cmplx", "sum", "product", "dot_product", "matmul", "transpose", "reshape", "size",
               "shape", "flatten"}                      # the built-in functions that take a complex value
 CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool", "string": "rt_str", "complex": "rt_cx"}
 CONVERSIONS = {"to_integer": "int", "to_real": "real", "to_logical": "logical"}      # text to an optional number or logical
@@ -2576,6 +2577,8 @@ class Compiler:
                 return "real", f"({x}).im"
             if name == "conjg":
                 return "complex", f"rt_cx_conj({x})"
+            if name in CMATH:
+                return "complex", f"rt_cm_call({CMATH.index(name)}, {x}, {line})"
             raise NotCompiled(f"{name}() of a complex number", line)
         if name in ("aimag", "conjg"):
             raise NotCompiled(f"{name}() of anything but a complex number", line)

@@ -11,6 +11,7 @@
 #include <math.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <float.h>
 
 typedef __int128 rt_i128;
 
@@ -722,6 +723,418 @@ static double rt_cx_abs(rt_cx z, int line) {
     result = rt_fp_hypot(z.re, z.im);
     if (!isfinite(result)) rt_fail(line, "abs(): absolute value too large");
     return result;
+}
+/* ---- the complex functions: CPython's cmath (Modules/cmathmodule.c: sqrt, exp, log, log10, sin, cos, tan, asin, acos, atan,
+   sinh, cosh, tanh, asinh, acosh, atanh), the same code in 3.10 to 3.13. Each sets rt_cm_errno the way the C99 Annex G notes there
+   do: 0, EDOM (a "math domain error") or ERANGE (a "math range error"); the callers turn those into the interpreter's messages.
+   Every libm call goes through a volatile pointer (or is exact: sqrt, ldexp, fabs, copysign). ------------------------------- */
+static double (*volatile rt_fp_sin)(double) = sin;
+static double (*volatile rt_fp_cos)(double) = cos;
+static double (*volatile rt_fp_tan)(double) = tan;
+static double (*volatile rt_fp_sinh)(double) = sinh;
+static double (*volatile rt_fp_cosh)(double) = cosh;
+static double (*volatile rt_fp_tanh)(double) = tanh;
+static double (*volatile rt_fp_asinh)(double) = asinh;
+static double (*volatile rt_fp_log1p)(double) = log1p;
+static int rt_cm_errno;
+#define RT_CMP 3.14159265358979323846
+#define RT_CMP14 0.25*RT_CMP
+#define RT_CMP12 0.5*RT_CMP
+#define RT_CMP34 0.75*RT_CMP
+#define RT_CMINF HUGE_VAL
+#define RT_CMN NAN
+#define RT_CMU -9.5426319407711027e33
+#define RT_CM_E 2.7182818284590452354
+#define RT_CM_LN2 0.6931471805599453094
+#define RT_CM_LN10 2.302585092994045684
+#define RT_CM_LARGE (DBL_MAX / 4.)
+#define RT_CM_SQRT_LARGE (sqrt(RT_CM_LARGE))
+#define RT_CM_LOG_LARGE (rt_fp_log(RT_CM_LARGE))
+#define RT_CM_SQRT_MIN (sqrt(DBL_MIN))
+#define RT_CM_SCALE_UP (2 * (DBL_MANT_DIG / 2) + 1)
+#define RT_CM_SCALE_DOWN (-(RT_CM_SCALE_UP + 1) / 2)
+enum { RT_ST_NINF, RT_ST_NEG, RT_ST_NZERO, RT_ST_PZERO, RT_ST_POS, RT_ST_PINF, RT_ST_NAN };
+static int rt_cm_special_type(double d) {
+    if (isfinite(d)) {
+        if (d != 0) return copysign(1., d) == 1. ? RT_ST_POS : RT_ST_NEG;
+        return copysign(1., d) == 1. ? RT_ST_PZERO : RT_ST_NZERO;
+    }
+    if (isnan(d)) return RT_ST_NAN;
+    return copysign(1., d) == 1. ? RT_ST_PINF : RT_ST_NINF;
+}
+static const rt_cx rt_cm_acos_special[7][7] = {
+    {{RT_CMP34, RT_CMINF}, {RT_CMP, RT_CMINF}, {RT_CMP, RT_CMINF}, {RT_CMP, -RT_CMINF}, {RT_CMP, -RT_CMINF}, {RT_CMP34, -RT_CMINF}, {RT_CMN, RT_CMINF}},
+    {{RT_CMP12, RT_CMINF}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMP12, -RT_CMINF}, {RT_CMN, RT_CMN}},
+    {{RT_CMP12, RT_CMINF}, {RT_CMU, RT_CMU}, {RT_CMP12, 0.}, {RT_CMP12, -0.}, {RT_CMU, RT_CMU}, {RT_CMP12, -RT_CMINF}, {RT_CMP12, RT_CMN}},
+    {{RT_CMP12, RT_CMINF}, {RT_CMU, RT_CMU}, {RT_CMP12, 0.}, {RT_CMP12, -0.}, {RT_CMU, RT_CMU}, {RT_CMP12, -RT_CMINF}, {RT_CMP12, RT_CMN}},
+    {{RT_CMP12, RT_CMINF}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMP12, -RT_CMINF}, {RT_CMN, RT_CMN}},
+    {{RT_CMP14, RT_CMINF}, {0., RT_CMINF}, {0., RT_CMINF}, {0., -RT_CMINF}, {0., -RT_CMINF}, {RT_CMP14, -RT_CMINF}, {RT_CMN, RT_CMINF}},
+    {{RT_CMN, RT_CMINF}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, -RT_CMINF}, {RT_CMN, RT_CMN}}
+};
+static const rt_cx rt_cm_acosh_special[7][7] = {
+    {{RT_CMINF, -RT_CMP34}, {RT_CMINF, -RT_CMP}, {RT_CMINF, -RT_CMP}, {RT_CMINF, RT_CMP}, {RT_CMINF, RT_CMP}, {RT_CMINF, RT_CMP34}, {RT_CMINF, RT_CMN}},
+    {{RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {0., -RT_CMP12}, {0., RT_CMP12}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {0., -RT_CMP12}, {0., RT_CMP12}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMP14}, {RT_CMINF, -0.}, {RT_CMINF, -0.}, {RT_CMINF, 0.}, {RT_CMINF, 0.}, {RT_CMINF, RT_CMP14}, {RT_CMINF, RT_CMN}},
+    {{RT_CMINF, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMINF, RT_CMN}, {RT_CMN, RT_CMN}}
+};
+static const rt_cx rt_cm_asinh_special[7][7] = {
+    {{-RT_CMINF, -RT_CMP14}, {-RT_CMINF, -0.}, {-RT_CMINF, -0.}, {-RT_CMINF, 0.}, {-RT_CMINF, 0.}, {-RT_CMINF, RT_CMP14}, {-RT_CMINF, RT_CMN}},
+    {{-RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {-RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{-RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {-0., -0.}, {-0., 0.}, {RT_CMU, RT_CMU}, {-RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {0., -0.}, {0., 0.}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMP14}, {RT_CMINF, -0.}, {RT_CMINF, -0.}, {RT_CMINF, 0.}, {RT_CMINF, 0.}, {RT_CMINF, RT_CMP14}, {RT_CMINF, RT_CMN}},
+    {{RT_CMINF, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, -0.}, {RT_CMN, 0.}, {RT_CMN, RT_CMN}, {RT_CMINF, RT_CMN}, {RT_CMN, RT_CMN}}
+};
+static const rt_cx rt_cm_atanh_special[7][7] = {
+    {{-0., -RT_CMP12}, {-0., -RT_CMP12}, {-0., -RT_CMP12}, {-0., RT_CMP12}, {-0., RT_CMP12}, {-0., RT_CMP12}, {-0., RT_CMN}},
+    {{-0., -RT_CMP12}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {-0., RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{-0., -RT_CMP12}, {RT_CMU, RT_CMU}, {-0., -0.}, {-0., 0.}, {RT_CMU, RT_CMU}, {-0., RT_CMP12}, {-0., RT_CMN}},
+    {{0., -RT_CMP12}, {RT_CMU, RT_CMU}, {0., -0.}, {0., 0.}, {RT_CMU, RT_CMU}, {0., RT_CMP12}, {0., RT_CMN}},
+    {{0., -RT_CMP12}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {0., RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{0., -RT_CMP12}, {0., -RT_CMP12}, {0., -RT_CMP12}, {0., RT_CMP12}, {0., RT_CMP12}, {0., RT_CMP12}, {0., RT_CMN}},
+    {{0., -RT_CMP12}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {0., RT_CMP12}, {RT_CMN, RT_CMN}}
+};
+static const rt_cx rt_cm_cosh_special[7][7] = {
+    {{RT_CMINF, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMINF, 0.}, {RT_CMINF, -0.}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMN}, {RT_CMINF, RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{RT_CMN, 0.}, {RT_CMU, RT_CMU}, {1., 0.}, {1., -0.}, {RT_CMU, RT_CMU}, {RT_CMN, 0.}, {RT_CMN, 0.}},
+    {{RT_CMN, 0.}, {RT_CMU, RT_CMU}, {1., -0.}, {1., 0.}, {RT_CMU, RT_CMU}, {RT_CMN, 0.}, {RT_CMN, 0.}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMINF, -0.}, {RT_CMINF, 0.}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMN}, {RT_CMINF, RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, 0.}, {RT_CMN, 0.}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}}
+};
+static const rt_cx rt_cm_exp_special[7][7] = {
+    {{0., 0.}, {RT_CMU, RT_CMU}, {0., -0.}, {0., 0.}, {RT_CMU, RT_CMU}, {0., 0.}, {0., 0.}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {1., -0.}, {1., 0.}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {1., -0.}, {1., 0.}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMINF, -0.}, {RT_CMINF, 0.}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMN}, {RT_CMINF, RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, -0.}, {RT_CMN, 0.}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}}
+};
+static const rt_cx rt_cm_log_special[7][7] = {
+    {{RT_CMINF, -RT_CMP34}, {RT_CMINF, -RT_CMP}, {RT_CMINF, -RT_CMP}, {RT_CMINF, RT_CMP}, {RT_CMINF, RT_CMP}, {RT_CMINF, RT_CMP34}, {RT_CMINF, RT_CMN}},
+    {{RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {-RT_CMINF, -RT_CMP}, {-RT_CMINF, RT_CMP}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {-RT_CMINF, -0.}, {-RT_CMINF, 0.}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMP12}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMP12}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMP14}, {RT_CMINF, -0.}, {RT_CMINF, -0.}, {RT_CMINF, 0.}, {RT_CMINF, 0.}, {RT_CMINF, RT_CMP14}, {RT_CMINF, RT_CMN}},
+    {{RT_CMINF, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMINF, RT_CMN}, {RT_CMN, RT_CMN}}
+};
+static const rt_cx rt_cm_sinh_special[7][7] = {
+    {{RT_CMINF, RT_CMN}, {RT_CMU, RT_CMU}, {-RT_CMINF, -0.}, {-RT_CMINF, 0.}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMN}, {RT_CMINF, RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{0., RT_CMN}, {RT_CMU, RT_CMU}, {-0., -0.}, {-0., 0.}, {RT_CMU, RT_CMU}, {0., RT_CMN}, {0., RT_CMN}},
+    {{0., RT_CMN}, {RT_CMU, RT_CMU}, {0., -0.}, {0., 0.}, {RT_CMU, RT_CMU}, {0., RT_CMN}, {0., RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMINF, -0.}, {RT_CMINF, 0.}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMN}, {RT_CMINF, RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, -0.}, {RT_CMN, 0.}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}}
+};
+static const rt_cx rt_cm_sqrt_special[7][7] = {
+    {{RT_CMINF, -RT_CMINF}, {0., -RT_CMINF}, {0., -RT_CMINF}, {0., RT_CMINF}, {0., RT_CMINF}, {RT_CMINF, RT_CMINF}, {RT_CMN, RT_CMINF}},
+    {{RT_CMINF, -RT_CMINF}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMINF}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMINF}, {RT_CMU, RT_CMU}, {0., -0.}, {0., 0.}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMINF}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMINF}, {RT_CMU, RT_CMU}, {0., -0.}, {0., 0.}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMINF}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMINF}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMINF, RT_CMINF}, {RT_CMN, RT_CMN}},
+    {{RT_CMINF, -RT_CMINF}, {RT_CMINF, -0.}, {RT_CMINF, -0.}, {RT_CMINF, 0.}, {RT_CMINF, 0.}, {RT_CMINF, RT_CMINF}, {RT_CMINF, RT_CMN}},
+    {{RT_CMINF, -RT_CMINF}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMINF, RT_CMINF}, {RT_CMN, RT_CMN}}
+};
+static const rt_cx rt_cm_tanh_special[7][7] = {
+    {{-1., 0.}, {RT_CMU, RT_CMU}, {-1., -0.}, {-1., 0.}, {RT_CMU, RT_CMU}, {-1., 0.}, {-1., 0.}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {-0., -0.}, {-0., 0.}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {0., -0.}, {0., 0.}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{RT_CMN, RT_CMN}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMU, RT_CMU}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}},
+    {{1., 0.}, {RT_CMU, RT_CMU}, {1., -0.}, {1., 0.}, {RT_CMU, RT_CMU}, {1., 0.}, {1., 0.}},
+    {{RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, -0.}, {RT_CMN, 0.}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}, {RT_CMN, RT_CMN}}
+};
+
+#define RT_CM_SPECIAL(z, table) \
+    if (!isfinite((z).re) || !isfinite((z).im)) { rt_cm_errno = 0; return table[rt_cm_special_type((z).re)][rt_cm_special_type((z).im)]; }
+static rt_cx rt_cm_sqrt(rt_cx z) {
+    rt_cx r; double s, d, ax, ay;
+    RT_CM_SPECIAL(z, rt_cm_sqrt_special);
+    if (z.re == 0. && z.im == 0.) { r.re = 0.; r.im = z.im; return r; }
+    ax = fabs(z.re); ay = fabs(z.im);
+    if (ax < DBL_MIN && ay < DBL_MIN) {
+        ax = ldexp(ax, RT_CM_SCALE_UP);
+        s = ldexp(sqrt(ax + rt_fp_hypot(ax, ldexp(ay, RT_CM_SCALE_UP))), RT_CM_SCALE_DOWN);
+    } else {
+        ax /= 8.;
+        s = 2. * sqrt(ax + rt_fp_hypot(ax, ay / 8.));
+    }
+    d = ay / (2. * s);
+    if (z.re >= 0.) { r.re = s; r.im = copysign(d, z.im); }
+    else { r.re = d; r.im = copysign(s, z.im); }
+    rt_cm_errno = 0;
+    return r;
+}
+static rt_cx rt_cm_acos(rt_cx z) {
+    rt_cx s1, s2, r;
+    RT_CM_SPECIAL(z, rt_cm_acos_special);
+    if (fabs(z.re) > RT_CM_LARGE || fabs(z.im) > RT_CM_LARGE) {
+        r.re = rt_fp_atan2(fabs(z.im), z.re);
+        if (z.re < 0.) r.im = -copysign(rt_fp_log(rt_fp_hypot(z.re / 2., z.im / 2.)) + RT_CM_LN2 * 2., z.im);
+        else r.im = copysign(rt_fp_log(rt_fp_hypot(z.re / 2., z.im / 2.)) + RT_CM_LN2 * 2., -z.im);
+    } else {
+        s1.re = 1. - z.re; s1.im = -z.im;
+        s1 = rt_cm_sqrt(s1);
+        s2.re = 1. + z.re; s2.im = z.im;
+        s2 = rt_cm_sqrt(s2);
+        r.re = 2. * rt_fp_atan2(s1.re, s2.re);
+        r.im = rt_fp_asinh(s2.re * s1.im - s2.im * s1.re);
+    }
+    rt_cm_errno = 0;
+    return r;
+}
+static rt_cx rt_cm_acosh(rt_cx z) {
+    rt_cx s1, s2, r;
+    RT_CM_SPECIAL(z, rt_cm_acosh_special);
+    if (fabs(z.re) > RT_CM_LARGE || fabs(z.im) > RT_CM_LARGE) {
+        r.re = rt_fp_log(rt_fp_hypot(z.re / 2., z.im / 2.)) + RT_CM_LN2 * 2.;
+        r.im = rt_fp_atan2(z.im, z.re);
+    } else {
+        s1.re = z.re - 1.; s1.im = z.im;
+        s1 = rt_cm_sqrt(s1);
+        s2.re = z.re + 1.; s2.im = z.im;
+        s2 = rt_cm_sqrt(s2);
+        r.re = rt_fp_asinh(s1.re * s2.re + s1.im * s2.im);
+        r.im = 2. * rt_fp_atan2(s1.im, s2.re);
+    }
+    rt_cm_errno = 0;
+    return r;
+}
+static rt_cx rt_cm_asinh(rt_cx z) {
+    rt_cx s1, s2, r;
+    RT_CM_SPECIAL(z, rt_cm_asinh_special);
+    if (fabs(z.re) > RT_CM_LARGE || fabs(z.im) > RT_CM_LARGE) {
+        if (z.im >= 0.) r.re = copysign(rt_fp_log(rt_fp_hypot(z.re / 2., z.im / 2.)) + RT_CM_LN2 * 2., z.re);
+        else r.re = -copysign(rt_fp_log(rt_fp_hypot(z.re / 2., z.im / 2.)) + RT_CM_LN2 * 2., -z.re);
+        r.im = rt_fp_atan2(z.im, fabs(z.re));
+    } else {
+        s1.re = 1. + z.im; s1.im = -z.re;
+        s1 = rt_cm_sqrt(s1);
+        s2.re = 1. - z.im; s2.im = z.re;
+        s2 = rt_cm_sqrt(s2);
+        r.re = rt_fp_asinh(s1.re * s2.im - s2.re * s1.im);
+        r.im = rt_fp_atan2(z.im, s1.re * s2.re - s1.im * s2.im);
+    }
+    rt_cm_errno = 0;
+    return r;
+}
+static rt_cx rt_cm_asin(rt_cx z) {
+    rt_cx s, r;
+    s.re = -z.im; s.im = z.re;
+    s = rt_cm_asinh(s);
+    r.re = s.im; r.im = -s.re;
+    return r;
+}
+static rt_cx rt_cm_atanh(rt_cx z) {
+    rt_cx r; double ay, h;
+    RT_CM_SPECIAL(z, rt_cm_atanh_special);
+    if (z.re < 0.) return rt_cx_neg(rt_cm_atanh(rt_cx_neg(z)));
+    ay = fabs(z.im);
+    if (z.re > RT_CM_SQRT_LARGE || ay > RT_CM_SQRT_LARGE) {
+        h = rt_fp_hypot(z.re / 2., z.im / 2.);
+        r.re = z.re / 4. / h / h;
+        r.im = -copysign(RT_CMP / 2., -z.im);
+        rt_cm_errno = 0;
+    } else if (z.re == 1. && ay < RT_CM_SQRT_MIN) {
+        if (ay == 0.) { r.re = HUGE_VAL; r.im = z.im; rt_cm_errno = EDOM; }
+        else {
+            r.re = -rt_fp_log(sqrt(ay) / sqrt(rt_fp_hypot(ay, 2.)));
+            r.im = copysign(rt_fp_atan2(2., -ay) / 2, z.im);
+            rt_cm_errno = 0;
+        }
+    } else {
+        r.re = rt_fp_log1p(4. * z.re / ((1 - z.re) * (1 - z.re) + ay * ay)) / 4.;
+        r.im = -rt_fp_atan2(-2. * z.im, (1 - z.re) * (1 + z.re) - ay * ay) / 2.;
+        rt_cm_errno = 0;
+    }
+    return r;
+}
+static rt_cx rt_cm_atan(rt_cx z) {
+    rt_cx s, r;
+    s.re = -z.im; s.im = z.re;
+    s = rt_cm_atanh(s);
+    r.re = s.im; r.im = -s.re;
+    return r;
+}
+static rt_cx rt_cm_cosh(rt_cx z) {
+    rt_cx r; double x_minus_one, sn, cs;
+    if (!isfinite(z.re) || !isfinite(z.im)) {
+        if (isinf(z.re) && isfinite(z.im) && z.im != 0.) {
+            rt_sincos(z.im, &sn, &cs);
+            if (z.re > 0) { r.re = copysign(HUGE_VAL, cs); r.im = copysign(HUGE_VAL, sn); }
+            else { r.re = copysign(HUGE_VAL, cs); r.im = -copysign(HUGE_VAL, sn); }
+        } else r = rt_cm_cosh_special[rt_cm_special_type(z.re)][rt_cm_special_type(z.im)];
+        rt_cm_errno = (isinf(z.im) && !isnan(z.re)) ? EDOM : 0;
+        return r;
+    }
+    rt_sincos(z.im, &sn, &cs);
+    if (fabs(z.re) > RT_CM_LOG_LARGE) {
+        x_minus_one = z.re - copysign(1., z.re);
+        r.re = cs * rt_fp_cosh(x_minus_one) * RT_CM_E;
+        r.im = sn * rt_fp_sinh(x_minus_one) * RT_CM_E;
+    } else {
+        r.re = cs * rt_fp_cosh(z.re);
+        r.im = sn * rt_fp_sinh(z.re);
+    }
+    rt_cm_errno = (isinf(r.re) || isinf(r.im)) ? ERANGE : 0;
+    return r;
+}
+static rt_cx rt_cm_cos(rt_cx z) {
+    rt_cx r;
+    r.re = -z.im; r.im = z.re;
+    return rt_cm_cosh(r);
+}
+static rt_cx rt_cm_exp(rt_cx z) {
+    rt_cx r; double l, sn, cs;
+    if (!isfinite(z.re) || !isfinite(z.im)) {
+        if (isinf(z.re) && isfinite(z.im) && z.im != 0.) {
+            rt_sincos(z.im, &sn, &cs);
+            if (z.re > 0) { r.re = copysign(HUGE_VAL, cs); r.im = copysign(HUGE_VAL, sn); }
+            else { r.re = copysign(0., cs); r.im = copysign(0., sn); }
+        } else r = rt_cm_exp_special[rt_cm_special_type(z.re)][rt_cm_special_type(z.im)];
+        rt_cm_errno = (isinf(z.im) && (isfinite(z.re) || (isinf(z.re) && z.re > 0))) ? EDOM : 0;
+        return r;
+    }
+    rt_sincos(z.im, &sn, &cs);
+    if (z.re > RT_CM_LOG_LARGE) {
+        l = rt_fp_exp(z.re - 1.);
+        r.re = l * cs * RT_CM_E;
+        r.im = l * sn * RT_CM_E;
+    } else {
+        l = rt_fp_exp(z.re);
+        r.re = l * cs;
+        r.im = l * sn;
+    }
+    rt_cm_errno = (isinf(r.re) || isinf(r.im)) ? ERANGE : 0;
+    return r;
+}
+static rt_cx rt_cm_log(rt_cx z) {
+    rt_cx r; double ax, ay, am, an, h;
+    RT_CM_SPECIAL(z, rt_cm_log_special);
+    ax = fabs(z.re); ay = fabs(z.im);
+    if (ax > RT_CM_LARGE || ay > RT_CM_LARGE) {
+        r.re = rt_fp_log(rt_fp_hypot(ax / 2., ay / 2.)) + RT_CM_LN2;
+    } else if (ax < DBL_MIN && ay < DBL_MIN) {
+        if (ax > 0. || ay > 0.) {
+            r.re = rt_fp_log(rt_fp_hypot(ldexp(ax, DBL_MANT_DIG), ldexp(ay, DBL_MANT_DIG))) - DBL_MANT_DIG * RT_CM_LN2;
+        } else {
+            r.re = -HUGE_VAL;
+            r.im = rt_fp_atan2(z.im, z.re);
+            rt_cm_errno = EDOM;
+            return r;
+        }
+    } else {
+        h = rt_fp_hypot(ax, ay);
+        if (0.71 <= h && h <= 1.73) {
+            am = ax > ay ? ax : ay;
+            an = ax > ay ? ay : ax;
+            r.re = rt_fp_log1p((am - 1) * (am + 1) + an * an) / 2.;
+        } else r.re = rt_fp_log(h);
+    }
+    r.im = rt_fp_atan2(z.im, z.re);
+    rt_cm_errno = 0;
+    return r;
+}
+static rt_cx rt_cm_log10(rt_cx z) {
+    rt_cx r = rt_cm_log(z);
+    int save = rt_cm_errno;
+    r.re = r.re / RT_CM_LN10;
+    r.im = r.im / RT_CM_LN10;
+    rt_cm_errno = save;
+    return r;
+}
+static rt_cx rt_cm_sinh(rt_cx z) {
+    rt_cx r; double x_minus_one, sn, cs;
+    if (!isfinite(z.re) || !isfinite(z.im)) {
+        if (isinf(z.re) && isfinite(z.im) && z.im != 0.) {
+            rt_sincos(z.im, &sn, &cs);
+            if (z.re > 0) { r.re = copysign(HUGE_VAL, cs); r.im = copysign(HUGE_VAL, sn); }
+            else { r.re = -copysign(HUGE_VAL, cs); r.im = copysign(HUGE_VAL, sn); }
+        } else r = rt_cm_sinh_special[rt_cm_special_type(z.re)][rt_cm_special_type(z.im)];
+        rt_cm_errno = (isinf(z.im) && !isnan(z.re)) ? EDOM : 0;
+        return r;
+    }
+    rt_sincos(z.im, &sn, &cs);
+    if (fabs(z.re) > RT_CM_LOG_LARGE) {
+        x_minus_one = z.re - copysign(1., z.re);
+        r.re = cs * rt_fp_sinh(x_minus_one) * RT_CM_E;
+        r.im = sn * rt_fp_cosh(x_minus_one) * RT_CM_E;
+    } else {
+        r.re = cs * rt_fp_sinh(z.re);
+        r.im = sn * rt_fp_cosh(z.re);
+    }
+    rt_cm_errno = (isinf(r.re) || isinf(r.im)) ? ERANGE : 0;
+    return r;
+}
+static rt_cx rt_cm_sin(rt_cx z) {
+    rt_cx s, r;
+    s.re = -z.im; s.im = z.re;
+    s = rt_cm_sinh(s);
+    r.re = s.im; r.im = -s.re;
+    return r;
+}
+static rt_cx rt_cm_tanh(rt_cx z) {
+    rt_cx r; double tx, ty, cx, txty, denom, sn, cs;
+    if (!isfinite(z.re) || !isfinite(z.im)) {
+        if (isinf(z.re) && isfinite(z.im) && z.im != 0.) {
+            rt_sincos(z.im, &sn, &cs);
+            if (z.re > 0) { r.re = 1.0; r.im = copysign(0., 2. * sn * cs); }
+            else { r.re = -1.0; r.im = copysign(0., 2. * sn * cs); }
+        } else r = rt_cm_tanh_special[rt_cm_special_type(z.re)][rt_cm_special_type(z.im)];
+        rt_cm_errno = (isinf(z.im) && isfinite(z.re)) ? EDOM : 0;
+        return r;
+    }
+    if (fabs(z.re) > RT_CM_LOG_LARGE) {
+        rt_sincos(z.im, &sn, &cs);
+        r.re = copysign(1., z.re);
+        r.im = 4. * sn * cs * rt_fp_exp(-2. * fabs(z.re));
+    } else {
+        tx = rt_fp_tanh(z.re);
+        ty = rt_fp_tan(z.im);
+        cx = 1. / rt_fp_cosh(z.re);
+        txty = tx * ty;
+        denom = 1. + txty * txty;
+        r.re = tx * (1. + ty * ty) / denom;
+        r.im = ((ty / denom) * cx) * cx;
+    }
+    rt_cm_errno = 0;
+    return r;
+}
+static rt_cx rt_cm_tan(rt_cx z) {
+    rt_cx s, r;
+    s.re = -z.im; s.im = z.re;
+    s = rt_cm_tanh(s);
+    r.re = s.im; r.im = -s.re;
+    return r;
+}
+#undef RT_CM_SPECIAL
+/* the function called `fn` (0..15, in the order of RT_CM_NAMES) of z; a domain or range error ends the program with the interpreter's message
+   (Python raises there whether or not the file says `use ieee`) */
+static const char *const rt_cm_names[16] = {"sqrt", "exp", "log", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh"};
+static rt_cx rt_cm_call(int fn, rt_cx z, int line) {
+    rt_cx r;
+    rt_cm_errno = 0;
+    switch (fn) {
+    case 0: r = rt_cm_sqrt(z); break;   case 1: r = rt_cm_exp(z); break;   case 2: r = rt_cm_log(z); break;   case 3: r = rt_cm_log10(z); break;
+    case 4: r = rt_cm_sin(z); break;    case 5: r = rt_cm_cos(z); break;   case 6: r = rt_cm_tan(z); break;    case 7: r = rt_cm_asin(z); break;
+    case 8: r = rt_cm_acos(z); break;   case 9: r = rt_cm_atan(z); break;  case 10: r = rt_cm_sinh(z); break;  case 11: r = rt_cm_cosh(z); break;
+    case 12: r = rt_cm_tanh(z); break;  case 13: r = rt_cm_asinh(z); break; case 14: r = rt_cm_acosh(z); break; default: r = rt_cm_atanh(z); break;
+    }
+    if (rt_cm_errno == EDOM || rt_cm_errno == ERANGE) {
+        char b[120];
+        const char *shown = rt_shown_override ? rt_shown_override : rt_py_complex(z, b);
+        if (rt_cm_errno == EDOM) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", rt_cm_names[fn], shown);
+        rt_fail(line, "%s(%s) is too large for a real (a file that says `use ieee` gets Infinity instead)", rt_cm_names[fn], shown);
+    }
+    return r;
 }
 static void rt_write_complex(rt_cx z) { char a[48], b[48]; printf("(%s, %s)", rt_py_float(z.re, a), rt_py_float(z.im, b)); }
 

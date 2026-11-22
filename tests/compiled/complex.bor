@@ -1,4 +1,4 @@
-! Complex numbers: Python's own arithmetic, mixed with whole numbers and reals, arrays, records, results, and the errors
+! Complex numbers: Python's own arithmetic, mixed with whole numbers and reals, arrays, records, results, and the functions (sqrt, exp, log, sin ...) and the errors
 record phasor
   complex :: amp
   real :: freq = 50.0
@@ -40,5 +40,7 @@ program complex_demo
   println(matmul(m, m), transpose(m))
   p.amp = rotate(cmplx(1.0, 0.0), 1.0)
   println(p)
+  println(sqrt(cmplx(-4.0, 0.0)), exp(cmplx(0.0, 3.14159)), log(w), sin(z), atanh(cmplx(0.5, 0.5)))
+  println(cosh(v), sqrt(v))
   println(cmplx(0.0, 0.0) ** -1)
 end program complex_demo
