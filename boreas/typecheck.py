@@ -658,6 +658,8 @@ class Checker:
             if ft.kind == "map" and len(ft.args) == 2 and len(arg_nodes) == 1 and ft.args[1] in ("set[string]", "set[int]", "int[]", "real[]"):
                 v = ft.args[1]                                  # a set or array that lives in the map
                 return Type("set", 0, False, "", (v[4:-1],)) if v.startswith("set[") else Type(v[:-2], 1)
+            if ft.kind == "map" and len(ft.args) == 2 and len(arg_nodes) == 1 and ft.args[1] in ("int", "real", "logical", "string"):
+                return Type(ft.args[1])                         # a value of a map that is a field
             return self.index_type(ft, arg_nodes)
         return ft
 

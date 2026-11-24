@@ -190,6 +190,7 @@ class Compiler:
         self.pow_ctx = None             # for a complex power: the operands before the conversion
         self.procs = {}                 # each procedure parameter's signature (a ProcType) -> its number
         self.procs_here = {}            # the procedure parameters of the procedure being written
+        self.entry_infos = {}           # each map entry passed as out or inout -> what entry_arg found
         self.multi = {}                 # each unpacking -> its (assignment, value, result number)
         self.deep = {}                  # record name -> does it own text (so that copying and freeing it take work)
 
@@ -1096,23 +1097,86 @@ class Compiler:
         for a, (typ, pname, intent) in zip(args, f.params):
             if intent in ("out", "inout") and not isinstance(a, (Var, FieldAccess, Apply)):
                 self.refuse(f"a computed value passed as {intent}", s)
-            if intent == "out" and isinstance(a, FieldAccess):
+            if isinstance(a, FieldAccess) and self.map_sub_type(a) is not None and intent in ("out", "inout"):
+                self.field_root(a.base, s)                   # an entry of a map that is a field: only its record must be a plain variable
+            elif intent == "out" and isinstance(a, FieldAccess):
                 self.refuse("a field passed as out", s)
-            if intent == "inout" and isinstance(a, FieldAccess):
+            elif intent == "inout" and isinstance(a, FieldAccess):
                 self.field_root(a, s)
             if intent == "out" and (self.param_type(typ) or Type("int")).kind in ("record", "interface", "string"):
                 self.refuse("a record or text passed as out", s)
             if intent in ("out", "inout") and (
                     (isinstance(a, Apply) and a.bracket and a.name in self.vtypes and self.vtypes[a.name].kind in COLLECTIONS)
                     or self.map_sub_type(a) is not None) and not (intent == "inout" and self.is_coll_var(a)):
-                self.refuse(f"an entry of a map passed as {intent}", s)
+                self.check_entry_arg(a, typ, intent, s)
             if intent in ("out", "inout") and isinstance(a, Apply) and any(isinstance(x, Slice) for x in a.args):
                 self.refuse(f"a section of '{a.name}' passed as {intent}", s)
         for (typ, pname, intent), root in zip(f.params, roots):
             if intent in ("out", "inout") and root in fixed:
                 self.refuse(f"the constant or parameter '{root}' passed as {intent}", s)
-            if intent in ("out", "inout") and root is not None and roots.count(root) > 1:
+            if intent in ("out", "inout") and root is not None and roots.count(root) > 1 and not self.entries_of_one_map(args, root, f.params):
                 self.refuse(f"'{root}' passed as {intent} and as another argument of the same call", s)
+
+    def entry_arg(self, a):
+        """For an argument that is an entry of a map (`m[k]`, `r.m[k]`) or an element of an array that is one (`m[k][i]`): the map's
+        Type and what it is: "value" (a whole number, real, logical or text), "array" (`int[]`, `real[]`) or "element"; else None."""
+        if isinstance(a, Apply) and a.bracket and a.name in self.vtypes and self.vtypes[a.name].kind == "map" \
+                and len(a.args) == 1 and not isinstance(a.args[0], (Slice, NamedArg)):
+            vt = self.vtypes[a.name]
+            if a.chain is not None:
+                if len(a.chain) != 1 or isinstance(a.chain[0], (Slice, NamedArg)):
+                    return None
+                return (vt, "element") if vt.args[1] in ("int[]", "real[]") else None
+        elif isinstance(a, FieldAccess) and not a.chain:
+            vt = self.map_sub_type(a)
+            if vt is None:
+                return None
+        else:
+            return None
+        want = vt.args[1]
+        if want in ("int", "real", "logical", "string"):
+            return vt, "value"
+        return (vt, "array") if want in ("int[]", "real[]") else None
+
+    def check_entry_arg(self, a, typ, intent, s):
+        """An entry of a map passed as out or inout: it is copied in and written back afterwards (the interpreter's way), so it must
+        be what the parameter takes exactly (the interpreter stops anything else)."""
+        info = self.entry_arg(a)
+        if info is None:
+            self.refuse(f"an entry of a map passed as {intent}", s)
+        self.entry_infos[id(a)] = info                      # (what the checker found; the emitter's tables are another procedure's)
+        vt, how = info
+        pt = self.param_type(typ)
+        want = vt.args[1]
+        base = want[:-2] if how != "value" else want
+        if pt is None or pt.kind != base or pt.rank != (1 if how == "array" else 0) or pt.optional:
+            self.refuse(f"an entry of a map passed as {intent} to a parameter of another type", s)
+        self.key_ok(vt, a.args[0], s)
+        if how == "element":
+            it = self.types.get(id(a.chain[0]))
+            if it is None or it.rank != 0 or it.optional or it.kind not in ("int", "int32"):
+                self.refuse("an element subscript that is not a whole number", s)
+        if how == "value" and want == "string" and intent == "out":
+            self.refuse("a record or text passed as out", s)
+
+    def map_id(self, a):
+        """Which map the entry argument `a` belongs to (a name, as messages show it), or None."""
+        if isinstance(a, Apply):
+            return a.name
+        d = self.dotted(a.base) if isinstance(a, FieldAccess) else None
+        return None if d is None else f"{d}.{a.field}"
+
+    def entries_of_one_map(self, args, root, params):
+        """Do all the arguments of a call that start at `root` stand for entries (whole values or arrays, not elements) of one map?
+        Then they only clash if their keys are equal, which the program checks when it runs."""
+        group = [(a, p[2]) for a, p in zip(args, params) if self.root_name(a) == root]
+        ids = set()
+        for a, intent in group:
+            info = self.entry_arg(a) if intent in ("out", "inout") else None
+            if info is None or info[1] == "element":
+                return False
+            ids.add(self.map_id(a))
+        return len(ids) == 1 and None not in ids
 
     @staticmethod
     def root_name(a):
@@ -2297,7 +2361,8 @@ class Compiler:
         once the call has returned (the out parameters that were never assigned are an error then)."""
         out = []
         self.after_call = []
-        for a, (typ, pname, intent) in zip(args, f.params):
+        entries = []                                         # the arguments that are entries of a map: (node, position, map type, key, intent)
+        for n, (a, (typ, pname, intent)) in enumerate(zip(args, f.params)):
             pt = self.param_type(typ)
             if pt.kind == "proc":                            # the function's address with its name (or the parameter passed on)
                 src = self.fn(a.name)
@@ -2309,10 +2374,36 @@ class Compiler:
             if pt.kind in COLLECTIONS:                       # passed by address (an `in` literal is built first)
                 out.append("&" + (self.coll_value(a, pt) if intent == "in" else self.coll_ref(a)[1]))
                 continue
+            info = self.entry_infos.get(id(a)) if intent in ("inout", "out") else None
+            if info is not None and info[1] == "array":                   # an array in a map: the callee works on it where it is
+                out.append(self.map_read(a).atom)
+                entries.append((a, n, info[0], None, intent))
+                continue
             if intent in ("inout", "out") and pt.rank == 0:
                 if isinstance(a, Var) and a.name in self.outs and intent == "inout":     # an unassigned out parameter is read
                     self.emit(f'if (!*set_{a.name}) rt_fail({self.line}, "\'{a.name}\' is used before it is assigned");')
-                lv = self.lvalue(a)
+                store = None
+                if info is not None and info[1] == "element":
+                    arr, i = self.map_element(a)
+                    lv = f"{arr.atom}.data[{i} - 1]"
+                elif info is not None:                                    # a value in a map: copied in, written back after the call
+                    vt = info[0]
+                    _, m, mname = self.map_of(a)
+                    self.n += 1
+                    kn = f"ek{self.n}"
+                    self.emit(f"rt_cell {kn} = {self.key_cell(self.value(a.args[0]), vt)};")
+                    want = vt.args[1]
+                    if intent == "inout":
+                        ent = f'rt_map_at(&{m}, {kn}, "{mname}", {self.line})'
+                        lv = self.tmp_str(f"rt_str_copy({ent}->val.s, {self.line})") if want == "string" else \
+                            self.tmp(CSCALAR[want], f"{ent}->val.{ {'int': 'i', 'real': 'd', 'logical': 'b'}[want] }")
+                    else:
+                        lv = self.tmp(CSCALAR[want], "0")
+                    cell = {"string": "rt_ks", "int": "rt_ki", "real": "rt_vd", "logical": "rt_vb"}[want]
+                    store = f"rt_map_put(&{m}, {kn}, {cell}({lv}), {self.line});"
+                    entries.append((a, n, vt, kn, intent))
+                else:
+                    lv = self.lvalue(a)
                 if pt.kind == "interface":
                     self.check_assigned(lv, getattr(a, "name", None), isinstance(a, Apply))
                 ref = "&" + lv
@@ -2327,6 +2418,8 @@ class Compiler:
                         self.after_call.append(f"*set_{a.name} = true;")
                 else:
                     out.append(ref)
+                if store is not None:
+                    self.after_call.append(store)
             elif pt.rank == 0:
                 out.append(self.typed(a, pt, f"argument '{pname}'"))
             else:
@@ -2334,6 +2427,13 @@ class Compiler:
                 out.append(v.atom)
         for typ, pname, intent in f.params[len(args):]:               # optional parameters left off arrive absent
             out.append(f"(({cscalar(self.param_type(typ))}){{0}})")
+        for a, n, vt, kn, intent in entries:                          # two entries of one map are the same place when their keys are equal
+            if kn is None:
+                continue
+            for b, m_, vt2, kn2, _ in entries:
+                if m_ != n and kn2 is not None and self.map_id(a) == self.map_id(b):
+                    self.emit(f'if (rt_key_eq({KEYKINDS[vt.args[0]]}, {kn}, {kn2})) rt_fail({self.line}, '
+                              f'"\'{self.map_of(a)[2]}\' is passed as {intent} and also as another argument to {f.name}; arguments must not alias");')
         return out
 
     def dotted(self, e):

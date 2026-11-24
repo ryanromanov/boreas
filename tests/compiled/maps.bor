@@ -31,6 +31,14 @@ function groups() -> map[string, set[string]]
   return g
 end function
 
+subroutine bump(inout int :: n)
+  @n = n + 1
+end subroutine
+
+subroutine fresh(out int :: n)
+  @n = 7
+end subroutine
+
 program maps
   map[string, int] :: count
   set[string] :: seen
@@ -70,4 +78,7 @@ program maps
   rows["k"] = [1, 2, 3]
   rows["k"][2] = 20
   println(team, size(team["b"]), rows, sum(rows["k"]))
+  call bump(@rows["k"][1])                   ! an entry (or an element of one) can be passed as inout or out
+  call fresh(@a.stock["new"])
+  println(rows, a.stock["new"])
 end program maps
