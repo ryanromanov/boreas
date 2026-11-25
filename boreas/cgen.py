@@ -14,7 +14,7 @@ import shutil
 import sys
 import subprocess
 import tempfile
-from .parser import (Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, CollLit, Comment, Cycle, Deallocate, Decl, Do, DoEach, DoWhile, MapType, SetType, Exit, FieldAccess, If, IsType,
+from .parser import (Where, Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, CollLit, Comment, Cycle, Deallocate, Decl, Do, DoEach, DoWhile, MapType, SetType, Exit, FieldAccess, If, IsType,
                      MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType, Select, SelectExpr, Arm, literal_value, NOT_LITERAL, Null, MultiAssign, ResultList, ReturnMany, ProcType, signature_of)
 from .effects import mark_problem
 from .interp import conformance
@@ -190,6 +190,8 @@ class Compiler:
         self.pow_ctx = None             # for a complex power: the operands before the conversion
         self.procs = {}                 # each procedure parameter's signature (a ProcType) -> its number
         self.procs_here = {}            # the procedure parameters of the procedure being written
+        self.where_top = None           # inside a `where`: the line of the outermost one (the interpreter names it for errors of operators)
+        self.where_assigns = {}         # each assignment inside a `where` -> (the plain assignment of the new array, its Pre)
         self.entry_infos = {}           # each map entry passed as out or inout -> what entry_arg found
         self.multi = {}                 # each unpacking -> its (assignment, value, result number)
         self.deep = {}                  # record name -> does it own text (so that copying and freeing it take work)
@@ -773,6 +775,8 @@ class Compiler:
                 self.coll_ok_nodes.update(id(a) for a in s.args if self.types.get(id(a)) is not None and self.types[id(a)].kind in COLLECTIONS)
             elif kind is DoEach:
                 self.check_doeach(s)
+            elif kind is Where:
+                self.check_where(s, fixed, body, f)
             elif kind is Call and self.is_coll_call(s):
                 self.check_coll_call(s)
             elif kind is Call:
@@ -815,6 +819,56 @@ class Compiler:
             self.check_assign(a, fixed, body, f)
             assigns.append((a, pre, i))
         self.multi[id(s)] = assigns
+
+    WHERE_WIDEN = {"real": ("real", "int", "int32", "real32"), "int": ("int", "int32"), "complex": ("complex", "int", "int32", "real", "real32")}   # (no narrowing: its error would be checked at the store)
+    WHERE_MATHS = ("sqrt", "exp", "log", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh")
+
+    def where_expr_ok(self, e, node):
+        """Inside a `where` the interpreter puts an error of an operator on the line of the whole `where`, but one of an array
+        subscript or a math function on its own line, so only expressions made of those (and variables and literals) are compiled."""
+        for n in walk(e):
+            k = type(n)
+            if k in (Var, Num, Bool, Unary, Binary, Slice):
+                continue
+            if k is Apply and n.bracket and not n.chain and n.name in self.vtypes and self.vtypes[n.name] is not None \
+                    and self.vtypes[n.name].rank > 0 and self.vtypes[n.name].kind in self.FITS:
+                continue
+            if k is Apply and not n.bracket and not n.chain and n.name in self.WHERE_MATHS and len(n.args) == 1 and n.name not in self.vtypes \
+                    and self.fn(n.name) is None:
+                continue
+            self.refuse("an expression inside where that is not numbers, subscripts and math functions", node)
+
+    def check_where(self, s, fixed, body, f):
+        """`where mask then ... elsewhere ... end where`: the mask is an array of logicals, and each statement inside is an assignment
+        to an array (or section) of the mask's shape, or another `where`. The values are worked out whole and the chosen elements
+        taken, so the new array is stored with an ordinary assignment (`Pre`)."""
+        mt = self.types.get(id(s.cond))
+        if mt is None or mt.kind != "logical" or mt.rank < 1 or mt.optional:
+            self.refuse("a where whose mask is not an array of logicals", s)
+        self.where_expr_ok(s.cond, s)
+        if isinstance(s.cond, Var) and (s.cond.name in self.allocs or s.cond.name not in self.locals_of_body):
+            self.refuse("a where whose mask is an allocatable array or a name from elsewhere", s)
+        for st in s.body + s.orelse:
+            if isinstance(st, Comment):
+                continue
+            if isinstance(st, Where):
+                self.check_where(st, fixed, body, f)
+                continue
+            if not isinstance(st, Assign):
+                self.refuse(f"a {type(st).__name__} statement inside where", st)
+            tt, vt = self.types.get(id(st.target)), self.types.get(id(st.value))
+            if tt is None or vt is None or tt.rank < 1 or tt.optional or vt.optional or tt.kind not in self.FITS or tt.kind == "string" \
+                    or vt.rank not in (0, tt.rank) or (vt.kind not in self.WHERE_WIDEN.get(tt.kind, (tt.kind,)) and not (
+                        tt.kind == "int32" and vt.kind == "int" and isinstance(st.value, Num) and isinstance(st.value.value, int)
+                        and abs(st.value.value) < 2 ** 31)):
+                self.refuse("an assignment inside where that is not numbers or logicals of an array", st)
+            self.where_expr_ok(st.target, st)
+            self.where_expr_ok(st.value, st)
+            pre = Pre()
+            self.types[id(pre)] = Type(tt.kind, tt.rank)
+            a = Assign(st.target, pre, st.line, st.update)
+            self.check_assign(a, fixed, body, f)
+            self.where_assigns[id(st)] = (a, pre)
 
     def check_assign(self, s, fixed, body, f):
         """One assignment (`s.target = s.value`): what it needs to be handled, or the refusal."""
@@ -1105,6 +1159,9 @@ class Compiler:
                 self.field_root(a, s)
             if intent == "out" and (self.param_type(typ) or Type("int")).kind in ("record", "interface", "string"):
                 self.refuse("a record or text passed as out", s)
+            if intent in ("out", "inout") and (self.param_type(typ) or Type("int")).kind == "interface" \
+                    and (self.types.get(id(a)) is None or self.types[id(a)].kind != "interface"):
+                self.refuse(f"a record passed as {intent} where an interface is wanted", s)
             if intent in ("out", "inout") and (
                     (isinstance(a, Apply) and a.bracket and a.name in self.vtypes and self.vtypes[a.name].kind in COLLECTIONS)
                     or self.map_sub_type(a) is not None) and not (intent == "inout" and self.is_coll_var(a)):
@@ -1215,7 +1272,7 @@ class Compiler:
             return None
         return Type(d.type, rank)
 
-    STATEMENTS = (MultiAssign, ReturnMany, Decl, Assign, If, Do, DoEach, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Select, Break)
+    STATEMENTS = (Where, MultiAssign, ReturnMany, Decl, Assign, If, Do, DoEach, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Select, Break)
 
     @staticmethod
     def allocs_of(body, f):
@@ -2018,7 +2075,7 @@ class Compiler:
 
     def unary(self, e):
         v = self.value(e.operand)
-        line = self.line
+        line = self.where_top or self.line
         if v.t.optional:
             v = self.unwrap(v, f"'{e.op}' cannot be used with null; check with present() or use ??")
         kind = v.t.kind
@@ -2051,7 +2108,7 @@ class Compiler:
         return res
 
     def binary(self, e):
-        op, line = e.op, self.line
+        op, line = e.op, self.where_top or self.line
         if op == "??":
             return self.coalesce(e)
         lt, rt = self.types.get(id(e.left)), self.types.get(id(e.right))
@@ -3432,6 +3489,68 @@ class Compiler:
             else:
                 self.emit(f'rt_init_shape_error({v.atom}.shape, {v.atom}.rank, {name}.shape, {name}.rank, "{s.name}", {line});')
                 self.copy_into(name, t.kind, v, line, f"line {line}")
+
+    def st_where(self, s):
+        self.where_block(s, None, s.line)
+
+    def where_block(self, s, outer, top):
+        """The mask is worked out once (a variable is read as it is when each part starts, as the interpreter does); each part
+        (`then`, then `elsewhere`) chooses its elements from it (and from the `where` around it)."""
+        line = s.line
+        self.line, self.where_top = line, top
+        mv = self.value(s.cond)
+        self.where_top = None
+        mask, rank = mv.atom, mv.t.rank
+        if outer is not None:
+            self.emit(f"if (!rt_shape_same({mask}.shape, {mask}.rank, {outer}.shape, {outer}.rank)) {{ char a_[80], b_[80]; "
+                      f"rt_shape_list(a_, {mask}.shape, {mask}.rank); rt_shape_list(b_, {outer}.shape, {outer}.rank); "
+                      f"rt_fail({line}, \"this 'where' has a mask of shape %s, but the 'where' around it has shape %s\", a_, b_); }}")
+        for body, want in ((s.body, True), (s.orelse, False)):
+            chosen = self.tmp_array("logical", rank)
+            self.emit(f"rt_like_logical(&{chosen}, {mask}.shape, {mask}.rank, {line});")
+            k = self.loop_var()
+            inside = f"{outer}.data[{k}] && " if outer is not None else ""
+            self.emit(f"for (int64_t {k} = 0; {k} < {chosen}.n; {k}++) {chosen}.data[{k}] = {inside}({mask}.data[{k}] == {'true' if want else 'false'});")
+            for st in body:
+                if isinstance(st, Comment):
+                    continue
+                if isinstance(st, Where):
+                    self.where_block(st, chosen, top)
+                    continue
+                self.line = st.line
+                self.emit("{")
+                self.depth += 1
+                saved, self.temps = self.temps, []
+                self.where_assign(st, mask, chosen, top)
+                for kind_, name in self.temps:
+                    self.emit(f"rt_free_{kind_}(&{name});")
+                self.temps = saved
+                self.depth -= 1
+                self.emit("}")
+
+    def where_assign(self, st, mask, chosen, top):
+        """One assignment in a `where`: the target and the value are both worked out whole, their shapes checked against the mask's,
+        and the new array (the value where chosen, what is there elsewhere) stored as the target."""
+        line = st.line
+        assign, pre = self.where_assigns[id(st)]
+        self.where_top = top
+        tv = self.value(st.target)
+        vv = self.value(st.value)
+        self.where_top = None
+        tk = tv.t.kind
+        self.emit(f"if (!rt_shape_same({tv.atom}.shape, {tv.atom}.rank, {mask}.shape, {mask}.rank)) {{ char a_[80]; "
+                  f"rt_shape_list(a_, {mask}.shape, {mask}.rank); "
+                  f"rt_fail({line}, \"inside 'where' every target must be an array with the mask's shape %s\", a_); }}")
+        if vv.t.rank > 0:
+            self.emit(f"if (!rt_shape_same({vv.atom}.shape, {vv.atom}.rank, {mask}.shape, {mask}.rank)) {{ char a_[80], b_[80]; "
+                      f"rt_shape_list(a_, {vv.atom}.shape, {vv.atom}.rank); rt_shape_list(b_, {mask}.shape, {mask}.rank); "
+                      f"rt_fail({line}, \"the value has shape %s, but the mask has shape %s\", a_, b_); }}")
+        new = self.array_like(tv, tk)
+        k = self.loop_var()
+        picked = self.cast(self.elem(vv, k), vv.t.kind, tk) if vv.t.rank > 0 else self.cast(vv.atom, vv.t.kind, tk)
+        self.emit(f"for (int64_t {k} = 0; {k} < {new}.n; {k}++) {new}.data[{k}] = {chosen}.data[{k}] ? {picked} : {self.elem(tv, k)};")
+        pre.v = V(Type(tk, tv.t.rank), new)
+        self.st_assign(assign)
 
     def st_assign(self, s):
         line = self.line

@@ -53,7 +53,7 @@ def main(directory=None):
     for name, why in different[:30]:
         print("  ", name, why)
     print("most common reasons for refusing:")
-    for why, n in refused.most_common(15):
+    for why, n in refused.most_common(int(os.environ.get("ORACLE_TOP", "15"))):
         print(f"  {n:5} {why}")
     return 1 if different else 0
 
