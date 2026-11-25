@@ -1,0 +1,42 @@
+! where ... elsewhere ... end where: masks, nesting, sections, two dimensions, a subroutine that changes its argument
+subroutine clip(inout real[] :: a)
+  where a < 0.0 then
+    @a = 0.0
+  end where
+end subroutine
+
+program where_demo
+  real[5] :: a = [-2.0, -1.0, 0.0, 1.0, 2.0]
+  real[5] :: b = [0.0, 0.0, 0.0, 0.0, 0.0]
+  int[4] :: n = [1, 2, 3, 4]
+  real[2, 2] :: g = reshape([1.0, -1.0, 2.0, -2.0], [2, 2])
+
+  where a > 0.0 then
+    b = a * 2
+  elsewhere
+    b = -1
+  end where
+  println(b)
+
+  where a > -1.5 then
+    where a < 1.5 then
+      b = 1.0
+    elsewhere
+      b = 2.0
+    end where
+  end where
+  println(b)
+
+  where n[2:3] > 1 then
+    n[2:3] = 0
+  end where
+  println(n)
+
+  where g < 0.0 then
+    g = 0.0
+  end where
+  println(g)
+
+  call clip(@a)
+  println(a)
+end program where_demo

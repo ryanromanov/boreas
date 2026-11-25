@@ -496,6 +496,17 @@ static void rt_shape_text(char *buf, const int64_t *shape, int rank) {
     for (int d = 0; d < rank; d++) k += sprintf(buf + k, d ? ", %lld" : "%lld", (long long)shape[d]);
     sprintf(buf + k, ")");
 }
+/* a shape the way a `where` message shows it: [3] or [2, 2] */
+static void rt_shape_list(char *buf, const int64_t *shape, int rank) {
+    int k = sprintf(buf, "[");
+    for (int d = 0; d < rank; d++) k += sprintf(buf + k, d ? ", %lld" : "%lld", (long long)shape[d]);
+    sprintf(buf + k, "]");
+}
+static bool rt_shape_same(const int64_t *a, int ra, const int64_t *b, int rb) {
+    if (ra != rb) return false;
+    for (int d = 0; d < ra; d++) if (a[d] != b[d]) return false;
+    return true;
+}
 /* two shapes that must be equal: Python orders them as tuples, so the smaller one is named first in an operation */
 static void rt_same_shape(const int64_t *a, int ra, const int64_t *b, int rb, int ordered, int line) {
     int same = ra == rb;
