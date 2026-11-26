@@ -1,0 +1,44 @@
+! Arrays of text: split, fields and keys give them; they are allocated, indexed, copied and passed like other arrays.
+function longest(string[] :: w) -> int
+  int :: i
+  int :: best = 0
+  do i = 1, size(w)
+    best = max(best, len(w[i]))
+  end do
+  return best
+end function
+
+program textarrays
+  allocatable string[] :: p
+  allocatable string[] :: q
+  string[2] :: pair
+  map[string, int] :: age
+  int :: i
+
+  p = split("a, bb,,ccc", ",")
+  println(size(p), p, longest(p))
+  q = p
+  q[1] = "changed"
+  println(p[1], q[1])
+
+  p = fields("  1.5   2.0 3.7 ")
+  println(p, to_real(p[2]) ?? -1.0)
+  p = fields("3, 4.5 ,,x;y", ",;")
+  println(size(p), p)
+
+  age["x"] = 1
+  age["y"] = 2
+  q = keys(age)
+  do i = 1, size(q)
+    println(q[i], age[q[i]])
+  end do
+
+  pair[1] = "left"
+  pair[2] = pair[1] + "!"
+  println(pair)
+  deallocate p
+  allocate p[2]
+  p[2] = "set"
+  println(p, allocated(p))
+  p = split("a", "")
+end program
