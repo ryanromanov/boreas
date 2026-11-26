@@ -14,7 +14,7 @@ import shutil
 import sys
 import subprocess
 import tempfile
-from .parser import (Gen, Where, Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, CollLit, Comment, Cycle, Deallocate, Decl, Do, DoEach, DoWhile, MapType, SetType, Exit, FieldAccess, If, IsType,
+from .parser import (Close, Gen, Where, Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, CollLit, Comment, Cycle, Deallocate, Decl, Do, DoEach, DoWhile, MapType, SetType, Exit, FieldAccess, If, IsType,
                      MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType, Select, SelectExpr, Arm, literal_value, NOT_LITERAL, Null, MultiAssign, ResultList, ReturnMany, ProcType, signature_of)
 from .effects import mark_problem
 from .interp import conformance
@@ -28,8 +28,9 @@ CKINDS = KINDS + ("complex",)                          # the kinds of a declared
 CMATH = ["sqrt", "exp", "log", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh"]    # in the order of rt_cm_names
 COMPLEX_OK = {*CMATH, "abs", "real", "aimag", "conjg", "cmplx", "sum", "product", "dot_product", "matmul", "transpose", "reshape", "size",
               "shape", "flatten"}                      # the built-in functions that take a complex value
-CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool", "string": "rt_str", "complex": "rt_cx"}
+CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool", "string": "rt_str", "complex": "rt_cx", "file": "rt_file"}
 CONVERSIONS = {"to_integer": "int", "to_real": "real", "to_logical": "logical"}      # text to an optional number or logical
+FILEFUNCS = {"open", "read_line"}                      # a file is opened; a line is read from it (or from the input)
 TEXTARR = {"split", "fields"}                         # text to an array of texts
 STRFUNCS = {"trim", "upper", "lower", "len", "len_trim", "repeat", "contains", "starts_with", "ends_with", "index", "scan", "verify", "replace", "adjustl", "adjustr", "iachar"} | set(CONVERSIONS)
 FORMATFUNCS = {"text", "tf", "right", "left", "fixed", "scientific", "general"}
@@ -49,7 +50,7 @@ BESSEL = {"bessel_j0": "j0", "bessel_j1": "j1", "bessel_y0": "y0", "bessel_y1": 
 SYSTEM = {"exists", "argument_count", "argument"}      # the file system and the command line
 COLLFUNCS = {"has", "get", "keys", "values"}        # of a map or set
 ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "findloc", "cshift", "lbound", "ubound", "pack", "spread"}
-BUILTINS |= STRFUNCS | FORMATFUNCS | TEXTARR
+BUILTINS |= STRFUNCS | FORMATFUNCS | TEXTARR | FILEFUNCS
 BUILTINS |= {"cmplx"} | ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS | OTHERS | COLLFUNCS | set(BESSEL) | SYSTEM
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
                "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
@@ -231,6 +232,8 @@ class Compiler:
                                     (t.kind == "record" and t.name in self.records and not self.has_iface.get(t.name)))
         if isrec(t):
             return t.rank in (0, 1) and (t.name in self.records or t.name in self.ifaces)
+        if t.kind == "file":
+            return t.rank == 0
         if t.kind == "string":
             return t.rank == 0 or t.rank == 1
         return t.kind in CKINDS and 0 <= t.rank <= MAX_RANK
@@ -315,8 +318,11 @@ class Compiler:
             return self.globals[key]
         typ, value, is_array = slot[0], slot[1], slot[2]
         t = self.param_type(typ) if isinstance(typ, str) and not is_array else None
-        ok = t is not None and t.rank == 0 and not t.optional and (t.kind in KINDS or t.kind == "string")
-        if ok:
+        ok = t is not None and t.rank == 0 and not t.optional and (t.kind in KINDS or t.kind in ("string", "file"))
+        if ok and t.kind == "file":                         # only one that is not open yet (it is opened by the program)
+            from .interp import FileHandle
+            ok = isinstance(value, FileHandle) and not value.is_open and value.name is None
+        elif ok:
             ok = (t.kind == "string" and isinstance(value, str) and all(0 < ord(ch) < 128 for ch in value)) or \
                  (t.kind == "logical" and type(value) is bool) or \
                  (t.kind in ("int", "int32") and isinstance(value, int) and not isinstance(value, bool)) or \
@@ -329,6 +335,8 @@ class Compiler:
         cname, t, v, _ = g
         if t.kind == "string":
             return f"rt_str_set(&{cname}, RT_LIT({c_string(v)}), 0);"
+        if t.kind == "file":
+            return f"{cname} = NULL;"
         if t.kind == "logical":
             lit = "true" if v else "false"
         elif t.kind == "int":
@@ -439,6 +447,8 @@ class Compiler:
                     note(n.type)
                 elif isinstance(n, Apply) and n.name in CONVERSIONS and n.name not in own:
                     bases.add(CONVERSIONS[n.name])
+                elif isinstance(n, Apply) and n.name == "read_line" and n.name not in own:
+                    bases.add("string")
                 elif isinstance(n, Apply) and n.name == "get" and not n.bracket and n.name not in own:
                     gt = self.types.get(id(n))
                     if gt is not None and gt.optional and (gt.kind in KINDS or gt.kind == "string"):
@@ -609,8 +619,8 @@ class Compiler:
                     self.refuse(f"parameter '{name}' of '{f.name}' ({typ if isinstance(typ, str) else 'a procedure'})")
                 if intent in ("out", "inout") and f.ret is not None:
                     self.refuse(f"{intent} parameter '{name}' of the function '{f.name}'")
-                if pt.kind == "string" and pt.rank > 0 and intent != "in":
-                    self.refuse(f"{intent} parameter '{name}' of '{f.name}' (an array of texts)")
+                if (pt.kind == "string" and pt.rank > 0 or pt.kind == "file") and intent != "in":
+                    self.refuse(f"{intent} parameter '{name}' of '{f.name}' ({'a file' if pt.kind == 'file' else 'an array of texts'})")
         for f in [*all_functions(self), None]:
             self.set_scope(f)
             if f is not None:
@@ -698,6 +708,8 @@ class Compiler:
             return Type("record", 0, True, typ[:-1])
         t = parse(typ, None)
         if t.known and t.kind == "string" and t.rank == 0:
+            return t
+        if t.known and t.kind == "file" and t.rank == 0 and not t.optional:
             return t
         if t.known and t.kind == "string" and t.rank == 1 and not t.optional:         # an array of texts (only as an `in` parameter)
             return t
@@ -894,9 +906,11 @@ class Compiler:
                     self.fits(v, t.kind, "a result", s)
             elif kind is MultiAssign:
                 self.check_multi(s, fixed, body, f)
+            elif kind is Close:
+                self.check_file_arg(s.file, "close", s)
             elif kind is Print:
                 if s.to is not None:
-                    self.refuse("printing to a file", s)
+                    self.check_file_arg(s.to, "write", s)
                 self.opt_ok.update(id(a) for a in s.args)
                 self.coll_ok_nodes.update(id(a) for a in s.args if self.types.get(id(a)) is not None and self.types[id(a)].kind in COLLECTIONS)
             elif kind is DoEach:
@@ -917,6 +931,12 @@ class Compiler:
                 self.refuse(f"a {kind.__name__} statement", s)
         for node in walk(body):
             self.check_expr(node, strings)
+
+    def check_file_arg(self, e, what, node):
+        """The file a `close`, `write` or `writeln` names: a plain `file` value."""
+        t = self.types.get(id(e))
+        if t is None or t.kind != "file" or t.rank != 0 or t.optional:
+            self.refuse(f"{what} of anything but a file", node)
 
     def check_multi(self, s, fixed, body, f):
         """`(q, @r, _) = f(x)`: a call of a function that gives back several numbers, each result then assigned like a single one."""
@@ -1084,7 +1104,11 @@ class Compiler:
                 self.same_record(s.value, tt.name, s)
             else:
                 self.same_record(s.value, tt.name, s, tt.rank)
-        if tt is not None and tt.kind == "string" and tt.rank == 1 and not tt.optional:         # an array of texts
+        if tt is not None and tt.kind == "file":
+            vt = self.types.get(id(s.value))
+            if isinstance(root, Apply) or vt is None or vt.kind != "file" or vt.rank != 0 or vt.optional:
+                self.refuse("a value that is not a file stored in a file", s)
+        elif tt is not None and tt.kind == "string" and tt.rank == 1 and not tt.optional:         # an array of texts
             vt = self.types.get(id(s.value))
             if isinstance(root, Apply):                                  # one element: some text
                 if len(root.args) != 1 or isinstance(root.args[0], (Slice, NamedArg)):
@@ -1398,6 +1422,8 @@ class Compiler:
             if d.dims is not None and len(d.dims) == 1 and not d.allocatable and not d.const:      # a fixed-size array of records
                 return Type("record", 1, False, d.type)
             return None if d.dims is not None or d.allocatable or d.const else Type("record", 0, False, d.type)
+        if d.type == "file":
+            return None if d.dims is not None or d.allocatable or d.const else Type("file")
         if d.type == "string":
             if d.dims is not None and len(d.dims) == 1 and not d.const:       # a text array: fixed in size, or allocatable
                 return Type("string", 1)
@@ -1409,7 +1435,7 @@ class Compiler:
             return None
         return Type(d.type, rank)
 
-    STATEMENTS = (Where, MultiAssign, ReturnMany, Decl, Assign, If, Do, DoEach, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Select, Break)
+    STATEMENTS = (Close, Where, MultiAssign, ReturnMany, Decl, Assign, If, Do, DoEach, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Select, Break)
 
     @staticmethod
     def allocs_of(body, f):
@@ -1789,11 +1815,13 @@ class Compiler:
                     at = self.types.get(id(a))
                     if isrec(at) and at.rank == 1 and e.name == "size":
                         continue
+                    if at is not None and at.kind == "file" and not (e.name in ("read_line", "present") and at.rank == 0):
+                        self.refuse(f"a file as an argument of '{e.name}'", e)
                     if at is not None and at.kind == "string" and at.rank > 0:
                         if e.name not in ("size", "allocated"):
                             self.refuse(f"an array of texts as an argument of '{e.name}'", e)
                         continue
-                    if at is not None and (isrec(at) or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS | COLLFUNCS | SYSTEM | TEXTARR)):
+                    if at is not None and (isrec(at) or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS | COLLFUNCS | SYSTEM | TEXTARR | FILEFUNCS)):
                         self.refuse(f"{'a record' if at.kind == 'record' else 'text'} as an argument of '{e.name}'", e)
                 if any(isinstance(a, NamedArg) for a in e.args):
                     self.refuse(f"a named argument of {e.name}()", e)
@@ -1955,6 +1983,13 @@ class Compiler:
             self.refuse(f"{name}() of complex arrays that may be empty", e)
         if name in BESSEL or name in SYSTEM:
             self.check_system_function(e)
+            return
+        if name in FILEFUNCS:
+            kinds = [self.types[id(a)] for a in e.args]
+            want = ("string", "string") if name == "open" else ("file",)
+            if len(kinds) not in ((2,) if name == "open" else (0, 1)) \
+                    or any(t.kind != w or t.rank != 0 or t.optional or isinstance(a, NamedArg) for t, a, w in zip(kinds, e.args, want)):
+                self.refuse(f"{name}() of anything but what it takes", e)
             return
         if name in TEXTARR:
             kinds = [self.types[id(a)] for a in e.args]
@@ -3386,6 +3421,20 @@ class Compiler:
             name = "atan2"
         if name in CONSTANTS:
             return self.constant(e)
+        if name == "open":
+            vals = [self.value(a) for a in e.args]
+            ok = self.tmp("bool", "true")
+            return V(Type("file"), self.tmp("rt_file", f"rt_open({vals[0].atom}, {vals[1].atom}, true, {line}, &{ok})"))
+        if name == "read_line":
+            ot = Type("string", 0, True)
+            res = self.tmp(cscalar(ot), "{0}")
+            self.temps.append((f"rec_{skind(ot)}", res))
+            if e.args:
+                f = self.value(e.args[0])
+                self.emit(f"{res}.has = rt_read_line_file({f.atom}, &{res}.v, {line});")
+            else:
+                self.emit(f"{res}.has = rt_read_line(stdin, &{res}.v, false, {line});")
+            return V(ot, res)
         if name in TEXTARR:
             vals = [self.value(a) for a in e.args]
             res = self.tmp_array("string", 1)
@@ -4367,6 +4416,8 @@ class Compiler:
                 else:
                     k = self.loop_var()
                     self.emit(f"for (int64_t {k} = 0; {k} < {atom.atom}.n; {k}++) chk_{kind[4:]}({atom.atom}.data[{k}], {self.line});")
+        if s.to is not None:                            # the file is checked once the values are worked out
+            self.emit(f"rt_out = rt_file_for_write({self.value(s.to).atom}, {self.line});")
         for i, (kind, rank, atom) in enumerate(parts):
             if i:
                 self.emit("rt_write_sep();")
@@ -4386,6 +4437,11 @@ class Compiler:
                 self.emit(f"rt_write_{kind}_arr(&{tmp});")
         if s.newline:
             self.emit("rt_write_nl();")
+        if s.to is not None:
+            self.emit("rt_out = stdout;")
+
+    def st_close(self, s):
+        self.emit(f"rt_file_close({self.value(s.file).atom}, {self.line});")
 
     def st_call(self, s):
         if self.is_coll_call(s):
@@ -4795,7 +4851,7 @@ class Compiler:
         self.emit("fflush(stdout);")
         self.emit("return 0;")
         inits = [f"    {self.global_init(g)}" for g in self.globals.values() if g is not None]
-        main = ["int main(int argc, char **argv) {", "    rt_argc = argc; rt_argv = argv;"] + inits + self.lines + ["}"]
+        main = ["int main(int argc, char **argv) {", "    rt_argc = argc; rt_argv = argv; rt_out = stdout;"] + inits + self.lines + ["}"]
         runtime = open(os.path.join(HERE, "cruntime.h")).read()
         flags = []
         if self.release:

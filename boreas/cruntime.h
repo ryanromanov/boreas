@@ -93,8 +93,9 @@ static const char *rt_real_text(double x, char *out) {
 
 /* ---- printing ------------------------------------------------------------------------------------------------ */
 
-static void rt_write_int(int64_t v) { printf("%lld", (long long)v); }
-static void rt_write_real(double v) { char b[48]; fputs(rt_real_text(v, b), stdout); }
+static FILE *rt_out;                                  /* where the writers print: the screen, or a file being written */
+static void rt_write_int(int64_t v) { fprintf(rt_out, "%lld", (long long)v); }
+static void rt_write_real(double v) { char b[48]; fputs(rt_real_text(v, b), rt_out); }
 /* a real32 is written as the shortest text that reads back as the same single-precision value, then as a real is
    (100.0, 1e-05, 0.1): the digits are tried as the interpreter tries them, parsed as a double and rounded to single */
 static const char *rt_real32_text(float x, char *out) {
@@ -108,11 +109,11 @@ static const char *rt_real32_text(float x, char *out) {
     }
     return rt_real_text(d, out);
 }
-static void rt_write_real32(float v) { char b[48]; fputs(rt_real32_text(v, b), stdout); }
-static void rt_write_bool(bool v) { fputs(v ? "true" : "false", stdout); }
-static void rt_write_str(const char *s) { fputs(s, stdout); }
-static void rt_write_sep(void) { fputc(' ', stdout); }
-static void rt_write_nl(void) { fputc('\n', stdout); }
+static void rt_write_real32(float v) { char b[48]; fputs(rt_real32_text(v, b), rt_out); }
+static void rt_write_bool(bool v) { fputs(v ? "true" : "false", rt_out); }
+static void rt_write_str(const char *s) { fputs(s, rt_out); }
+static void rt_write_sep(void) { fputc(' ', rt_out); }
+static void rt_write_nl(void) { fputc('\n', rt_out); }
 static void rt_stop(int code) { fflush(stdout); exit(code); }
 
 /* ---- 64-bit integers: checked unless -DBOREAS_RELEASE -------------------------------------------------------- */
@@ -563,35 +564,35 @@ static void rt_init_shape_error(const int64_t *init, int ri, const int64_t *shap
 #define RT_DEFINE_WRITE(NAME, T, WRITE)                                                                            \
     static void rt_write_##NAME##_arr(const rt_##NAME##_arr *a) {                                                  \
         if (a->rank == 1) {                                                                                        \
-            fputc('[', stdout);                                                                                    \
-            for (int64_t i = 0; i < a->shape[0]; i++) { if (i) fputs(", ", stdout); WRITE(a->data[i]); }           \
-            fputc(']', stdout);                                                                                    \
+            fputc('[', rt_out);                                                                                    \
+            for (int64_t i = 0; i < a->shape[0]; i++) { if (i) fputs(", ", rt_out); WRITE(a->data[i]); }           \
+            fputc(']', rt_out);                                                                                    \
         } else if (a->rank == 2) {                                                                                 \
-            fputc('[', stdout);                                                                                    \
+            fputc('[', rt_out);                                                                                    \
             for (int64_t i = 0; i < a->shape[0]; i++) {                                                            \
-                if (i) fputs(", ", stdout);                                                                        \
-                fputc('[', stdout);                                                                                \
-                for (int64_t j = 0; j < a->shape[1]; j++) { if (j) fputs(", ", stdout); WRITE(a->data[i + j * a->shape[0]]); } \
-                fputc(']', stdout);                                                                                \
+                if (i) fputs(", ", rt_out);                                                                        \
+                fputc('[', rt_out);                                                                                \
+                for (int64_t j = 0; j < a->shape[1]; j++) { if (j) fputs(", ", rt_out); WRITE(a->data[i + j * a->shape[0]]); } \
+                fputc(']', rt_out);                                                                                \
             }                                                                                                      \
-            fputc(']', stdout);                                                                                    \
+            fputc(']', rt_out);                                                                                    \
         } else {                                                                                                   \
-            fputc('[', stdout);                                                                                    \
+            fputc('[', rt_out);                                                                                    \
             for (int64_t i = 0; i < a->shape[0]; i++) {                                                            \
-                if (i) fputs(", ", stdout);                                                                        \
-                fputc('[', stdout);                                                                                \
+                if (i) fputs(", ", rt_out);                                                                        \
+                fputc('[', rt_out);                                                                                \
                 for (int64_t j = 0; j < a->shape[1]; j++) {                                                        \
-                    if (j) fputs(", ", stdout);                                                                    \
-                    fputc('[', stdout);                                                                            \
+                    if (j) fputs(", ", rt_out);                                                                    \
+                    fputc('[', rt_out);                                                                            \
                     for (int64_t k = 0; k < a->shape[2]; k++) {                                                    \
-                        if (k) fputs(", ", stdout);                                                                \
+                        if (k) fputs(", ", rt_out);                                                                \
                         WRITE(a->data[i + j * a->shape[0] + k * a->shape[0] * a->shape[1]]);                       \
                     }                                                                                              \
-                    fputc(']', stdout);                                                                            \
+                    fputc(']', rt_out);                                                                            \
                 }                                                                                                  \
-                fputc(']', stdout);                                                                                \
+                fputc(']', rt_out);                                                                                \
             }                                                                                                      \
-            fputc(']', stdout);                                                                                    \
+            fputc(']', rt_out);                                                                                    \
         }                                                                                                          \
     }
 /* ---- complex numbers: CPython's own arithmetic (Objects/complexobject.c, the same in 3.10 to 3.13), step by step ---------
@@ -1167,7 +1168,7 @@ static rt_cx rt_cm_call(int fn, rt_cx z, int line) {
     }
     return r;
 }
-static void rt_write_complex(rt_cx z) { char a[48], b[48]; printf("(%s, %s)", rt_py_float(z.re, a), rt_py_float(z.im, b)); }
+static void rt_write_complex(rt_cx z) { char a[48], b[48]; fprintf(rt_out, "(%s, %s)", rt_py_float(z.re, a), rt_py_float(z.im, b)); }
 
 RT_DEFINE_WRITE(int, int64_t, rt_write_int)
 RT_DEFINE_WRITE(int32, int32_t, rt_write_int)
@@ -1518,7 +1519,7 @@ static int rt_str_cmp(rt_str a, rt_str b) {
     if (c) return c < 0 ? -1 : 1;
     return a.n < b.n ? -1 : a.n > b.n ? 1 : 0;
 }
-static void rt_write_string(rt_str s) { fputs(rt_cs(s), stdout); }
+static void rt_write_string(rt_str s) { fputs(rt_cs(s), rt_out); }
 static rt_str rt_str_upper(rt_str s, int line) {
     rt_str r = rt_str_new(rt_cs(s), s.n, line);
     for (int64_t i = 0; i < r.n; i++) if (r.p[i] >= 'a' && r.p[i] <= 'z') r.p[i] -= 32;
@@ -1608,6 +1609,66 @@ static rt_str rt_str_part(rt_str s, int64_t lo, int64_t hi, const char *name, in
     return rt_str_new(rt_cs(s) + lo - 1, hi - lo + 1, line);
 }
 
+/* ---- files: a file value is a pointer to a handle that everything holding that file shares (NULL: never opened) ------- */
+typedef struct { char *name; int mode; FILE *fh; } rt_file_s;           /* mode: 1 read, 2 write, 3 append */
+typedef rt_file_s *rt_file;
+static const char *rt_mode_names[] = {"", "read", "write", "append"};
+static rt_file rt_open(rt_str name, rt_str mode, bool must, int line, bool *ok) {
+    int m = !strcmp(rt_cs(mode), "read") ? 1 : !strcmp(rt_cs(mode), "write") ? 2 : !strcmp(rt_cs(mode), "append") ? 3 : 0;
+    if (!m) rt_fail(line, "open mode must be \"read\", \"write\" or \"append\", got \"%s\"", rt_cs(mode));
+    FILE *fh = fopen(rt_cs(name), m == 1 ? "r" : m == 2 ? "w" : "a");
+    if (fh) {
+        struct stat st;
+        if (fstat(fileno(fh), &st) == 0 && S_ISDIR(st.st_mode)) { fclose(fh); fh = NULL; errno = EISDIR; }
+    }
+    if (!fh) {
+        if (must) rt_fail(line, "cannot open '%s' for %s: %s", rt_cs(name), rt_mode_names[m], strerror(errno));
+        *ok = false;
+        return NULL;
+    }
+    if (m != 1) setvbuf(fh, NULL, _IOFBF, 8192);
+    rt_file f = (rt_file)malloc(sizeof *f);
+    if (!f) rt_fail(line, "out of memory");
+    f->name = strdup(rt_cs(name)); f->mode = m; f->fh = fh;
+    *ok = true;
+    return f;
+}
+/* the open file an expression names; want is 0 for any, 1 for reading, 2 for writing */
+static rt_file_s *rt_file_use(rt_file f, int want, int line) {
+    if (!f || !f->name) rt_fail(line, "the file was never opened");
+    if (!f->fh) rt_fail(line, "the file is closed ('%s')", f->name);
+    if (want == 2 && f->mode == 1) rt_fail(line, "'%s' was opened for read, so it cannot be used for writeing", f->name);
+    return f;
+}
+static void rt_file_close(rt_file f, int line) {
+    rt_file_use(f, 0, line);
+    fclose(f->fh); f->fh = NULL;
+}
+static FILE *rt_file_for_write(rt_file f, int line) { return rt_file_use(f, 2, line)->fh; }
+/* the next line, or false at the end. A file is read as Python reads text: a line ends at \n, \r\n or a lone \r. The input
+   (stdin) ends a line at \n only, and every \r and \n left at the end of the line is dropped. */
+static bool rt_read_line(FILE *fh, rt_str *out, bool universal, int line) {
+    int64_t n = 0, cap = 64;
+    char *b = (char *)malloc((size_t)cap);
+    if (!b) rt_fail(line, "out of memory");
+    int c = getc(fh);
+    if (c == EOF) { free(b); return false; }
+    for (; c != EOF && c != '\n'; c = getc(fh)) {
+        if (universal && c == '\r') { int d = getc(fh); if (d != '\n' && d != EOF) ungetc(d, fh); break; }
+        if (c == 0 || c >= 128) rt_fail(line, "the compiled program reads ASCII text only (this line has another character)");
+        if (n + 1 >= cap) { cap *= 2; b = (char *)realloc(b, (size_t)cap); if (!b) rt_fail(line, "out of memory"); }
+        b[n++] = (char)c;
+    }
+    if (!universal) while (n > 0 && b[n - 1] == '\r') n--;
+    b[n] = 0;
+    out->p = b; out->n = n;
+    return true;
+}
+static bool rt_read_line_file(rt_file f, rt_str *out, int line) {
+    if (!f || !f->fh || f->mode != 1) rt_fail(line, "read_line(): needs a file that is open for reading");
+    return rt_read_line(f->fh, out, true, line);
+}
+
 /* ---- arrays of text (one dimension): every element is a text that the array owns --------------------------------- */
 typedef struct { rt_str *data; int64_t shape[3]; int rank; int64_t n; } rt_string_arr;
 static inline void rt_free_string(rt_string_arr *a) {
@@ -1626,9 +1687,9 @@ static inline void rt_like_string(rt_string_arr *a, const int64_t *shape, int ra
     rt_alloc_string(a, rank, shape[0], rank > 1 ? shape[1] : 1, rank > 2 ? shape[2] : 1, line);
 }
 static void rt_write_string_arr(const rt_string_arr *a) {
-    fputc('[', stdout);
-    for (int64_t i = 0; i < a->n; i++) { if (i) fputs(", ", stdout); fputs(rt_cs(a->data[i]), stdout); }
-    fputc(']', stdout);
+    fputc('[', rt_out);
+    for (int64_t i = 0; i < a->n; i++) { if (i) fputs(", ", rt_out); fputs(rt_cs(a->data[i]), rt_out); }
+    fputc(']', rt_out);
 }
 /* split(s, sep): the pieces between each exact sep; an empty piece stays */
 static void rt_split(rt_string_arr *out, rt_str s, rt_str sep, int line) {
@@ -2098,14 +2159,14 @@ static void rt_write_cell(int kind, rt_cell c, bool key) {
 }
 static void rt_write_collection(rt_map m) {                            /* {ann: 31, bob: 27} and {x, y} */
     bool first = true;
-    fputc('{', stdout);
+    fputc('{', rt_out);
     for (int64_t i = 0; i < m.n; i++) if (m.e[i].live) {
-        if (!first) fputs(", ", stdout);
+        if (!first) fputs(", ", rt_out);
         first = false;
         rt_write_cell(m.kk, m.e[i].key, true);
-        if (m.vk >= 0) { fputs(": ", stdout); rt_write_cell(m.vk, m.e[i].val, false); }
+        if (m.vk >= 0) { fputs(": ", rt_out); rt_write_cell(m.vk, m.e[i].val, false); }
     }
-    fputc('}', stdout);
+    fputc('}', rt_out);
 }
 
 /* the command line and the file system */
