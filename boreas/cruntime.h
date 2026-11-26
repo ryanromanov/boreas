@@ -479,6 +479,26 @@ RT_DEFINE_ARRAY(real32, float)
 RT_DEFINE_ARRAY(logical, bool)
 RT_DEFINE_ARRAY(complex, rt_cx)
 
+/* a growing list of values (an array literal with a generator or a spliced array does not know its length until it has run) */
+#define RT_DEFINE_VEC(NAME, T)                                                                                     \
+    typedef struct { T *p; int64_t n, cap; } rt_vec_##NAME;                                                        \
+    static inline void rt_free_vec_##NAME(rt_vec_##NAME *v) { free(v->p); v->p = NULL; v->n = v->cap = 0; }         \
+    static inline void rt_push_##NAME(rt_vec_##NAME *v, T x, int line) {                                           \
+        if (v->n == v->cap) {                                                                                      \
+            int64_t c = v->cap ? v->cap * 2 : 16;                                                                  \
+            T *q = (T *)realloc(v->p, (size_t)c * sizeof(T));                                                      \
+            if (!q) rt_fail(line, "out of memory");                                                                \
+            v->p = q; v->cap = c;                                                                                  \
+        }                                                                                                          \
+        v->p[v->n++] = x;                                                                                          \
+    }
+RT_DEFINE_VEC(int, int64_t)
+RT_DEFINE_VEC(int32, int32_t)
+RT_DEFINE_VEC(real, double)
+RT_DEFINE_VEC(real32, float)
+RT_DEFINE_VEC(logical, bool)
+RT_DEFINE_VEC(complex, rt_cx)
+
 /* a subscript: in range, or the interpreter's message ("in dimension 2" only for a matrix) */
 static inline void rt_check_index(int64_t i, int64_t n, int dim, int rank, int line) {
 #ifndef BOREAS_RELEASE

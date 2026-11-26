@@ -1,0 +1,17 @@
+! Generators in array literals: squares, pairs, nested (rows), splicing an array, a stepped range, a loop variable that hides another
+function squares(int :: n) -> int[]
+  return [k * k do k = 1, n]
+end function
+
+program generators
+  real[3] :: x = [1.0, 2.0, 3.0]
+  int :: i = 77
+  int :: n = 2
+
+  println(squares(5), [k do k = 10, 1, -3])
+  println([(k, -k do k = 1, 3)])
+  println([(10 * row + col do col = 1, 3) do row = 1, 2])
+  println([x, (0.0 do j = 1, n)], sum([x, 9.0]))
+  println([i do i = 1, 3], i)
+  println(reshape([k do k = 1, 6], [2, 3]), size([k do k = 5, 1]))
+end program generators
