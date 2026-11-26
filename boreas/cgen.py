@@ -206,6 +206,8 @@ class Compiler:
         self.procs = {}                 # each procedure parameter's signature (a ProcType) -> its number
         self.procs_here = {}            # the procedure parameters of the procedure being written
         self.gen_ok = set()             # the generators an array literal has checked
+        self.case_values = {}           # the value of each case value (a literal or a constant's value)
+        self.case_errors = {}           # a select whose case values the interpreter will reject when it runs -> its message
         self.where_top = None           # inside a `where`: the line of the outermost one (the interpreter names it for errors of operators)
         self.where_assigns = {}         # each assignment inside a `where` -> (the plain assignment of the new array, its Pre)
         self.entry_infos = {}           # each map entry passed as out or inout -> what entry_arg found
@@ -374,7 +376,7 @@ class Compiler:
                 if iface and fd.init is not None:
                     self.refuse(f"the default of field '{fd.name}'", line=fd.line)
                 if fd.init is not None:
-                    self.field_default(fd, todo)
+                    self.field_default(fd, todo, r)
         visiting = set()
 
         def visit(name):
@@ -484,8 +486,68 @@ class Compiler:
     def iface_function(self, iname, fname):
         return self.ifaces[iname].functions.get(fname)
 
-    def field_default(self, fd, todo):
-        """The C text of the default of field `fd` (a literal of the field's own kind, or a whole number for a real)."""
+    def folded_default(self, fd, rdef):
+        """The default of field `fd` worked out now by the interpreter itself, when it is made only of literals, constants and
+        built-in functions (so it gives the same value every time a record is made): a list of C texts (one value, or one per
+        element of an array field), or None."""
+        from .interp import PURE_BUILTINS, coerce, Array
+        owner = self.interp.owner.get(id(rdef)) if rdef is not None else None
+        if owner is None or not isinstance(fd.type, str) or fd.type not in ("int", "int32", "real", "real32", "logical", "string"):
+            return None
+        for n in walk(fd.init):
+            k = type(n)
+            if k in (Num, Bool, Str, Unary, Binary, ArrayLit) or (k is Var and n.name in owner.consts and owner.consts[n.name][3] == "const") \
+                    or (k is Apply and not n.bracket and not n.chain and n.name in PURE_BUILTINS and n.name not in owner.funcs
+                        and n.name not in owner.records):
+                continue
+            return None
+        saved, self.interp.scope = self.interp.scope, owner
+        try:
+            value = self.interp.eval(fd.init, dict(owner.consts))
+            count = fd.dims[0].value if fd.dims else 1
+            if isinstance(value, Array):
+                if not fd.dims or value.rank != 1 or value.shape[0] != count:
+                    return None
+                values = list(value.data)
+            else:
+                values = [value] * count
+            values = [coerce(fd.type, x, "a default") for x in values]
+        except Exception:
+            return None
+        finally:
+            self.interp.scope = saved
+        out = []
+        for x in values:
+            if fd.type == "logical" and x is True or x is False:
+                out.append("true" if x else "false")
+            elif fd.type == "string" and isinstance(x, str) and all(0 < ord(ch) < 128 for ch in x):
+                out.append(f"rt_str_new({c_string(x)}, {len(x)}, 0)")
+            elif fd.type == "int" and type(x) is int:
+                out.append(f"INT64_C({x})")
+            elif fd.type == "int32" and isinstance(x, int):
+                out.append(f"((int32_t){int(x)})")
+            elif fd.type == "real" and type(x) is float and x == x and abs(x) < 1e300:
+                out.append(repr(x))
+            elif fd.type == "real32" and isinstance(x, float) and x == x and abs(x) <= 3.4028234663852886e38:
+                out.append(f"((float){float(x)!r})")
+            else:
+                return None
+        return out
+
+    def field_default(self, fd, todo, rdef=None):
+        """The C text of the default of field `fd`: a literal of the field's own kind (or a whole number for a real), or a constant
+        expression the interpreter works out here; for an array field a list of texts, one per element."""
+        if not isinstance(fd.init, ArrayLit):
+            try:
+                return self.literal_default(fd)
+            except NotCompiled:
+                pass
+        folded = self.folded_default(fd, rdef)
+        if folded is None:
+            self.refuse(f"the default of field '{fd.name}'", line=fd.line)
+        return folded if fd.dims else folded[0]
+
+    def literal_default(self, fd):
         e = fd.init
         if fd.type == "string":
             if not isinstance(e, Str) or not all(0 < ord(ch) < 128 for ch in e.value):
@@ -646,17 +708,58 @@ class Compiler:
         if t is None or t.rank != 0 or t.kind not in ("int", "int32", "string", "logical"):
             self.refuse("a select case on anything but a whole number, text or logical", node)
         want = {"int": int, "int32": int, "string": str, "logical": bool}[t.kind]
+        entries, dynamic = [], False
         for values in groups:
             for item in values or ():
                 parts = [item.lo, item.hi] if isinstance(item, Slice) else [item]
                 if isinstance(item, Slice) and (item.step is not None or t.kind == "logical"):
                     self.refuse("a range with a step, or of logicals, in a select case", node)
+                got = []
                 for x in parts:
                     if x is None:
+                        got.append(None)
                         continue
-                    v = literal_value(x)
-                    if v is NOT_LITERAL or type(v) is not want or (want is str and not all(0 < ord(ch) < 128 for ch in v)):
-                        self.refuse("a case value that is not a literal of the selector's kind", node)
+                    v = self.case_val(x)
+                    if v is NOT_LITERAL or (type(v) is not want and not (want is int and isinstance(v, int) and not isinstance(v, bool)))\
+                            or (want is str and not all(0 < ord(ch) < 128 for ch in v)):
+                        self.refuse("a case value that is not a literal or a constant of the selector's kind", node)
+                    dynamic = dynamic or literal_value(x) is NOT_LITERAL
+                    self.case_values[id(x)] = v
+                    got.append(v)
+                lo, hi = (got[0], got[0]) if not isinstance(item, Slice) else (got[0], got[1])
+                entries.append((lo, hi, not isinstance(item, Slice)))
+        if dynamic:        # the interpreter checks the values each time the select runs (a constant has a value only then)
+            from .parser import check_overlap, show_range
+            from .lexer import LangError
+            try:
+                for lo, hi, point in entries:
+                    if lo is not None and hi is not None and lo > hi:
+                        raise LangError(f"line 0: the range {show_range(lo, hi, False)} is empty")
+                check_overlap(entries, 0)
+            except LangError as err:
+                self.case_errors[id(node)] = str(err).split(": ", 1)[1]
+
+    def case_val(self, x):
+        """The value of a case value: a literal, or the name of a constant (a local one, or a module's)."""
+        v = literal_value(x)
+        if v is not NOT_LITERAL or not isinstance(x, Var):
+            return v
+        from .interp import coerce
+        if x.name in self.locals_of_body:
+            for d in statements_in(self.current_body):
+                if isinstance(d, Decl) and d.name == x.name and d.const and d.dims is None and isinstance(d.type, str):
+                    iv = literal_value(d.init) if d.init is not None else NOT_LITERAL
+                    if iv is NOT_LITERAL:
+                        return NOT_LITERAL
+                    try:
+                        return coerce(d.type, iv, "a constant")
+                    except Exception:
+                        return NOT_LITERAL
+            return NOT_LITERAL
+        slot = self.scope.consts.get(x.name) if self.scope is not None else None
+        if slot is not None and slot[3] == "const" and not slot[2] and isinstance(slot[1], (int, float, str, bool)):
+            return slot[1]
+        return NOT_LITERAL
 
     def check_type_subject(self, subject, node):
         """What a select type or `is` looks at: an interface variable, parameter or element (not a computed value, whose
@@ -688,6 +791,7 @@ class Compiler:
         self.check_type_name(e.type, e)
 
     def check_body(self, body, f):
+        self.current_body = body
         self.locals_of_body = {p[1] for p in f.params} if f is not None else set()
         self.locals_of_body |= {d.name for d in statements_in(body) if isinstance(d, Decl)}
         self.opt_ok = set()                                    # the nodes that may be an optional value (what is done with it is handled)
@@ -1890,6 +1994,15 @@ class Compiler:
                 return ko
         return None
 
+    def check_loc_options(self, e, rest, ts, ranks):
+        """The optional `dim` (a whole number written out: 0 for the whole array) and `back` (a logical) of maxloc, minloc, findloc."""
+        if rest and not (isinstance(rest[0], Num) and type(rest[0].value) is int):
+            self.refuse(f"{e.name}() with a dimension that is not written out as a whole number", e)
+        if len(rest) == 2 and (ts[1].kind != "logical" or ts[1].rank != 0 or ts[1].optional):
+            self.refuse(f"{e.name}() with a back that is not a logical", e)
+        if rest and rest[0].value == 0 and ranks[0] == 3:
+            self.refuse(f"{e.name}() of a three-dimensional array with the dimension 0", e)
+
     def check_array_function(self, e, ranks):
         name, ts = e.name, [self.types[id(a)] for a in e.args]
         out = self.types[id(e)]
@@ -1915,8 +2028,9 @@ class Compiler:
             if len(e.args) != 1 or ranks[0] < 1 or ts[0].kind != "logical":
                 self.refuse(f"{name}() of anything but a whole array of logicals", e)
         elif name in ("maxloc", "minloc"):
-            if len(e.args) != 1 or not 1 <= ranks[0] <= MAX_RANK or ts[0].kind == "logical":
+            if not 1 <= len(e.args) <= 3 or not 1 <= ranks[0] <= MAX_RANK or ts[0].kind in ("logical", "string", "complex"):
                 self.refuse(f"{name}() of anything but an array of numbers", e)
+            self.check_loc_options(e, e.args[1:], ts[1:], ranks)
         elif name == "pack":
             if len(e.args) != 2 or not 1 <= ranks[0] <= MAX_RANK or ts[0].kind == "string" or ts[1].kind != "logical" \
                     or ranks[1] not in (0, ranks[0]):
@@ -1927,9 +2041,10 @@ class Compiler:
                 self.refuse("spread() of anything but a value or array, a dimension and a number of copies", e)
         elif name == "findloc":
             same = lambda k: "i" if k in ("int", "int32") else "r" if k in ("real", "real32") else k
-            if len(e.args) != 2 or not 1 <= ranks[0] <= MAX_RANK or ranks[1] != 0 or ts[0].kind == "string" \
+            if not 2 <= len(e.args) <= 4 or not 1 <= ranks[0] <= MAX_RANK or ranks[1] != 0 or ts[0].kind == "string" \
                     or same(ts[0].kind) != same(ts[1].kind):
                 self.refuse("findloc() of anything but an array and one value of the same sort", e)
+            self.check_loc_options(e, e.args[2:], ts[2:], ranks)
         elif name == "cshift":
             if len(e.args) not in (2, 3) or ranks[0] not in (1, 2) or ranks[1] != 0 or ts[1].kind not in ("int", "int32"):
                 self.refuse("cshift() of anything but a vector or matrix and a whole-number shift", e)
@@ -2984,31 +3099,7 @@ class Compiler:
             self.emit("}")
             return V(Type(kind, r + 1), res)
         if name in ("maxloc", "minloc", "findloc"):
-            k = self.loop_var()
-            if name == "findloc":
-                found = self.tmp("int64_t", "0")                 # the place (from 1) of the first element equal to the value, 0 for none
-                if a.t.kind in ("int", "int32"):
-                    v = self.cast(vals[1].atom, vals[1].t.kind, "int")
-                    x = f"(int64_t){self.elem(a, k)}"
-                else:
-                    v = self.cast(vals[1].atom, vals[1].t.kind, "real") if a.t.kind != "logical" else vals[1].atom
-                    x = f"(double){self.elem(a, k)}" if a.t.kind != "logical" else self.elem(a, k)
-                self.emit(f"for (int64_t {k} = 0; {k} < {a.atom}.n; {k}++) if ({x} == {v}) {{ {found} = {k} + 1; break; }}")
-                best = self.tmp("int64_t", f"{found} - 1")
-            else:
-                self.emit(f'rt_check_nonempty({a.atom}.n, "{name}", {line});')
-                best = self.tmp("int64_t", "0")
-                op = ">" if name == "maxloc" else "<"
-                x, bx = self.elem(a, k), self.elem(a, best)
-                self.emit(f"for (int64_t {k} = 1; {k} < {a.atom}.n; {k}++) if ({x} {op} {bx}) {best} = {k};")
-            if a.t.rank == 1:
-                return V(Type("int"), self.tmp("int64_t", f"{best} + 1"))
-            res = self.tmp_array("int", 1)                       # a matrix gives its subscripts, all 0 when nothing was found
-            self.emit(f"rt_alloc_int(&{res}, 1, {a.t.rank}, 1, 1, {line});")
-            rest = self.tmp("int64_t", best)
-            for d in range(a.t.rank):
-                self.emit(f"if ({rest} >= 0) {{ {res}.data[{d}] = {rest} % {a.atom}.shape[{d}] + 1; {rest} /= {a.atom}.shape[{d}]; }} else {res}.data[{d}] = 0;")
-            return V(Type("int", 1), res)
+            return self.locate(name, e, vals, line)
         if name == "merge":
             b, mask = vals[1], vals[2]
             kind = self.merge_kind(e)
@@ -3040,6 +3131,93 @@ class Compiler:
             self.emit(f"if ({n} > 0) for (int64_t {k} = 0; {k} < {res}.n; {k}++) {res}.data[{k}] = {src};")
             return V(Type(kind, a.t.rank), res)
         raise NotCompiled(f"{name}()", line)
+
+    def locate(self, name, e, vals, line):
+        """maxloc, minloc and findloc of an array, with the optional `dim` (written out; 0 is the whole array) and `back` (the last of equal
+        ones, not the first). The whole array gives a position (a vector) or the subscripts (a matrix); a dimension gives one position per
+        line along it."""
+        a = vals[0]
+        r = a.t.rank
+        first = 2 if name == "findloc" else 1
+        dim = e.args[first].value if len(e.args) > first else 0
+        back = vals[first + 1].atom if len(e.args) > first + 1 else "false"
+        k = self.loop_var()
+        if name != "findloc":
+            self.emit(f'rt_check_nonempty({a.atom}.n, "{name}", {line});')
+        if dim != 0 and not 1 <= dim <= r:
+            self.emit(f'rt_fail({line}, "{name}(): dimension must be 1..{r}");')
+            return V(Type("int", 0 if r == 1 else r - 1), self.tmp("int64_t", "0")) if r == 1 else \
+                V(Type("int", r - 1), self.tmp_array("int", r - 1))
+        if name == "findloc":
+            if a.t.kind in ("int", "int32"):
+                want = self.cast(vals[1].atom, vals[1].t.kind, "int")
+                same = lambda idx: f"((int64_t){self.elem(a, idx)} == {want})"
+            elif a.t.kind == "logical":
+                want = vals[1].atom
+                same = lambda idx: f"({self.elem(a, idx)} == {want})"
+            else:
+                want = self.cast(vals[1].atom, vals[1].t.kind, "real")
+                same = lambda idx: f"((double){self.elem(a, idx)} == {want})"
+
+            def scan(idx, count, step, base, out):
+                """`out` = the place (from 1) of the first (or, with back, last) element `base + j * step` that equals the value, else 0"""
+                j = self.loop_var()
+                at = lambda: f"({base} + {j} * {step})"
+                self.emit(f"{out} = 0;")
+                self.emit(f"if ({back}) {{ for (int64_t {j} = {count} - 1; {j} >= 0; {j}--) if ({same(at())}) {{ {out} = {j} + 1; break; }} }}")
+                self.emit(f"else {{ for (int64_t {j} = 0; {j} < {count}; {j}++) if ({same(at())}) {{ {out} = {j} + 1; break; }} }}")
+        else:
+            op = ">" if name == "maxloc" else "<"
+
+            def scan(idx, count, step, base, out):
+                j = self.loop_var()
+                best = f"({base} + {out} * {step})"
+                x = f"({base} + {j} * {step})"
+                self.emit(f"{out} = 0;")
+                self.emit(f"for (int64_t {j} = 1; {j} < {count}; {j}++) if ({self.elem(a, x)} {op} {self.elem(a, best)} || ({back} && {self.elem(a, x)} == {self.elem(a, best)})) {out} = {j};")
+                self.emit(f"{out} += 1;")
+        if dim == 0:
+            best = self.tmp("int64_t", "0")
+            scan(None, f"{a.atom}.n", "1", "0", best)
+            if name == "findloc":
+                self.emit(f"{best} = {best} - 1;")
+            else:
+                self.emit(f"{best} = {best} - 1;")
+            if r == 1:
+                return V(Type("int"), self.tmp("int64_t", f"{best} + 1"))
+            res = self.tmp_array("int", 1)                       # a matrix gives its subscripts, all 0 when nothing was found
+            self.emit(f"rt_alloc_int(&{res}, 1, {r}, 1, 1, {line});")
+            rest = self.tmp("int64_t", best)
+            for d in range(r):
+                self.emit(f"if ({rest} >= 0) {{ {res}.data[{d}] = {rest} % {a.atom}.shape[{d}] + 1; {rest} /= {a.atom}.shape[{d}]; }} else {res}.data[{d}] = 0;")
+            return V(Type("int", 1), res)
+        count = f"{a.atom}.shape[{dim - 1}]"
+        step = "1" if dim == 1 else " * ".join(f"{a.atom}.shape[{d}]" for d in range(dim - 1))
+        if r == 1:
+            out = self.tmp("int64_t", "0")
+            scan(None, count, "1", "0", out)
+            return V(Type("int"), out)
+        others = [d for d in range(r) if d != dim - 1]
+        shape = [f"{a.atom}.shape[{d}]" for d in others] + ["1"] * (3 - len(others))
+        res = self.tmp_array("int", r - 1)
+        self.emit(f"rt_alloc_int(&{res}, {r - 1}, {shape[0]}, {shape[1]}, {shape[2]}, {line});")
+        o = self.loop_var()
+        rest, base, out = (self.tmp("int64_t", "0") for _ in range(3))
+        self.emit(f"for (int64_t {o} = 0; {o} < {res}.n; {o}++) {{")
+        self.depth += 1
+        self.emit(f"{rest} = {o}; {base} = 0;")
+        stride = "1"
+        for d in range(r):
+            if d == dim - 1:
+                stride = f"{stride} * {a.atom}.shape[{d}]"
+                continue
+            self.emit(f"{base} += ({rest} % {a.atom}.shape[{d}]) * ({stride}); {rest} /= {a.atom}.shape[{d}];")
+            stride = f"{stride} * {a.atom}.shape[{d}]"
+        scan(None, count, f"({step})", base, out)
+        self.emit(f"{res}.data[{o}] = {out};")
+        self.depth -= 1
+        self.emit("}")
+        return V(Type("int", r - 1), res)
 
     def constant(self, e):
         """huge(x), epsilon(x), tiny(x): a constant of the kind of x (which is still evaluated)."""
@@ -3821,7 +3999,7 @@ class Compiler:
             self.depth -= 1
         self.emit("}")
 
-    def case_index(self, subject, groups):
+    def case_index(self, subject, groups, node=None):
         """Work out which group of case values the subject matches: a C int, the group's index, or -1 for none (a `default` group
         is the answer when nothing else matches). The subject's temporaries are freed here, before any body runs."""
         sel = self.tmp("int", "-1")
@@ -3830,6 +4008,8 @@ class Compiler:
         saved, self.temps = self.temps, []
         v = self.value(subject)
         sv = self.tmp("int64_t" if v.t.kind in ("int", "int32") else CSCALAR[v.t.kind], f"(int64_t){v.atom}" if v.t.kind in ("int", "int32") else v.atom)
+        if node is not None and id(node) in self.case_errors:
+            self.emit(f"rt_fail({self.line}, {c_string(self.case_errors[id(node)])});")
         default = None
         first = True
         for n, values in enumerate(groups):
@@ -3852,7 +4032,7 @@ class Compiler:
 
     def case_test(self, sv, kind, item):
         def lit(x):
-            v = literal_value(x)
+            v = self.case_values.get(id(x), literal_value(x))
             if kind == "string":
                 return f"RT_LIT({c_string(v)})"
             return "true" if v is True else "false" if v is False else f"INT64_C({v})"
@@ -3872,7 +4052,7 @@ class Compiler:
         return "(" + " && ".join(parts) + ")" if parts else "true"
 
     def st_select(self, s):
-        sel = self.case_index(s.subject, [c.values for c in s.cases])
+        sel = self.case_index(s.subject, [c.values for c in s.cases], s)
         self.n += 1
         label = f"brk{self.n}"
         self.selects.append(label)
@@ -3888,7 +4068,7 @@ class Compiler:
 
     def select_expr(self, e):
         t = self.types[id(e)]
-        sel = self.case_index(e.subject, [a.values for a in e.arms])
+        sel = self.case_index(e.subject, [a.values for a in e.arms], e)
         self.n += 1
         res = f"t{self.n}"
         if t.kind == "string":
@@ -4365,12 +4545,15 @@ class Compiler:
             if self.ftype(fd) in self.records or self.ftype(fd) in self.ifaces or self.fopt(fd):
                 value = f"d_{self.ftype(fd)}()"
             elif fd.init is not None:
-                value = self.field_default(fd, self.records)
+                value = self.field_default(fd, self.records, r)
             elif fd.type == "string":
                 value = 'rt_str_new("", 0, 0)'
             else:
                 value = self.zero(fd.type)
-            if fd.dims:
+            if fd.dims and isinstance(value, list):
+                ct = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool"}.get(fd.type)
+                body.append(f"{{ static const {ct} init[] = {{{', '.join(value)}}}; for (int i = 0; i < {fd.dims[0].value}; i++) {m}[i] = init[i]; }}")
+            elif fd.dims:
                 body.append(f"for (int i = 0; i < {fd.dims[0].value}; i++) {m}[i] = {value};")
             else:
                 body.append(f"{m} = {value};")
