@@ -81,8 +81,23 @@ def f_name(name):
 
 
 def all_functions(c):
-    """Every procedure of the program: the plain ones, the modules' ones, then the functions of the records."""
-    return [*c.unit.functions.values(), *[f for m in c.unit.modules.values() for f in m.functions.values()], *c.methods.values()]
+    """Every procedure of the program that can run: the plain ones, the modules' ones, then the functions of the records. A plain
+    or module procedure whose name is never mentioned by anything that can run (the program, a procedure it mentions, a record's
+    function) is left out: the interpreter never looks inside it either, so what it holds cannot matter."""
+    plain = [*c.unit.functions.values(), *[f for m in c.unit.modules.values() for f in m.functions.values()]]
+    if getattr(c, "_reached", None) is None:
+        by_name = {}
+        for f in plain:
+            by_name.setdefault(f.name, []).append(f)
+        names, work = set(), [c.unit.program.body, *[f.body for f in c.methods.values()]]
+        while work:
+            for n in walk(work.pop()):
+                name = getattr(n, "name", None) if isinstance(n, (Apply, Call, Var)) else getattr(n, "field", None) if isinstance(n, FieldAccess) else None
+                if name is not None and name not in names:
+                    names.add(name)
+                    work.extend(f.body for f in by_name.get(name, ()))
+        c._reached = {id(f) for f in plain if f.name in names}
+    return [*[f for f in plain if id(f) in c._reached], *c.methods.values()]
 
 
 OPT = "opt__"      # the name an optional value's type goes by in C: r_opt__int, r_opt__string, r_opt__address, ...

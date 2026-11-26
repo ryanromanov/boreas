@@ -446,6 +446,19 @@ class ErrorTests(unittest.TestCase):
                     self.assertEqual(built.returncode, 0, built.stderr[-300:])
                     same_as_interpreter(self, source)
 
+    def test_a_procedure_nothing_calls_is_left_out_whatever_it_holds(self):
+        """The interpreter never looks inside a procedure that is not called, so the compiler does not either (this one has a
+        subscript of a whole number and an allocatable text); one that is called, directly or through another, is still checked."""
+        defs = ("subroutine bump(inout int :: v)\n  @v[1] = 1\nend subroutine\n\n"
+                "function words() -> int\n  allocatable string[] :: s\n  return 1\nend function\n\n"
+                "function helper() -> int\n  return 7\nend function\n\n"
+                "function through() -> int\n  return helper()\nend function\n\n")
+        done = same_as_interpreter(self, prog("  println(through())", defs))
+        self.assertEqual(done.stdout, "7\n")
+        refused = boreas("emit-c", self.write(prog("  println(words())", defs)))
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("the declaration of 's'", refused.stderr)
+
     def test_a_function_that_ends_without_returning_names_the_line_of_the_call(self):
         defs = "function f(real :: a) -> real\n  if a > 0.0 then\n    return a\n  end if\nend function\n"
         done = same_as_interpreter(self, prog("  println(f(1.0))\n  println(f(-1.0))", defs))
@@ -590,7 +603,7 @@ class RefusalTests(unittest.TestCase):
         self.refused("record p\n  string[2] :: x\nend record\nprogram t\nend program\n", "field 'x' of record 'p'")
         self.refused(prog("  int :: n = 1\n  println(hypot(2.5, 1.0), n)"), "the function 'hypot'")
         self.refused(prog("  const int :: i = 1\n  do i = 1, 2\n  end do"), "constant or parameter")
-        self.refused("function f(int :: n) -> int\n  n = 2\n  return n\nend function\nprogram t\nend program\n", "constant or parameter")
+        self.refused("function f(int :: n) -> int\n  n = 2\n  return n\nend function\nprogram t\n  println(f(1))\nend program\n", "constant or parameter")
         self.refused(prog("  int :: n = 1\n  call s(@n, @n)", "subroutine s(out int :: k, out int :: j)\n  @k = 1\n  @j = 2\nend subroutine\n"),
                      "passed as out and as another argument")
 
@@ -600,7 +613,7 @@ class RefusalTests(unittest.TestCase):
         self.refused(prog("  int :: n = 1\n  call s(n)", "subroutine s(inout int :: k)\n  @k = 2\nend subroutine\n"), "the interpreter rejects")
         self.refused(prog("  const int :: n = 1\n  call t(@n)", "subroutine t(inout int :: k)\n  @k = 2\nend subroutine\n"),
                      "constant or parameter")
-        self.refused("function g(string[] :: a) -> string[]\n  return a\nend function\nprogram t\nend program\n", "returns")
+        self.refused("function g(string[] :: a) -> string[]\n  return a\nend function\nprogram t\n  string[2] :: a = [\"x\", \"y\"]\n  println(g(a))\nend program\n", "returns")
         self.refused(prog("  int[3] :: a = [1, 2, 3]\n  int :: t = 0\n  println(mod(a, 2), t)"), "mod() of an array")
 
     def test_a_program_with_a_type_error_is_refused(self):
