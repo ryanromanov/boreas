@@ -30,6 +30,7 @@ COMPLEX_OK = {*CMATH, "abs", "real", "aimag", "conjg", "cmplx", "sum", "product"
               "shape", "flatten"}                      # the built-in functions that take a complex value
 CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool", "string": "rt_str", "complex": "rt_cx"}
 CONVERSIONS = {"to_integer": "int", "to_real": "real", "to_logical": "logical"}      # text to an optional number or logical
+TEXTARR = {"split", "fields"}                         # text to an array of texts
 STRFUNCS = {"trim", "upper", "lower", "len", "len_trim", "repeat", "contains", "starts_with", "ends_with", "index", "scan", "verify", "replace", "adjustl", "adjustr", "iachar"} | set(CONVERSIONS)
 FORMATFUNCS = {"text", "tf", "right", "left", "fixed", "scientific", "general"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
@@ -48,7 +49,7 @@ BESSEL = {"bessel_j0": "j0", "bessel_j1": "j1", "bessel_y0": "y0", "bessel_y1": 
 SYSTEM = {"exists", "argument_count", "argument"}      # the file system and the command line
 COLLFUNCS = {"has", "get", "keys", "values"}        # of a map or set
 ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "findloc", "cshift", "lbound", "ubound", "pack", "spread"}
-BUILTINS |= STRFUNCS | FORMATFUNCS
+BUILTINS |= STRFUNCS | FORMATFUNCS | TEXTARR
 BUILTINS |= {"cmplx"} | ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS | OTHERS | COLLFUNCS | set(BESSEL) | SYSTEM
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
                "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
@@ -185,6 +186,7 @@ class Compiler:
         self.func = None
         self.vars = {}                  # name -> (Type, C lvalue)
         self.arrays = []                # the local arrays of the function being written (freed at its end)
+        self.map_subs = {}              # the `r.m[key]` nodes seen while checking, and the map each one is
         self.temps = []                 # array temporaries of the statement being written (freed after it)
         self.records = {}               # the record types the program defines (all of them are handled, or it is refused)
         self.rec_order = []             # their names, fields before the records that hold them
@@ -230,7 +232,7 @@ class Compiler:
         if isrec(t):
             return t.rank in (0, 1) and (t.name in self.records or t.name in self.ifaces)
         if t.kind == "string":
-            return t.rank == 0
+            return t.rank == 0 or t.rank == 1
         return t.kind in CKINDS and 0 <= t.rank <= MAX_RANK
 
     @staticmethod
@@ -607,6 +609,8 @@ class Compiler:
                     self.refuse(f"parameter '{name}' of '{f.name}' ({typ if isinstance(typ, str) else 'a procedure'})")
                 if intent in ("out", "inout") and f.ret is not None:
                     self.refuse(f"{intent} parameter '{name}' of the function '{f.name}'")
+                if pt.kind == "string" and pt.rank > 0 and intent != "in":
+                    self.refuse(f"{intent} parameter '{name}' of '{f.name}' (an array of texts)")
         for f in [*all_functions(self), None]:
             self.set_scope(f)
             if f is not None:
@@ -694,6 +698,8 @@ class Compiler:
             return Type("record", 0, True, typ[:-1])
         t = parse(typ, None)
         if t.known and t.kind == "string" and t.rank == 0:
+            return t
+        if t.known and t.kind == "string" and t.rank == 1 and not t.optional:         # an array of texts (only as an `in` parameter)
             return t
         if t.known and t.optional:
             return t if t.kind in KINDS and t.rank == 0 else None
@@ -1078,7 +1084,16 @@ class Compiler:
                 self.same_record(s.value, tt.name, s)
             else:
                 self.same_record(s.value, tt.name, s, tt.rank)
-        if tt is not None and tt.kind == "string" and not tt.optional and not self.is_optional_value(s.value):
+        if tt is not None and tt.kind == "string" and tt.rank == 1 and not tt.optional:         # an array of texts
+            vt = self.types.get(id(s.value))
+            if isinstance(root, Apply):                                  # one element: some text
+                if len(root.args) != 1 or isinstance(root.args[0], (Slice, NamedArg)):
+                    self.refuse("an assignment to part of an array of texts", s)
+                if vt is None or vt.kind != "string" or vt.rank != 0 or vt.optional:
+                    self.refuse("a value that is not text stored in an element of an array of texts", s)
+            elif vt is None or vt.kind != "string" or vt.rank != 1 or vt.optional:
+                self.refuse("a value that is not an array of texts stored in one", s)
+        elif tt is not None and tt.kind == "string" and not tt.optional and not self.is_optional_value(s.value):
             vt = self.types.get(id(s.value))
             if isinstance(root, Apply):
                 self.refuse("an assignment to part of a text", s)
@@ -1384,6 +1399,8 @@ class Compiler:
                 return Type("record", 1, False, d.type)
             return None if d.dims is not None or d.allocatable or d.const else Type("record", 0, False, d.type)
         if d.type == "string":
+            if d.dims is not None and len(d.dims) == 1 and not d.const:       # a text array: fixed in size, or allocatable
+                return Type("string", 1)
             return None if d.dims is not None or d.allocatable or d.const else Type("string")
         if d.type not in CKINDS:
             return None
@@ -1454,7 +1471,15 @@ class Compiler:
         return vt if vt is not None and vt.kind == "map" and vt.args[1] in NESTED else None
 
     def map_sub_type(self, e):
-        """For `r.m[key]` (a subscripted map field of a record): the map's Type, else None."""
+        """For `r.m[key]` (a subscripted map field of a record): the map's Type, else None. (Worked out when the procedure is
+        checked, where its variables are known; remembered for when it is written.)"""
+        t = self.map_sub_work(e)
+        if t is not None:
+            self.map_subs[id(e)] = t
+            return t
+        return self.map_subs.get(id(e))
+
+    def map_sub_work(self, e):
         if not (isinstance(e, FieldAccess) and e.bracket and e.args is not None and not e.chain and len(e.args) == 1):
             return None
         bt = self.types.get(id(e.base))
@@ -1732,7 +1757,13 @@ class Compiler:
                 rt = self.types.get(id(e))
                 if isrec(rt) and not self.record_element(e):
                     self.refuse("part of an array of records", e)
-                if rt is not None and rt.kind == "string":                  # s[i] or s[lo:hi] of a text variable
+                if vt is not None and vt.kind == "string" and vt.rank == 1:        # an element of an array of texts
+                    if len(e.args) != 1 or isinstance(e.args[0], (Slice, NamedArg)):
+                        self.refuse("a part of an array of texts", e)
+                    xt = self.types.get(id(e.args[0]))
+                    if xt is None or xt.rank != 0 or xt.kind not in ("int", "int32"):
+                        self.refuse("a subscript that is not a whole number", e)
+                elif rt is not None and rt.kind == "string":                  # s[i] or s[lo:hi] of a text variable
                     a = e.args[0] if len(e.args) == 1 else None
                     if a is None or (isinstance(a, Slice) and a.step is not None):
                         self.refuse("a part of a text written any other way than s[i] or s[lo:hi]", e)
@@ -1758,7 +1789,11 @@ class Compiler:
                     at = self.types.get(id(a))
                     if isrec(at) and at.rank == 1 and e.name == "size":
                         continue
-                    if at is not None and (isrec(at) or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS | COLLFUNCS | SYSTEM)):
+                    if at is not None and at.kind == "string" and at.rank > 0:
+                        if e.name not in ("size", "allocated"):
+                            self.refuse(f"an array of texts as an argument of '{e.name}'", e)
+                        continue
+                    if at is not None and (isrec(at) or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS | COLLFUNCS | SYSTEM | TEXTARR)):
                         self.refuse(f"{'a record' if at.kind == 'record' else 'text'} as an argument of '{e.name}'", e)
                 if any(isinstance(a, NamedArg) for a in e.args):
                     self.refuse(f"a named argument of {e.name}()", e)
@@ -1920,6 +1955,12 @@ class Compiler:
             self.refuse(f"{name}() of complex arrays that may be empty", e)
         if name in BESSEL or name in SYSTEM:
             self.check_system_function(e)
+            return
+        if name in TEXTARR:
+            kinds = [self.types[id(a)] for a in e.args]
+            if len(kinds) not in ((2,) if name == "split" else (1, 2)) \
+                    or any(t.kind != "string" or t.rank != 0 or t.optional or isinstance(a, NamedArg) for t, a in zip(kinds, e.args)):
+                self.refuse(f"{name}() of anything but what it takes", e)
             return
         if name in STRFUNCS:
             self.check_string_function(e)
@@ -2834,7 +2875,7 @@ class Compiler:
             return V(Type(arr.t.kind), self.tmp(CSCALAR[arr.t.kind], f"{arr.atom}.data[{i} - 1]"))
         if e.bracket and vt is not None and vt.kind in COLLECTIONS:
             return self.map_read(e)
-        if e.bracket and self.types[id(e)].kind == "string":
+        if e.bracket and self.types[id(e)].kind == "string" and not (vt is not None and vt.kind == "string" and vt.rank == 1):
             return self.string_part(e)
         if e.bracket:
             return self.element(e)
@@ -3345,6 +3386,12 @@ class Compiler:
             name = "atan2"
         if name in CONSTANTS:
             return self.constant(e)
+        if name in TEXTARR:
+            vals = [self.value(a) for a in e.args]
+            res = self.tmp_array("string", 1)
+            second = vals[1].atom if len(vals) == 2 else "RT_LIT(\"\")"
+            self.emit(f"rt_{name}(&{res}, {vals[0].atom}, {second}, {line});")
+            return V(Type("string", 1), res)
         if name in STRFUNCS:
             return self.string_function(e)
         if name in FORMATFUNCS:
@@ -3679,8 +3726,11 @@ class Compiler:
         res = self.tmp_array(kind, 1)
         self.emit(f"rt_alloc_{kind}(&{res}, 1, {m}.size, 1, 1, {line});")
         at, k = self.tmp("int64_t", "0"), self.loop_var()
-        part = f"key.{ {'int': 'i'}[kind] }" if name == "keys" else f"val.{ {'int': 'i', 'real': 'd', 'logical': 'b'}[kind] }"
-        self.emit(f"for (int64_t {k} = 0; {k} < {m}.n; {k}++) if ({m}.e[{k}].live) {res}.data[{at}++] = {m}.e[{k}].{part};")
+        part = f"key.{ {'int': 'i', 'string': 's'}[kind] }" if name == "keys" else f"val.{ {'int': 'i', 'real': 'd', 'logical': 'b', 'string': 's'}[kind] }"
+        if kind == "string":                                                 # each text copied into the array
+            self.emit(f"for (int64_t {k} = 0; {k} < {m}.n; {k}++) if ({m}.e[{k}].live) rt_str_set(&{res}.data[{at}++], {m}.e[{k}].{part}, {line});")
+        else:
+            self.emit(f"for (int64_t {k} = 0; {k} < {m}.n; {k}++) if ({m}.e[{k}].live) {res}.data[{at}++] = {m}.e[{k}].{part};")
         return V(Type(kind, 1), res)
 
     def st_doeach(self, s):
@@ -3874,7 +3924,7 @@ class Compiler:
             self.store(lv, self.typed(s.value, t.element(), f'line {line}'), skind(t))
             return
         name = self.vars[target.name][1]
-        if t.kind == "string" and not t.optional:
+        if t.kind == "string" and t.rank == 0 and not t.optional:
             self.emit(f"rt_str_set(&{name}, {self.typed(s.value, t, f'line {line}')}, {line});")
             return
         if t.rank == 0:
@@ -3883,6 +3933,19 @@ class Compiler:
                 self.emit(f"*set_{target.name} = true;")
             return
         v = self.value(s.value)
+        if t.kind == "string":                                          # an array of texts: every element a copy
+            k = self.loop_var()
+            if target.name in self.allocs:                              # becomes the value's shape (allocated or resized)
+                new = self.tmp_array("string", 1)
+                self.emit(f"rt_like_string(&{new}, {v.atom}.shape, {v.atom}.rank, {line});")
+                self.emit(f"for (int64_t {k} = 0; {k} < {new}.n; {k}++) rt_str_set(&{new}.data[{k}], {v.atom}.data[{k}], {line});")
+                self.emit(f"rt_free_string(&{name});")
+                self.emit(f"{name} = {new};")
+                self.emit(f"{new}.data = NULL;                                  /* now owned by {name} */")
+            else:
+                self.emit(f"rt_same_shape({name}.shape, {name}.rank, {v.atom}.shape, {v.atom}.rank, 1, {line});")
+                self.emit(f"for (int64_t {k} = 0; {k} < {name}.n; {k}++) rt_str_set(&{name}.data[{k}], {v.atom}.data[{k}], {line});")
+            return
         if isrec(t) and v.t.rank == 0:                                  # one record in every element
             self.fill_records(name, self.convert(v, t.element()), t.name)
             return
@@ -4442,7 +4505,7 @@ class Compiler:
                     self.emit(f"{cscalar(t)} {c_name(d.name)} = {{0}};")
                     if self.deep[skind(t)]:
                         self.arrays.append((f"rec_{skind(t)}", c_name(d.name)))
-                elif t.kind == "string":
+                elif t.kind == "string" and t.rank == 0:
                     self.emit(f"rt_str {c_name(d.name)} = {{0}};")
                     self.arrays.append(("str", c_name(d.name)))
                 elif isrec(t) and t.rank == 0 and self.deep[t.name]:

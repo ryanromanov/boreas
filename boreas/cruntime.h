@@ -1608,6 +1608,68 @@ static rt_str rt_str_part(rt_str s, int64_t lo, int64_t hi, const char *name, in
     return rt_str_new(rt_cs(s) + lo - 1, hi - lo + 1, line);
 }
 
+/* ---- arrays of text (one dimension): every element is a text that the array owns --------------------------------- */
+typedef struct { rt_str *data; int64_t shape[3]; int rank; int64_t n; } rt_string_arr;
+static inline void rt_free_string(rt_string_arr *a) {
+    if (a->data) for (int64_t i = 0; i < a->n; i++) free(a->data[i].p);
+    free(a->data); a->data = NULL; a->n = 0;
+}
+static void rt_alloc_string(rt_string_arr *a, int rank, int64_t d0, int64_t d1, int64_t d2, int line) {
+    if (d0 < 0 || d1 < 0 || d2 < 0) rt_fail(line, "array dimensions must be non-negative integers");
+    rt_free_string(a);
+    a->rank = rank; a->shape[0] = d0; a->shape[1] = d1; a->shape[2] = d2;
+    a->n = d0 * d1 * d2;
+    a->data = (rt_str *)calloc(a->n ? (size_t)a->n : 1, sizeof(rt_str));      /* a zeroed text is the empty text */
+    if (!a->data) rt_fail(line, "out of memory");
+}
+static inline void rt_like_string(rt_string_arr *a, const int64_t *shape, int rank, int line) {
+    rt_alloc_string(a, rank, shape[0], rank > 1 ? shape[1] : 1, rank > 2 ? shape[2] : 1, line);
+}
+static void rt_write_string_arr(const rt_string_arr *a) {
+    fputc('[', stdout);
+    for (int64_t i = 0; i < a->n; i++) { if (i) fputs(", ", stdout); fputs(rt_cs(a->data[i]), stdout); }
+    fputc(']', stdout);
+}
+/* split(s, sep): the pieces between each exact sep; an empty piece stays */
+static void rt_split(rt_string_arr *out, rt_str s, rt_str sep, int line) {
+    if (sep.n == 0) rt_fail(line, "split(): needs a separator string that is not empty");
+    int64_t count = 1;
+    for (int64_t i = 0; i + sep.n <= s.n; ) {
+        if (memcmp(s.p + i, sep.p, (size_t)sep.n) == 0) { count++; i += sep.n; } else i++;
+    }
+    rt_alloc_string(out, 1, count, 1, 1, line);
+    int64_t from = 0, k = 0;
+    for (int64_t i = 0; i + sep.n <= s.n; ) {
+        if (memcmp(s.p + i, sep.p, (size_t)sep.n) == 0) {
+            out->data[k++] = rt_str_new(s.p + from, i - from, line);
+            i += sep.n; from = i;
+        } else i++;
+    }
+    out->data[k] = rt_str_new(rt_cs(s) + from, s.n - from, line);
+}
+/* fields(s, extra): the pieces between runs of blanks (what Python's \s means) and of the characters in extra; never an empty piece */
+static bool rt_is_field_sep(char c, rt_str extra) {
+    if (c == ' ' || (c >= 9 && c <= 13) || (c >= 28 && c <= 31)) return true;
+    for (int64_t i = 0; i < extra.n; i++) if (extra.p[i] == c) return true;
+    return false;
+}
+static void rt_fields(rt_string_arr *out, rt_str s, rt_str extra, int line) {
+    int64_t count = 0;
+    for (int64_t i = 0; i < s.n; ) {
+        if (rt_is_field_sep(s.p[i], extra)) { i++; continue; }
+        count++;
+        while (i < s.n && !rt_is_field_sep(s.p[i], extra)) i++;
+    }
+    rt_alloc_string(out, 1, count, 1, 1, line);
+    int64_t k = 0;
+    for (int64_t i = 0; i < s.n; ) {
+        if (rt_is_field_sep(s.p[i], extra)) { i++; continue; }
+        int64_t from = i;
+        while (i < s.n && !rt_is_field_sep(s.p[i], extra)) i++;
+        out->data[k++] = rt_str_new(s.p + from, i - from, line);
+    }
+}
+
 /* ---- formatting text: text, tf, right, left, fixed, scientific, general (ported from the interpreter's own) ---- */
 static rt_str rt_str_cstr(const char *s, int line) { return rt_str_new(s, (int64_t)strlen(s), line); }
 static rt_str rt_text_int(int64_t v, int line) { char b[32]; snprintf(b, sizeof b, "%lld", (long long)v); return rt_str_cstr(b, line); }
