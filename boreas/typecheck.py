@@ -413,7 +413,15 @@ class Checker:
             inner[e.var] = INT
             self.expr([e.lo, e.hi, e.step], env)
             ts = self.expr(e.body, inner)
-            return ts[0] if len(ts) == 1 else UNKNOWN
+            if len(ts) == 1:
+                return ts[0]
+            if ts and all(t.known and t.rank <= 1 and t.kind in ("int", "real", "logical") for t in ts):     # `(k, -k do k = 1, 3)`: the widest kind
+                kinds_ = {t.kind for t in ts}
+                if kinds_ == {"int", "real"}:
+                    return Type("real", 0)
+                if len(kinds_) == 1:
+                    return Type(next(iter(kinds_)), 0)
+            return UNKNOWN
         if k is SelectExpr:
             self.expr(e.subject, env)
             for arm in e.arms:

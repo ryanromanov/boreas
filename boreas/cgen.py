@@ -14,7 +14,7 @@ import shutil
 import sys
 import subprocess
 import tempfile
-from .parser import (Where, Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, CollLit, Comment, Cycle, Deallocate, Decl, Do, DoEach, DoWhile, MapType, SetType, Exit, FieldAccess, If, IsType,
+from .parser import (Gen, Where, Allocate, Apply, ArrayLit, Assign, Bool, Binary, Call, CollLit, Comment, Cycle, Deallocate, Decl, Do, DoEach, DoWhile, MapType, SetType, Exit, FieldAccess, If, IsType,
                      MatrixLit, NamedArg, Num, Print, Return, Slice, Stop, Str, Unary, Var, Break, Case, SelectType, Select, SelectExpr, Arm, literal_value, NOT_LITERAL, Null, MultiAssign, ResultList, ReturnMany, ProcType, signature_of)
 from .effects import mark_problem
 from .interp import conformance
@@ -190,6 +190,7 @@ class Compiler:
         self.pow_ctx = None             # for a complex power: the operands before the conversion
         self.procs = {}                 # each procedure parameter's signature (a ProcType) -> its number
         self.procs_here = {}            # the procedure parameters of the procedure being written
+        self.gen_ok = set()             # the generators an array literal has checked
         self.where_top = None           # inside a `where`: the line of the outermost one (the interpreter names it for errors of operators)
         self.where_assigns = {}         # each assignment inside a `where` -> (the plain assignment of the new array, its Pre)
         self.entry_infos = {}           # each map entry passed as out or inout -> what entry_arg found
@@ -1550,6 +1551,10 @@ class Compiler:
                 self.check_coll_value(e.left, tgt, e)
                 self.check_coll_value(e.right, tgt, e)
                 return
+        if kind is Gen:
+            if id(e) not in self.gen_ok:                     # (only inside the array literal that checked it)
+                self.refuse("a generator outside a one-dimensional array literal", e)
+            return
         if kind not in (Num, Bool, Var, Unary, Binary, Apply, ArrayLit, MatrixLit):
             if kind is IsType:
                 self.refuse("a type test", e)
@@ -1589,8 +1594,10 @@ class Compiler:
             self.refuse("a matrix of records", e)
         if kind in (ArrayLit, MatrixLit):
             items = e.items if kind is ArrayLit else [x for row in e.rows for x in row]
-            if any(self.types.get(id(x)) is None or self.types[id(x)].rank != 0 or self.types[id(x)].kind == "string"
-                   for x in items) or not items:
+            if kind is ArrayLit and any(isinstance(x, Gen) or (self.types.get(id(x)) is not None and self.types[id(x)].rank == 1) for x in items):
+                self.check_dynamic_literal(e)
+            elif any(self.types.get(id(x)) is None or self.types[id(x)].rank != 0 or self.types[id(x)].kind == "string"
+                     or isinstance(x, Gen) for x in items) or not items:
                 self.refuse("an array literal of anything but single values", e)
         if kind is Apply:
             if e.chain:
@@ -1717,10 +1724,38 @@ class Compiler:
         if len(ts) == 1 and ts[0].kind not in ("int", "int32", "real", "real32", "complex"):
             self.refuse("cmplx() of something that is not a number", e)
 
+    def check_dynamic_literal(self, e):
+        """`[x, (0.0 do i = 1, n)]`, `[a, 9]`, `[(k, -k do k = 1, 3)]`: single values, one-dimensional arrays and generators strung
+        together; the literal's length is only known when it has run."""
+        lt = self.types.get(id(e))
+        if lt is None or lt.kind not in ("int", "real", "logical", "complex") or lt.rank != 1 or lt.optional:
+            self.refuse("an array literal with a generator or an array in it whose type is not known", e)
+
+        def widens(kind):
+            return kind == lt.kind or (lt.kind == "real" and kind in ("int", "real")) or (lt.kind == "complex" and kind in ("int", "real", "complex"))
+
+        def items(nodes):
+            for x in nodes:
+                if isinstance(x, Gen):
+                    self.gen_ok.add(id(x))
+                    for part in (x.lo, x.hi, x.step):
+                        pt = self.types.get(id(part)) if part is not None else None
+                        if part is not None and (pt is None or pt.rank != 0 or pt.optional or pt.kind not in ("int", "int32")):
+                            self.refuse("a generator whose bounds are not whole numbers", e)
+                    items(x.body)
+                    continue
+                t = self.types.get(id(x))
+                if t is None or t.rank > 1 or t.optional or t.kind not in ("int", "real", "logical", "complex") or not widens(t.kind):
+                    self.refuse("an array literal with items that are not numbers or logicals of one kind", e)
+
+        items(e.items)
+
     def nonempty(self, node):
         """Is `node` an array that certainly has an element: a variable declared with fixed sizes (each at least 1) or a literal?"""
-        if isinstance(node, (ArrayLit, MatrixLit)):
+        if isinstance(node, MatrixLit):
             return True
+        if isinstance(node, ArrayLit):
+            return all(not isinstance(x, Gen) and self.types.get(id(x)) is not None and self.types[id(x)].rank == 0 for x in node.items)
         return isinstance(node, Var) and node.name in self.fixed_arrays
 
     def check_system_function(self, e):
@@ -1845,7 +1880,7 @@ class Compiler:
         out = self.types[id(e)]
         if name == "reshape":
             if len(e.args) != 2 or not isinstance(e.args[1], ArrayLit) or ranks[0] < 1 or not 1 <= out.rank <= MAX_RANK \
-                    or ts[1].kind not in ("int", "int32"):
+                    or ts[1].kind not in ("int", "int32") or any(isinstance(x, Gen) or self.types[id(x)].rank != 0 for x in e.args[1].items):
                 self.refuse("reshape() of anything but an array and a shape written out as a list of whole numbers (at most three)", e)
         elif name == "transpose":
             if len(e.args) != 1 or ranks[0] != 2:
@@ -2305,6 +2340,8 @@ class Compiler:
                 atom = self.value(x).atom
                 self.store(f"{res}.data[{n}]", atom, name)
             return V(Type("record", 1, False, name), res)
+        if isinstance(e, ArrayLit) and any(isinstance(x, Gen) or self.types[id(x)].rank == 1 for x in e.items):
+            return self.dynamic_literal(e, kind)
         if isinstance(e, ArrayLit):
             items, rows, cols = e.items, len(e.items), 1
         else:
@@ -2317,6 +2354,57 @@ class Compiler:
             pos = n if rank == 1 else (n // cols) + (n % cols) * rows
             self.emit(f"{res}.data[{pos}] = {atom};")
         return V(Type(kind, rank), res)
+
+    def dynamic_literal(self, e, kind):
+        """An array literal with generators or arrays in it: every value is pushed on a list in order, then the array is made."""
+        line = self.line
+        vec = self.tmp(f"rt_vec_{kind}", "{0}")
+        self.temps.append((f"vec_{kind}", vec))
+        self.splice(e.items, vec, kind)
+        res = self.tmp_array(kind, 1)
+        self.emit(f"rt_alloc_{kind}(&{res}, 1, {vec}.n, 1, 1, {line});")
+        self.emit(f"if ({vec}.n) memcpy({res}.data, {vec}.p, (size_t){vec}.n * sizeof({res}.data[0]));")
+        return V(Type(kind, 1), res)
+
+    def splice(self, nodes, vec, kind):
+        for x in nodes:
+            if isinstance(x, Gen):
+                self.generator(x, vec, kind)
+                continue
+            t = self.types[id(x)]
+            if t.rank == 0:
+                self.emit(f"rt_push_{kind}(&{vec}, {self.scalar(x, kind)}, {self.line});")
+                continue
+            v = self.value(x)
+            k = self.loop_var()
+            self.emit(f"for (int64_t {k} = 0; {k} < {v.atom}.n; {k}++) rt_push_{kind}(&{vec}, {self.cast(self.elem(v, k), v.t.kind, kind)}, {self.line});")
+
+    def generator(self, g, vec, kind):
+        """`(value do i = lo, hi, step)`: the bounds are worked out (in that order) and checked, then the body runs for each i,
+        which exists only inside and hides any variable of the same name."""
+        line = g.line or self.line
+        lo = self.tmp("int64_t", self.scalar(g.lo, "int"))
+        hi = self.tmp("int64_t", self.scalar(g.hi, "int"))
+        step = self.tmp("int64_t", self.scalar(g.step, "int")) if g.step is not None else "INT64_C(1)"
+        if g.step is not None:
+            self.emit(f'if ({step} == 0) rt_fail({line}, "generator step cannot be zero");')
+        self.n += 1
+        name = f"gi{self.n}"
+        self.emit(f"for (int64_t {name} = {lo}; {step} > 0 ? {name} <= {hi} : {name} >= {hi}; {name} += {step}) {{")
+        self.depth += 1
+        saved = self.vars.get(g.var)
+        self.vars[g.var] = (Type("int"), name)
+        saved_temps, self.temps = self.temps, []
+        self.splice(g.body, vec, kind)
+        for k_, name_ in self.temps:
+            self.emit(f"rt_free_{k_}(&{name_});")
+        self.temps = saved_temps
+        if saved is None:
+            del self.vars[g.var]
+        else:
+            self.vars[g.var] = saved
+        self.depth -= 1
+        self.emit("}")
 
     def subscripts(self, e, arr):
         """The offset of element `e` of the array `arr` (a C lvalue of an array struct), with every subscript checked
