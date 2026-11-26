@@ -619,6 +619,14 @@ class Compiler:
                     self.refuse(f"parameter '{name}' of '{f.name}' ({typ if isinstance(typ, str) else 'a procedure'})")
                 if intent in ("out", "inout") and f.ret is not None:
                     self.refuse(f"{intent} parameter '{name}' of the function '{f.name}'")
+                if intent == "out" and pt.kind == "record" and pt.rank == 0:
+                    if not self.out_record_ok(pt.name):
+                        self.refuse(f"out parameter '{name}' of '{f.name}' (a record that is not only single numbers, logicals and texts)")
+                    if any(f is m for m in self.methods.values()):
+                        self.refuse(f"out parameter '{name}' of a record's function '{f.name}'")
+                    self.check_out_record_uses(f, name)
+                elif intent == "out" and pt.kind in ("record", "interface") and pt.rank != 0:
+                    self.refuse(f"out parameter '{name}' of '{f.name}' (an array of records)")
                 if (pt.kind == "string" and pt.rank > 0 or pt.kind == "file") and intent != "in":
                     self.refuse(f"{intent} parameter '{name}' of '{f.name}' ({'a file' if pt.kind == 'file' else 'an array of texts'})")
         for f in [*all_functions(self), None]:
@@ -810,6 +818,7 @@ class Compiler:
 
     def check_body(self, body, f):
         self.current_body = body
+        self.cur_fn = f
         self.locals_of_body = {p[1] for p in f.params} if f is not None else set()
         self.locals_of_body |= {d.name for d in statements_in(body) if isinstance(d, Decl)}
         self.opt_ok = set()                                    # the nodes that may be an optional value (what is done with it is handled)
@@ -937,6 +946,35 @@ class Compiler:
         t = self.types.get(id(e))
         if t is None or t.kind != "file" or t.rank != 0 or t.optional:
             self.refuse(f"{what} of anything but a file", node)
+
+    def default_mask(self, rn):
+        """The fields of record `rn` that have a default, as the bits of a whole number (field i is bit i)."""
+        return sum(1 << i for i, fd in enumerate(self.records[rn].fields) if fd.init is not None)
+
+    def check_out_record_uses(self, f, pname):
+        """An `out` record starts with only the fields that have defaults given: the procedure may assign a field (`@p.x = v`), read
+        one (checked when it runs) or assign the whole record (`@p = ...`), and do nothing else with it."""
+        allowed = set()
+        for n in walk(f.body):
+            if isinstance(n, FieldAccess) and isinstance(n.base, Var) and n.base.name == pname and n.args is None and not n.chain:
+                allowed.add(id(n.base))
+            elif isinstance(n, Assign) and isinstance(n.target, Var) and n.target.name == pname and n.update:
+                allowed.add(id(n.target))
+        for n in walk(f.body):
+            if isinstance(n, (Var, Apply, Call)) and getattr(n, "name", None) == pname and id(n) not in allowed:
+                self.refuse(f"the out record '{pname}' of '{f.name}' used as a whole (only its fields, or `@{pname} = ...`)", n)
+            if isinstance(n, Decl) and n.name == pname:
+                self.refuse(f"a declaration of '{pname}', a parameter", n)
+
+    def out_record_ok(self, name):
+        """A record that can be passed as `out`: only single numbers, logicals and texts (each has a flag for being assigned)."""
+        r = self.records.get(name)
+        return r is not None and 0 < len(r.fields) <= 64 and all(
+            fd.dims is None and not fd.allocatable and fd.type in ("int", "int32", "real", "real32", "logical", "string") for fd in r.fields)
+
+    @staticmethod
+    def out_param_names(f):
+        return {n for _, n, i in f.params if i == "out"} if f is not None else set()
 
     def check_multi(self, s, fixed, body, f):
         """`(q, @r, _) = f(x)`: a call of a function that gives back several numbers, each result then assigned like a single one."""
@@ -1316,11 +1354,21 @@ class Compiler:
                 self.refuse("a field passed as out", s)
             elif intent == "inout" and isinstance(a, FieldAccess):
                 self.field_root(a, s)
-            if intent == "out" and (self.param_type(typ) or Type("int")).kind in ("record", "interface", "string"):
-                self.refuse("a record or text passed as out", s)
-            if intent in ("out", "inout") and (self.param_type(typ) or Type("int")).kind == "interface" \
+            pk = self.param_type(typ) or Type("int")
+            if intent == "out" and pk.kind == "record" and pk.rank == 0:
+                if not self.out_record_ok(pk.name):
+                    self.refuse(f"a record passed as out whose fields are not all single numbers, logicals or texts ({pk.name})", s)
+                if not isinstance(a, Var) or a.name not in self.locals_of_body or a.name in self.out_param_names(self.cur_fn):
+                    self.refuse("a record passed as out that is not a variable of this procedure", s)
+            elif intent == "out" and pk.kind in ("record", "interface") and pk.rank != 0:
+                self.refuse("an array of records passed as out", s)
+            if intent in ("out", "inout") and pk.kind == "interface" \
                     and (self.types.get(id(a)) is None or self.types[id(a)].kind != "interface"):
-                self.refuse(f"a record passed as {intent} where an interface is wanted", s)
+                at_ = self.types.get(id(a))
+                if not (isinstance(a, Var) and at_ is not None and at_.kind == "record" and at_.rank == 0 and not at_.optional
+                        and pk.rank == 0 and at_.name in self.members.get(pk.name, ()) and a.name in self.locals_of_body
+                        and a.name not in self.out_param_names(self.cur_fn)):
+                    self.refuse(f"a record passed as {intent} where an interface is wanted", s)
             if intent in ("out", "inout") and (
                     (isinstance(a, Apply) and a.bracket and a.name in self.vtypes and self.vtypes[a.name].kind in COLLECTIONS)
                     or self.map_sub_type(a) is not None) and not (intent == "inout" and self.is_coll_var(a)):
@@ -2290,6 +2338,10 @@ class Compiler:
                     place += f"[{i} - 1]"
                 res = self.tmp(cscalar(ft), place)
             else:
+                if isinstance(e.base, Var) and e.base.name in self.out_recs:           # a field of an out record: assigned yet?
+                    bit = [fd.name for fd in self.records[self.out_recs[e.base.name]].fields].index(e.field)
+                    self.emit(f'if (!(*set_{e.base.name} & (UINT64_C(1) << {bit}))) rt_fail({self.line}, '
+                              f'"field \'{self.dotted(e)}\' is used before it is assigned");')
                 res = self.tmp(cscalar(ft), self.field_lvalue(e))
             if ft.kind == "interface":                              # a field that was never given a value
                 self.emit(f'if ({res}.tag == 0) rt_fail({self.line}, "field \'{self.dotted(e)}\' is used before it is assigned");')
@@ -2755,9 +2807,55 @@ class Compiler:
                     entries.append((a, n, vt, kn, intent))
                 else:
                     lv = self.lvalue(a)
-                if pt.kind == "interface":
+                at_ = self.types.get(id(a))
+                if intent in ("out", "inout") and pt.kind == "interface" and at_ is not None and at_.kind == "record":
+                    iname, rn = pt.name, at_.name           # a record where an interface is wanted: it goes in wrapped, and must come back the same kind
+                    tag = self.members[iname].index(rn) + 1
+                    self.n += 1
+                    wrapped = f"ci{self.n}"
+                    self.emit(f"r_{iname} {wrapped} = {{0}};")
+                    self.temps.append((f"rec_{iname}", wrapped))
+                    self.emit(f"rt_set_rec_{iname}(&{wrapped}, ((r_{iname}){{.tag = {tag}, .u.m_{rn} = {lv}}}));")
+                    out.append("&" + wrapped)
+                    if intent == "out":
+                        self.n += 1
+                        flag = f"set{self.n}"
+                        self.emit(f"bool {flag} = true;")
+                        out.append("&" + flag)
+                    names = ", ".join(c_string(m) for m in self.members[iname])
+                    word = "an" if False else "a"
+                    self.after_call.append(
+                        f'if ({wrapped}.tag != {tag}) {{ static const char *kinds[] = {{{names}}}; rt_fail({self.line}, '
+                        f'"\'{a.name}\' is a {rn}, but {f.name} put a %s in \'{pname}\': a {intent} parameter of an interface type can change the '
+                        f'value, not what kind of record it is", kinds[{wrapped}.tag - 1]); }}')
+                    self.after_call.append(f"rt_set_rec_{rn}(&{lv}, {wrapped}.u.m_{rn});" if self.deep[rn] else f"{lv} = {wrapped}.u.m_{rn};")
+                    continue
+                if pt.kind == "interface" and intent != "out":
                     self.check_assigned(lv, getattr(a, "name", None), isinstance(a, Apply))
                 ref = "&" + lv
+                if intent == "out" and pt.kind == "record":                 # it starts with only the defaults given
+                    rn = pt.name
+                    fields = self.records[rn].fields
+                    self.n += 1
+                    mask = f"mask{self.n}"
+                    self.emit(f"rt_set_rec_{rn}(&{lv}, d_{rn}());" if self.deep[rn] else f"{lv} = d_{rn}();")
+                    self.emit(f"uint64_t {mask} = UINT64_C({self.default_mask(rn)});")
+                    out.append(ref)
+                    out.append("&" + mask)
+                    for i, fd in enumerate(fields):
+                        self.after_call.append(f'if (!({mask} & (UINT64_C(1) << {i}))) rt_fail({self.line}, '
+                                               f'"out parameter \'{pname}\' was not fully assigned in {f.name}: \'{pname}.{fd.name}\' has no value");')
+                    continue
+                if intent == "out" and pt.kind == "interface":           # it starts as it is, if it has a value
+                    self.n += 1
+                    flag = f"set{self.n}"
+                    self.emit(f"bool {flag} = ({lv}.tag != 0);")
+                    out.append(ref)
+                    out.append("&" + flag)
+                    self.after_call.append(f'if (!{flag}) rt_fail({self.line}, "out parameter \'{pname}\' was never assigned in {f.name}");')
+                    if isinstance(a, Var) and a.name in self.outs:
+                        self.after_call.append(f"*set_{a.name} = true;")
+                    continue
                 if intent == "out":
                     self.n += 1
                     flag = f"set{self.n}"
@@ -3949,6 +4047,9 @@ class Compiler:
             ft = self.types[id(target)]
             lv = self.field_lvalue(target)
             self.store(lv, self.typed(s.value, ft, f'line {line}'), skind(ft))
+            if isinstance(target.base, Var) and target.base.name in self.out_recs:      # now assigned
+                bit = [fd.name for fd in self.records[self.out_recs[target.base.name]].fields].index(target.field)
+                self.emit(f"*set_{target.base.name} |= UINT64_C(1) << {bit};")
             return
         t = self.vars[target.name][0]
         if t.kind in COLLECTIONS and isinstance(target, Apply) and target.chain:      # m["a"][i] = x
@@ -3975,11 +4076,15 @@ class Compiler:
         name = self.vars[target.name][1]
         if t.kind == "string" and t.rank == 0 and not t.optional:
             self.emit(f"rt_str_set(&{name}, {self.typed(s.value, t, f'line {line}')}, {line});")
+            if target.name in self.outs:
+                self.emit(f"*set_{target.name} = true;")
             return
         if t.rank == 0:
             self.store(name, self.typed(s.value, t, f'line {line}'), skind(t))
             if target.name in self.outs:
                 self.emit(f"*set_{target.name} = true;")
+            if target.name in self.out_recs:
+                self.emit(f"*set_{target.name} = UINT64_C({(1 << len(self.records[self.out_recs[target.name]].fields)) - 1});")
             return
         v = self.value(s.value)
         if t.kind == "string":                                          # an array of texts: every element a copy
@@ -4476,6 +4581,7 @@ class Compiler:
             else:
                 self.vars[name] = (g[1], g[0])
         self.outs = set()                                   # out parameters that are single values (they start unassigned)
+        self.out_recs = {}                                  # out parameters that are records: name -> the record (a flag for each field)
         self.allocs = self.allocs_of(body, None)
         for typ, name, intent in params:
             t = self.param_type(typ)
@@ -4483,7 +4589,9 @@ class Compiler:
             if t.kind in COLLECTIONS:                       # a map or set always arrives by address
                 access = f"(*{c_name(name)})"
             self.vars[name] = (t, access)
-            if intent == "out" and t.rank == 0 and t.kind not in COLLECTIONS:
+            if intent == "out" and t.kind == "record" and t.rank == 0:
+                self.out_recs[name] = t.name
+            elif intent == "out" and t.rank == 0 and t.kind not in COLLECTIONS:
                 self.outs.add(name)
         seen = set()
         for d in statements_in(body):
@@ -4503,6 +4611,8 @@ class Compiler:
                 out.append(f"rt_{akind(t)}_arr {c_name(name)}")
             elif intent == "inout":
                 out.append(f"{cscalar(t)} *{c_name(name)}")
+            elif intent == "out" and t.kind == "record":
+                out.append(f"{cscalar(t)} *{c_name(name)}, uint64_t *set_{name}")
             elif intent == "out":
                 out.append(f"{cscalar(t)} *{c_name(name)}, bool *set_{name}")
             else:
