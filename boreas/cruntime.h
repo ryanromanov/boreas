@@ -545,6 +545,21 @@ static void rt_same_shape(const int64_t *a, int ra, const int64_t *b, int rb, in
     rt_shape_text(x, a, ra); rt_shape_text(y, b, rb);
     rt_fail(line, "array shape mismatch: %s vs %s", x, y);
 }
+static void rt_elem_shapes(const char *name, const int64_t *a, int ra, const int64_t *b, int rb, int line) {
+    int same = ra == rb;
+    for (int d = 0; same && d < ra; d++) same = a[d] == b[d];
+    if (same) return;
+    char x[80], y[80];
+    const int64_t *sh[2] = {a, b};
+    int rk[2] = {ra, rb};
+    char *out[2] = {x, y};
+    for (int w = 0; w < 2; w++) {
+        int n = sprintf(out[w], "[");
+        for (int d = 0; d < rk[w]; d++) n += sprintf(out[w] + n, d ? ", %lld" : "%lld", (long long)sh[w][d]);
+        sprintf(out[w] + n, "]");
+    }
+    rt_fail(line, "%s is applied to each element, but the arrays have different shapes (%s and %s)", name, x, y);
+}
 static void rt_pack_check(const int64_t *a, int ra, const int64_t *m, int rm, int line) {
     int same = ra == rm;
     for (int d = 0; same && d < ra; d++) same = a[d] == m[d];
