@@ -1472,7 +1472,8 @@ class Compiler:
             if intent in ("out", "inout") and (root in fixed or (root is not None and root not in self.locals_of_body and self.scope is not None
                                                                   and root in self.scope.consts and self.scope.consts[root][3] == "const")):
                 self.refuse(f"the constant or parameter '{root}' passed as {intent}", s)
-            if intent in ("out", "inout") and root is not None and roots.count(root) > 1 and not self.entries_of_one_map(args, root, f.params):
+            if intent in ("out", "inout") and root is not None and roots.count(root) > 1 and not self.entries_of_one_map(args, root, f.params) \
+                    and not self.places_of_one_variable(args, root, f.params):
                 self.refuse(f"'{root}' passed as {intent} and as another argument of the same call", s)
 
     def entry_arg(self, a):
@@ -1523,6 +1524,32 @@ class Compiler:
             return a.name
         d = self.dotted(a.base) if isinstance(a, FieldAccess) else None
         return None if d is None else f"{d}.{a.field}"
+
+    def places_of_one_variable(self, args, root, params):
+        """Are all the arguments of a call that start at `root` single out or inout places inside it: elements of an array, fields, elements of an
+        array of records? They are passed by address, so whether two are the same place is settled when the call runs."""
+        for a, (typ, _, intent) in zip(args, params):
+            if self.root_name(a) != root:
+                continue
+            pt = self.param_type(typ)
+            if intent not in ("out", "inout") or pt is None or pt.rank != 0 or pt.kind not in ("int", "int32", "real", "real32", "logical", "string"):
+                return False
+            if id(a) in self.entry_infos or self.map_sub_type(a) is not None:
+                return False
+            if isinstance(a, Apply):
+                if not a.bracket or a.chain is not None or any(isinstance(x, (Slice, NamedArg)) for x in a.args):
+                    return False
+            elif isinstance(a, FieldAccess):
+                x = a
+                while isinstance(x, FieldAccess):
+                    if self.is_method_call(x) or (x.args is not None and not x.args) or (x.chain):
+                        return False
+                    x = x.base
+                if not (isinstance(x, Var) or (isinstance(x, Apply) and x.bracket and x.chain is None)):
+                    return False
+            elif not isinstance(a, Var):
+                return False
+        return True
 
     def entries_of_one_map(self, args, root, params):
         """Do all the arguments of a call that start at `root` stand for entries (whole values or arrays, not elements) of one map?
@@ -2881,6 +2908,7 @@ class Compiler:
         out = []
         self.after_call = []
         entries = []                                         # the arguments that are entries of a map: (node, position, map type, key, intent)
+        places = [None] * len(args)                          # the address of each out or inout single value passed by address
         for n, (a, (typ, pname, intent)) in enumerate(zip(args, f.params)):
             pt = self.param_type(typ)
             if pt.kind == "proc":                            # the function's address with its name (or the parameter passed on)
@@ -2949,6 +2977,8 @@ class Compiler:
                 if pt.kind == "interface" and intent != "out":
                     self.check_assigned(lv, getattr(a, "name", None), isinstance(a, Apply))
                 ref = "&" + lv
+                if pt.kind in ("int", "int32", "real", "real32", "logical", "string") and info is None:
+                    places[n] = ref
                 if intent == "out" and pt.kind == "record":                 # it starts with only the defaults given
                     rn = pt.name
                     fields = self.records[rn].fields
@@ -2992,6 +3022,13 @@ class Compiler:
                 out.append(v.atom)
         for typ, pname, intent in f.params[len(args):]:               # optional parameters left off arrive absent
             out.append(f"(({cscalar(self.param_type(typ))}){{0}})")
+        places = [(n, a, p) for n, (a, p) in enumerate(zip(args, places)) if p is not None]
+        for n, a, p in places:                                        # two places of one variable passed by address are one place when their addresses are
+            for m, b, q in places:
+                if m != n and self.root_name(a) == self.root_name(b):
+                    name = a.name if not isinstance(a, FieldAccess) else self.dotted(a)
+                    self.emit(f'if ((const void *){p} == (const void *){q}) rt_fail({self.line}, '
+                              f'"\'{name}\' is passed as {f.params[n][2]} and also as another argument to {f.name}; arguments must not alias");')
         for a, n, vt, kn, intent in entries:                          # two entries of one map are the same place when their keys are equal
             if kn is None:
                 continue
