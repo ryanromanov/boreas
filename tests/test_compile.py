@@ -518,6 +518,10 @@ class ErrorTests(unittest.TestCase):
         for name, body in ALIAS_CASES.items():
             with self.subTest(name):
                 source = prog(body, ALIAS_DEFS)
+                built = boreas("emit-c", self.write(source))
+                self.assertEqual(built.returncode, 0, built.stderr[-300:])
+                same_as_interpreter(self, source)
+
     def test_a_function_of_single_values_given_arrays_is_called_for_each_element_like_the_interpreter(self):
         """shrink(v, 2.0), shrink(v, w): each element in turn; arrays must share a shape; an error inside reports its own line."""
         for name, body in ELEM_CASES.items():
