@@ -11,6 +11,8 @@
 #include <math.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <time.h>
+#include <unistd.h>
 #include <float.h>
 
 typedef __int128 rt_i128;
@@ -1669,6 +1671,228 @@ static bool rt_read_line_file(rt_file f, rt_str *out, int line) {
     return rt_read_line(f->fh, out, true, line);
 }
 
+/* ---- gamma, log_gamma and hypot: CPython's own code (Modules/mathmodule.c: m_tgamma, m_lgamma, m_sinpi, lanczos_sum, and
+   vector_norm for two arguments), the same in 3.10 to 3.13 except hypot, whose algorithm changed in 3.12 (the build picks
+   the one of the Python that compiled the program: BOREAS_PY_HYPOT_OLD). The libm calls go through volatile pointers. ------- */
+static int rt_gm_errno;                               /* 0, 1 (a domain error), 2 (a range error) */
+#define RT_GM_PI 3.141592653589793238462643383279502884197
+#define RT_GM_LOGPI 1.144729885849400174143427351353058711647
+#define RT_GM_G 6.024680040776729583740234375
+#define RT_GM_GH 5.524680040776729583740234375
+static double (*volatile rt_fp_sin2)(double) = sin;
+static double (*volatile rt_fp_cos2)(double) = cos;
+static const double rt_gm_num[13] = {
+    23531376880.410759688572007674451636754734846804940, 42919803642.649098768957899047001988850926355848959,
+    35711959237.355668049440185451547166705960488635843, 17921034426.037209699919755754458931112671403265390,
+    6039542586.3520280050642916443072979210699388420708, 1439720407.3117216736632230727949123939715485786772,
+    248874557.86205415651146038641322942321632125127801, 31426415.585400194380614231628318205362874684987640,
+    2876370.6289353724412254090516208496135991145378768, 186056.26539522349504029498971604569928220784236328,
+    8071.6720023658162106380029022722506138218516325024, 210.82427775157934587250973392071336271166969580291,
+    2.5066282746310002701649081771338373386264310793408};
+static const double rt_gm_den[13] = {0.0, 39916800.0, 120543840.0, 150917976.0, 105258076.0, 45995730.0,
+    13339535.0, 2637558.0, 357423.0, 32670.0, 1925.0, 66.0, 1.0};
+static const double rt_gm_integral[23] = {
+    1.0, 1.0, 2.0, 6.0, 24.0, 120.0, 720.0, 5040.0, 40320.0, 362880.0, 3628800.0, 39916800.0, 479001600.0, 6227020800.0,
+    87178291200.0, 1307674368000.0, 20922789888000.0, 355687428096000.0, 6402373705728000.0, 121645100408832000.0,
+    2432902008176640000.0, 51090942171709440000.0, 1124000727777607680000.0};
+static double rt_gm_sinpi(double x) {
+    double y, r;
+    int n;
+    y = fmod(fabs(x), 2.0);
+    n = (int)round(2.0 * y);
+    switch (n) {
+    case 0: r = rt_fp_sin2(RT_GM_PI * y); break;
+    case 1: r = rt_fp_cos2(RT_GM_PI * (y - 0.5)); break;
+    case 2: r = rt_fp_sin2(RT_GM_PI * (1.0 - y)); break;
+    case 3: r = -rt_fp_cos2(RT_GM_PI * (y - 1.5)); break;
+    default: r = rt_fp_sin2(RT_GM_PI * (y - 2.0)); break;
+    }
+    return copysign(1.0, x) * r;
+}
+static double rt_gm_lanczos_sum(double x) {
+    double num = 0.0, den = 0.0;
+    int i;
+    if (x < 5.0) {
+        for (i = 13; --i >= 0; ) { num = num * x + rt_gm_num[i]; den = den * x + rt_gm_den[i]; }
+    } else {
+        for (i = 0; i < 13; i++) { num = num / x + rt_gm_num[i]; den = den / x + rt_gm_den[i]; }
+    }
+    return num / den;
+}
+static double rt_py_tgamma(double x) {
+    double absx, r, y, z, sqrtpow;
+    if (!isfinite(x)) {
+        if (isnan(x) || x > 0.0) return x;
+        rt_gm_errno = 1;
+        return NAN;
+    }
+    if (x == 0.0) { rt_gm_errno = 1; return copysign(INFINITY, x); }
+    if (x == floor(x)) {
+        if (x < 0.0) { rt_gm_errno = 1; return NAN; }
+        if (x <= 23) return rt_gm_integral[(int)x - 1];
+    }
+    absx = fabs(x);
+    if (absx < 1e-20) {
+        r = 1.0 / x;
+        if (isinf(r)) rt_gm_errno = 2;
+        return r;
+    }
+    if (absx > 200.0) {
+        if (x < 0.0) return 0.0 / rt_gm_sinpi(x);
+        rt_gm_errno = 2;
+        return HUGE_VAL;
+    }
+    y = absx + RT_GM_GH;
+    if (absx > RT_GM_GH) { double q = y - absx; z = q - RT_GM_GH; }
+    else { double q = y - RT_GM_GH; z = q - absx; }
+    z = z * RT_GM_G / y;
+    if (x < 0.0) {
+        r = -RT_GM_PI / rt_gm_sinpi(absx) / absx * rt_fp_exp(y) / rt_gm_lanczos_sum(absx);
+        r -= z * r;
+        if (absx < 140.0) r /= rt_fp_pow(y, absx - 0.5);
+        else { sqrtpow = rt_fp_pow(y, absx / 2.0 - 0.25); r /= sqrtpow; r /= sqrtpow; }
+    } else {
+        r = rt_gm_lanczos_sum(absx) / rt_fp_exp(y);
+        r += z * r;
+        if (absx < 140.0) r *= rt_fp_pow(y, absx - 0.5);
+        else { sqrtpow = rt_fp_pow(y, absx / 2.0 - 0.25); r *= sqrtpow; r *= sqrtpow; }
+    }
+    if (isinf(r)) rt_gm_errno = 2;
+    return r;
+}
+static double rt_py_lgamma(double x) {
+    double r, absx;
+    if (!isfinite(x)) {
+        if (isnan(x)) return x;
+        return HUGE_VAL;
+    }
+    if (x == floor(x) && x <= 2.0) {
+        if (x <= 0.0) { rt_gm_errno = 1; return HUGE_VAL; }
+        return 0.0;
+    }
+    absx = fabs(x);
+    if (absx < 1e-20) return -rt_fp_log(absx);
+    r = rt_fp_log(rt_gm_lanczos_sum(absx)) - RT_GM_G;
+    r += (absx - 0.5) * (rt_fp_log(absx + RT_GM_G - 0.5) - 1);
+    if (x < 0.0) r = RT_GM_LOGPI - rt_fp_log(fabs(rt_gm_sinpi(absx))) - rt_fp_log(absx) - r;
+    if (isinf(r)) rt_gm_errno = 2;
+    return r;
+}
+/* gamma(x) or log_gamma(x) as Python's math.gamma / math.lgamma give it, with the interpreter's errors */
+static double rt_gamma_call(bool lg, double x, int was_int, int line) {
+    rt_gm_errno = 0;
+    double r = lg ? rt_py_lgamma(x) : rt_py_tgamma(x);
+    const char *name = lg ? "log_gamma" : "gamma";
+#ifdef BOREAS_IEEE
+    (void)was_int; (void)line; (void)name;
+    if (rt_gm_errno == 1) return NAN;
+    return r;
+#else
+    char b[48];
+    if (rt_gm_errno == 1) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", name, rt_shown(x, was_int, b));
+    if (rt_gm_errno == 2 && fabs(r) >= 1.5) rt_fail(line, "%s(%s) is too large for a real (a file that says `use ieee` gets Infinity instead)", name, rt_shown(x, was_int, b));
+    return r;
+#endif
+}
+/* single precision: the C library's tgammaf / lgammaf; a NaN or infinity from finite arguments is a domain error */
+static inline float rt_gammaf(bool lg, float r, float x, int line) {
+#ifndef BOREAS_IEEE
+    char b[48];
+    if ((r != r || isinf(r)) && isfinite(x)) rt_fail(line, "%s(%s) has no real answer (a file that says `use ieee` gets NaN instead)", lg ? "log_gamma" : "gamma", rt_shown((double)x, 0, b));
+#else
+    (void)lg; (void)x; (void)line;
+#endif
+    return r;
+}
+static inline float rt_hypotf(float a, float b, int line) {
+    float r = hypotf(a, b);
+#ifndef BOREAS_IEEE
+    char x[48], y[48];
+    if (isinf(r) && isfinite(a) && isfinite(b)) rt_fail(line, "hypot(%s, %s) is too large for a real (a file that says `use ieee` gets Infinity instead)", rt_shown((double)a, 0, x), rt_shown((double)b, 0, y));
+#else
+    (void)line;
+#endif
+    return r;
+}
+/* math.hypot(x, y) */
+typedef struct { double hi, lo; } rt_dl;
+static rt_dl rt_dl_fast_sum(double a, double b) { double x = a + b; double y = (a - x) + b; rt_dl r = {x, y}; return r; }
+static rt_dl rt_dl_split(double x) { double t = x * 134217729.0; double hi = t - (t - x); rt_dl r = {hi, x - hi}; return r; }
+static rt_dl rt_dl_mul(double x, double y) {
+    rt_dl xx = rt_dl_split(x), yy = rt_dl_split(y);
+    double p = xx.hi * yy.hi, q = xx.hi * yy.lo + xx.lo * yy.hi, z = p + q;
+    rt_dl r = {z, p - z + q + xx.lo * yy.lo};
+    return r;
+}
+static rt_dl rt_dl_mul_fma(double x, double y) { double z = x * y; rt_dl r = {z, fma(x, y, -z)}; return r; }
+static double rt_vector_norm(int n, double *vec, double max, int found_nan, bool old) {
+    double x, h, scale, csum = 1.0, frac1 = 0.0, frac2 = 0.0, frac3 = 0.0, oldcsum;
+    int max_e, i;
+    if (isinf(max)) return max;
+    if (found_nan) return NAN;
+    if (max == 0.0 || n <= 1) return max;
+    frexp(max, &max_e);
+    if (old) {                                        /* 3.10 and 3.11 */
+        const double T27 = 134217729.0;
+        double t, hi, lo;
+        if (max_e >= -1023) {
+            scale = ldexp(1.0, -max_e);
+            for (i = 0; i < n; i++) {
+                x = vec[i] * scale;
+                t = x * T27; hi = t - (t - x); lo = x - hi;
+                x = hi * hi; oldcsum = csum; csum += x; frac1 += (oldcsum - csum) + x;
+                x = 2.0 * hi * lo; oldcsum = csum; csum += x; frac2 += (oldcsum - csum) + x;
+                frac3 += lo * lo;
+            }
+            h = sqrt(csum - 1.0 + (frac1 + frac2 + frac3));
+            x = h; t = x * T27; hi = t - (t - x); lo = x - hi;
+            x = -hi * hi; oldcsum = csum; csum += x; frac1 += (oldcsum - csum) + x;
+            x = -2.0 * hi * lo; oldcsum = csum; csum += x; frac2 += (oldcsum - csum) + x;
+            x = -lo * lo; oldcsum = csum; csum += x; frac3 += (oldcsum - csum) + x;
+            x = csum - 1.0 + (frac1 + frac2 + frac3);
+            return (h + x / (2.0 * h)) / scale;
+        }
+        for (i = 0; i < n; i++) {
+            x = vec[i] / max; x = x * x; oldcsum = csum; csum += x; frac1 += (oldcsum - csum) + x;
+        }
+        return max * sqrt(csum - 1.0 + frac1);
+    }
+    if (max_e < -1023) {                              /* 3.12 and later */
+        double sub[2];
+        for (i = 0; i < n; i++) sub[i] = vec[i] / DBL_MIN;
+        return DBL_MIN * rt_vector_norm(n, sub, max / DBL_MIN, found_nan, false);
+    }
+    {
+        rt_dl pr, sm;
+        scale = ldexp(1.0, -max_e);
+        for (i = 0; i < n; i++) {
+            x = vec[i] * scale;
+            pr = rt_dl_mul_fma(x, x);
+            sm = rt_dl_fast_sum(csum, pr.hi);
+            csum = sm.hi; frac1 += pr.lo; frac2 += sm.lo;
+        }
+        h = sqrt(csum - 1.0 + (frac1 + frac2));
+        pr = rt_dl_mul_fma(-h, h);
+        sm = rt_dl_fast_sum(csum, pr.hi);
+        csum = sm.hi; frac1 += pr.lo; frac2 += sm.lo;
+        x = csum - 1.0 + (frac1 + frac2);
+        h += x / (2.0 * h);
+        return h / scale;
+    }
+}
+static double rt_hypot(double a, double b) {
+    double v[2] = {fabs(a), fabs(b)};
+    double max = 0.0;
+    if (v[0] > max) max = v[0];
+    if (v[1] > max) max = v[1];
+    int nan = isnan(v[0]) || isnan(v[1]);
+#ifdef BOREAS_PY_HYPOT_OLD
+    return rt_vector_norm(2, v, max, nan, true);
+#else
+    return rt_vector_norm(2, v, max, nan, false);
+#endif
+}
+
 /* ---- arrays of text (one dimension): every element is a text that the array owns --------------------------------- */
 typedef struct { rt_str *data; int64_t shape[3]; int rank; int64_t n; } rt_string_arr;
 static inline void rt_free_string(rt_string_arr *a) {
@@ -1729,6 +1953,47 @@ static void rt_fields(rt_string_arr *out, rt_str s, rt_str extra, int line) {
         while (i < s.n && !rt_is_field_sep(s.p[i], extra)) i++;
         out->data[k++] = rt_str_new(s.p + from, i - from, line);
     }
+}
+
+/* ---- field, join, achar and random ----------------------------------------------------------------------------------------- */
+/* field(s, k, extra): the k-th piece fields() would give; false when there is none */
+static bool rt_field(rt_str *out, rt_str s, int64_t k, rt_str extra, int line) {
+    if (k < 1) rt_fail(line, "field(): needs a piece number that is a positive integer");
+    int64_t count = 0;
+    for (int64_t i = 0; i < s.n; ) {
+        if (rt_is_field_sep(s.p[i], extra)) { i++; continue; }
+        int64_t from = i;
+        while (i < s.n && !rt_is_field_sep(s.p[i], extra)) i++;
+        if (++count == k) { *out = rt_str_new(s.p + from, i - from, line); return true; }
+    }
+    return false;
+}
+static rt_str rt_join(rt_string_arr a, rt_str sep, int line) {
+    int64_t total = 0;
+    for (int64_t i = 0; i < a.n; i++) total += a.data[i].n;
+    if (a.n > 1) total += (a.n - 1) * sep.n;
+    rt_str r;
+    r.p = (char *)malloc((size_t)total + 1);
+    if (!r.p) rt_fail(line, "out of memory");
+    int64_t at = 0;
+    for (int64_t i = 0; i < a.n; i++) {
+        if (i && sep.n) { memcpy(r.p + at, sep.p, (size_t)sep.n); at += sep.n; }
+        if (a.data[i].n) { memcpy(r.p + at, a.data[i].p, (size_t)a.data[i].n); at += a.data[i].n; }
+    }
+    r.p[at] = 0; r.n = at;
+    return r;
+}
+static rt_str rt_achar(int64_t i, int line) {
+    if (i < 0 || i > 0x10FFFF) rt_fail(line, "achar(): needs a character code from 0 to 1114111, got %lld", (long long)i);
+    if (i == 0 || i >= 128) rt_fail(line, "the compiled program handles ASCII text only (achar(%lld) is another character)", (long long)i);
+    char c = (char)i;
+    return rt_str_new(&c, 1, line);
+}
+static double rt_random(void) {                       /* any generator will do: the interpreter's is not seeded either */
+    static uint64_t state = 0;
+    if (!state) { state = (uint64_t)time(NULL) * UINT64_C(0x9E3779B97F4A7C15) ^ (uint64_t)getpid() * UINT64_C(0xBF58476D1CE4E5B9); if (!state) state = 1; }
+    state ^= state >> 12; state ^= state << 25; state ^= state >> 27;
+    return (double)((state * UINT64_C(2685821657736338717)) >> 11) * (1.0 / 9007199254740992.0);
 }
 
 /* ---- formatting text: text, tf, right, left, fixed, scientific, general (ported from the interpreter's own) ---- */
