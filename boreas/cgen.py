@@ -1378,9 +1378,33 @@ class Compiler:
             self.refuse("a procedure whose signature is not the parameter's", node)
         self.skip.add(id(a))
 
-    def check_call_args(self, f, args, node):
+    ELEMENT_KINDS = ("int", "int32", "real", "real32", "logical", "complex")
+
+    def elementwise_ok(self, f, args):
+        """Is this a call of a function that takes single numbers or logicals, given an array of them (or several of one shape) in some place?
+        The function is then called for each element, and the answer is an array."""
+        if isinstance(f, ProcFn) or f.ret is None or hasattr(f.ret, "types") or self.fn(f.name) is not f or len(args) != len(f.params):
+            return False
+        rt = self.param_type(f.ret)
+        if rt is None or rt.rank != 0 or rt.optional or rt.kind not in self.ELEMENT_KINDS:
+            return False
+        found = False
         for a, (typ, _, intent) in zip(args, f.params):
             at, pt = self.types.get(id(a)), self.param_type(typ)
+            if at is None or pt is None or intent != "in" or pt.optional or self.is_optional_value(a):
+                return False
+            if at.rank > 0:
+                if pt.rank != 0 or pt.kind not in self.ELEMENT_KINDS or at.kind != pt.kind:
+                    return False
+                found = True
+        return found
+
+    def check_call_args(self, f, args, node):
+        elementwise = self.elementwise_ok(f, args)
+        for a, (typ, _, intent) in zip(args, f.params):
+            at, pt = self.types.get(id(a)), self.param_type(typ)
+            if elementwise and at is not None and at.rank > 0:
+                continue
             if pt is not None and (pt.optional or self.is_optional_value(a)):
                 if intent != "in":
                     self.refuse(f"the call of '{f.name}' with an optional value passed as {intent}", node)
@@ -3168,6 +3192,8 @@ class Compiler:
         if e.name in self.records:
             return self.constructor(e)
         if self.fn(e.name) is not None:
+            if self.elementwise_ok(self.fn(e.name), e.args):
+                return self.elementwise_call(self.fn(e.name), e.args, line)
             return self.call_function(self.fn(e.name), e.args, line)
         return self.builtin(e)
 
@@ -3251,6 +3277,32 @@ class Compiler:
             return V(Type("logical"), self.tmp("bool", f"rt_str_{'starts' if name == 'starts_with' else 'ends'}({v[0].atom}, {v[1].atom})"))
         back = v[2].atom if len(v) == 3 else "false"
         return V(Type("int"), self.tmp("int64_t", f"rt_str_index({v[0].atom}, {v[1].atom}, {back})"))
+
+    def elementwise_call(self, f, nodes, line):
+        """`f(v, 2.0)` where `f` takes single values and `v` is an array: `f` is called for each element (the arrays must be of one shape;
+        single values are used for every element), and the answer is an array of the results."""
+        rt = self.param_type(f.ret)
+        given, arrays = [], []
+        for a, (typ, pname, intent) in zip(nodes, f.params):
+            pt = self.param_type(typ)
+            if self.types[id(a)].rank > 0:
+                v = self.value(a)
+                given.append(v)
+                arrays.append(v)
+            else:
+                given.append(self.tmp(cscalar(pt), self.typed(a, pt, f"argument '{pname}'")))
+        first = arrays[0]
+        for w in arrays[1:]:
+            self.emit(f'rt_elem_shapes({c_string(f.name)}, {first.atom}.shape, {first.atom}.rank, {w.atom}.shape, {w.atom}.rank, {line});')
+        res = self.array_like(first, rt.kind)
+        k = self.loop_var()
+        args = [self.elem(g, k) if isinstance(g, V) else g for g in given]
+        self.emit(f"for (int64_t {k} = 0; {k} < {res}.n; {k}++) {{")
+        self.emit(f"rt_call_in({line}, {self.callee_label(f)});")
+        self.emit(f"{res}.data[{k}] = {self.callee_text(f)}({', '.join(args)});")
+        self.emit("rt_call_out();")
+        self.emit("}")
+        return V(Type(rt.kind, first.t.rank), res)
 
     def call_function(self, f, nodes, line):
         """A call of the function `f` (a record's function gets the record first) as a value."""
