@@ -30,6 +30,7 @@ COMPLEX_OK = {*CMATH, "abs", "real", "aimag", "conjg", "cmplx", "sum", "product"
               "shape", "flatten"}                      # the built-in functions that take a complex value
 CSCALAR = {"int": "int64_t", "int32": "int32_t", "real": "double", "real32": "float", "logical": "bool", "string": "rt_str", "complex": "rt_cx", "file": "rt_file"}
 CONVERSIONS = {"to_integer": "int", "to_real": "real", "to_logical": "logical"}      # text to an optional number or logical
+MORETEXT = {"join", "field", "achar", "random"}           # text pieces, joined text, a character, a random number
 FILEFUNCS = {"open", "read_line"}                      # a file is opened; a line is read from it (or from the input)
 TEXTARR = {"split", "fields"}                         # text to an array of texts
 STRFUNCS = {"trim", "upper", "lower", "len", "len_trim", "repeat", "contains", "starts_with", "ends_with", "index", "scan", "verify", "replace", "adjustl", "adjustr", "iachar"} | set(CONVERSIONS)
@@ -37,9 +38,9 @@ FORMATFUNCS = {"text", "tf", "right", "left", "fixed", "scientific", "general"}
 BUILTINS = {"sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "mod", "min", "max", "real", "real32", "int",
             "size", "maxval", "minval", "sum", "product", "matmul", "dot_product", "allocated", "present"}
 ELEMENTAL1 = {"aimag", "conjg", "sqrt", "abs", "sin", "cos", "tan", "exp", "log", "log10", "real", "real32", "real64", "asin", "acos", "atan",
-              "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "erf", "erfc", "floor", "ceiling", "nint", "aint", "anint",
+              "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "erf", "erfc", "gamma", "log_gamma", "floor", "ceiling", "nint", "aint", "anint",
               "int32", "int64"}
-ELEMENTAL2 = {"atan2", "sign", "modulo", "dim"}
+ELEMENTAL2 = {"atan2", "hypot", "sign", "modulo", "dim"}
 BITFUNCS = {"iand": 2, "ior": 2, "ieor": 2, "bitnot": 1, "ishft": 2, "shiftl": 2, "shiftr": 2, "shifta": 2, "btest": 2,
             "ibset": 2, "ibclr": 2, "ibits": 3, "popcnt": 1, "leadz": 1, "trailz": 1, "bit_size": 1}   # name -> number of arguments
 CONSTANTS = {"huge", "epsilon", "tiny"}
@@ -50,11 +51,11 @@ BESSEL = {"bessel_j0": "j0", "bessel_j1": "j1", "bessel_y0": "y0", "bessel_y1": 
 SYSTEM = {"exists", "argument_count", "argument"}      # the file system and the command line
 COLLFUNCS = {"has", "get", "keys", "values"}        # of a map or set
 ARRAY_FUNCTIONS = {"reshape", "transpose", "flatten", "shape", "merge", "any", "all", "count", "maxloc", "minloc", "findloc", "cshift", "lbound", "ubound", "pack", "spread"}
-BUILTINS |= STRFUNCS | FORMATFUNCS | TEXTARR | FILEFUNCS
+BUILTINS |= STRFUNCS | FORMATFUNCS | TEXTARR | FILEFUNCS | MORETEXT
 BUILTINS |= {"cmplx"} | ELEMENTAL1 | ELEMENTAL2 | CONSTANTS | ARRAY_FUNCTIONS | set(BITFUNCS) | SPECIALS | FLOATTESTS | OTHERS | COLLFUNCS | set(BESSEL) | SYSTEM
 SINGLE_LIBM = {"sin": "sinf", "cos": "cosf", "tan": "tanf", "exp": "expf", "log": "logf", "log10": "log10f", "asin": "asinf",
                "acos": "acosf", "atan": "atanf", "sinh": "sinhf", "cosh": "coshf", "tanh": "tanhf", "asinh": "asinhf",
-               "acosh": "acoshf", "erf": "erff", "erfc": "erfcf"}
+               "acosh": "acoshf", "erf": "erff", "erfc": "erfcf", "gamma": "tgammaf", "log_gamma": "lgammaf"}
 WRITERS = {"int": "rt_write_int", "int32": "rt_write_int", "real": "rt_write_real", "real32": "rt_write_real32",
            "logical": "rt_write_bool", "string": "rt_write_string"}
 MAX_RANK = 3
@@ -447,7 +448,7 @@ class Compiler:
                     note(n.type)
                 elif isinstance(n, Apply) and n.name in CONVERSIONS and n.name not in own:
                     bases.add(CONVERSIONS[n.name])
-                elif isinstance(n, Apply) and n.name == "read_line" and n.name not in own:
+                elif isinstance(n, Apply) and n.name in ("read_line", "field") and n.name not in own:
                     bases.add("string")
                 elif isinstance(n, Apply) and n.name == "get" and not n.bracket and n.name not in own:
                     gt = self.types.get(id(n))
@@ -1866,10 +1867,10 @@ class Compiler:
                     if at is not None and at.kind == "file" and not (e.name in ("read_line", "present") and at.rank == 0):
                         self.refuse(f"a file as an argument of '{e.name}'", e)
                     if at is not None and at.kind == "string" and at.rank > 0:
-                        if e.name not in ("size", "allocated"):
+                        if e.name not in ("size", "allocated", "join"):
                             self.refuse(f"an array of texts as an argument of '{e.name}'", e)
                         continue
-                    if at is not None and (isrec(at) or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS | COLLFUNCS | SYSTEM | TEXTARR | FILEFUNCS)):
+                    if at is not None and (isrec(at) or (at.kind == "string" and e.name not in STRFUNCS | FORMATFUNCS | COLLFUNCS | SYSTEM | TEXTARR | FILEFUNCS | MORETEXT)):
                         self.refuse(f"{'a record' if at.kind == 'record' else 'text'} as an argument of '{e.name}'", e)
                 if any(isinstance(a, NamedArg) for a in e.args):
                     self.refuse(f"a named argument of {e.name}()", e)
@@ -1917,6 +1918,8 @@ class Compiler:
         """The text functions: the arguments must be exactly what the function takes (anything else is a run-time error
         the compiler does not reproduce)."""
         name = e.name
+        if name in CONVERSIONS and len(e.args) == 1:                       # (text that may be absent gives an absent number)
+            self.opt_ok.add(id(e.args[0]))
         kinds = [self.types[id(a)].kind if self.types.get(id(a)) is not None and self.types[id(a)].rank == 0 else None for a in e.args]
         shapes = {"trim": ["string"], "upper": ["string"], "lower": ["string"], "len": ["string"], "len_trim": ["string"],
                   "repeat": ["string", ("int", "int32")], "contains": ["string", "string"], "starts_with": ["string", "string"],
@@ -2031,6 +2034,23 @@ class Compiler:
             self.refuse(f"{name}() of complex arrays that may be empty", e)
         if name in BESSEL or name in SYSTEM:
             self.check_system_function(e)
+            return
+        if name in MORETEXT:
+            ts = [self.types[id(a)] for a in e.args]
+            whole = lambda t: t.kind in ("int", "int32") and t.rank == 0 and not t.optional
+            plain = lambda t: t.kind == "string" and t.rank == 0 and not t.optional
+            if name == "random":
+                ok = not ts
+            elif name == "achar":
+                ok = len(ts) == 1 and whole(ts[0])
+            elif name == "join":
+                ok = len(ts) == 2 and ts[0].kind == "string" and ts[0].rank == 1 and not ts[0].optional and plain(ts[1])
+            else:                                          # field(text, piece, extra)
+                ok = len(ts) in (2, 3) and ts[0].kind == "string" and ts[0].rank == 0 and whole(ts[1]) and (len(ts) == 2 or plain(ts[2]))
+                if ok:
+                    self.opt_ok.add(id(e.args[0]))
+            if not ok or any(isinstance(a, NamedArg) for a in e.args):
+                self.refuse(f"{name}() of anything but what it takes", e)
             return
         if name in FILEFUNCS:
             kinds = [self.types[id(a)] for a in e.args]
@@ -3069,7 +3089,11 @@ class Compiler:
             t = Type(CONVERSIONS[name], 0, True)
             ct = cscalar(t)
             r = self.tmp(ct, f"(({ct}){{0}})")
-            self.emit(f"{r}.has = rt_parse_{'int' if name == 'to_integer' else name[3:]}({v[0].atom}, &{r}.v);")
+            parse = f"rt_parse_{'int' if name == 'to_integer' else name[3:]}"
+            if v[0].t.optional:
+                self.emit(f"{r}.has = {v[0].atom}.has && {parse}({v[0].atom}.v, &{r}.v);")
+            else:
+                self.emit(f"{r}.has = {parse}({v[0].atom}, &{r}.v);")
             return V(t, r)
         if name in ("trim", "upper", "lower"):
             return V(Type("string"), self.tmp_str(f"rt_str_{name}({v[0].atom}, {line})"))
@@ -3169,7 +3193,11 @@ class Compiler:
                 return "real32", f'rt_logf({x}, {SINGLE_LIBM[name]}, "{name}", {line})'
             if name == "atanh":
                 return "real32", f"rt_atanhf({x}, {line})"
+            if name in ("gamma", "log_gamma"):
+                return "real32", f'rt_gammaf({"true" if name == "log_gamma" else "false"}, {SINGLE_LIBM[name]}({x}), {x}, {line})'
             return "real32", f'rt_math1f("{name}", {SINGLE_LIBM[name]}({x}), {x}, {line})'
+        if name in ("gamma", "log_gamma"):
+            return "real", f'rt_gamma_call({"true" if name == "log_gamma" else "false"}, {r}, {was_int}, {line})'
         if name == "atanh":
             return "real", f"rt_atanh({r}, {was_int}, {line})"
         if name == "sqrt":
@@ -3441,6 +3469,11 @@ class Compiler:
         was = [1 if k in ("int", "int32") else 0 for k in kinds]
         ints = all(k in ("int", "int32") for k in kinds)
         d = [self.cast(v.atom, v.t.kind, "real") for v in vals]
+        if name == "hypot":
+            if kinds == ["real32", "real32"]:
+                return V(Type("real32"), self.tmp("float", f"rt_hypotf({a.atom}, {b.atom}, {line})"))
+            r = f"rt_hypot({d[0]}, {d[1]})"
+            return V(Type(out), self.tmp(CSCALAR[out], f"rt_r32({r}, {line})" if out == "real32" else r))
         if name == "atan2":
             if kinds == ["real32", "real32"]:
                 return V(Type("real32"), self.tmp("float", f"atan2f({a.atom}, {b.atom})"))
@@ -3532,6 +3565,27 @@ class Compiler:
                 self.emit(f"{res}.has = rt_read_line_file({f.atom}, &{res}.v, {line});")
             else:
                 self.emit(f"{res}.has = rt_read_line(stdin, &{res}.v, false, {line});")
+            return V(ot, res)
+        if name == "random":
+            return V(Type("real"), self.tmp("double", "rt_random()"))
+        if name == "achar":
+            v = self.value(e.args[0])
+            return V(Type("string"), self.tmp_str(f"rt_achar({self.cast(v.atom, v.t.kind, 'int')}, {line})"))
+        if name == "join":
+            vals = [self.value(a) for a in e.args]
+            return V(Type("string"), self.tmp_str(f"rt_join({vals[0].atom}, {vals[1].atom}, {line})"))
+        if name == "field":
+            vals = [self.value(a) for a in e.args]
+            ot = Type("string", 0, True)
+            res = self.tmp(cscalar(ot), "{0}")
+            self.temps.append((f"rec_{skind(ot)}", res))
+            s0 = vals[0]
+            k = self.cast(vals[1].atom, vals[1].t.kind, "int")
+            extra = vals[2].atom if len(vals) == 3 else 'RT_LIT("")'
+            if s0.t.optional:
+                self.emit(f"{res}.has = {s0.atom}.has && rt_field(&{res}.v, {s0.atom}.v, {k}, {extra}, {line});")
+            else:
+                self.emit(f"{res}.has = rt_field(&{res}.v, {s0.atom}, {k}, {extra}, {line});")
             return V(ot, res)
         if name in TEXTARR:
             vals = [self.value(a) for a in e.args]
@@ -4968,6 +5022,8 @@ class Compiler:
             flags.append("#define BOREAS_RELEASE 1")
         if self.unit.ieee:
             flags.append("#define BOREAS_IEEE 1")
+        if sys.version_info < (3, 12):                      # math.hypot's algorithm is the older one there
+            flags.append("#define BOREAS_PY_HYPOT_OLD 1")
         iprotos, ibodies = self.interface_code()
         return "\n".join(["/* generated by `boreas emit-c`: do not edit */"] + flags + [runtime] + self.type_code() + self.globals_code() + protos
                          + iprotos + ibodies + [""] + defs + [""] + main) + "\n"
