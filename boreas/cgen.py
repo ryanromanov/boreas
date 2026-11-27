@@ -188,6 +188,7 @@ class Compiler:
         self.func = None
         self.vars = {}                  # name -> (Type, C lvalue)
         self.arrays = []                # the local arrays of the function being written (freed at its end)
+        self.module_colls = {}
         self.map_subs = {}              # the `r.m[key]` nodes seen while checking, and the map each one is
         self.temps = []                 # array temporaries of the statement being written (freed after it)
         self.records = {}               # the record types the program defines (all of them are handled, or it is refused)
@@ -311,6 +312,25 @@ class Compiler:
             return self.procs_here[name]
         return self.scope.funcs.get(name) if self.scope is not None else self.unit.functions.get(name)
 
+    @staticmethod
+    def c_literal(kind, x):
+        """The C text of the value `x` of a number or logical of kind `kind`, or None when it is not one the compiler writes out."""
+        if kind == "logical":
+            return ("true" if x else "false") if type(x) is bool else None
+        if kind in ("int", "int32"):
+            if not isinstance(x, int) or isinstance(x, bool):
+                return None
+            return f"INT64_C({int(x)})" if kind == "int" else f"((int32_t){int(x)})"
+        if kind in ("real", "real32"):
+            if not isinstance(x, float) or x - x != 0:
+                return None
+            return repr(float(x)) if kind == "real" else f"((float){float(x)!r})"
+        if kind == "complex":
+            if not isinstance(x, complex) or x.real - x.real != 0 or x.imag - x.imag != 0:
+                return None
+            return f"rt_cx_mk({x.real!r}, {x.imag!r})"
+        return None
+
     def global_for(self, name, slot):
         """The C variable for a module constant or variable (a slot shared by every procedure that sees it), or None when it is
         of a kind the compiler does not handle."""
@@ -318,43 +338,107 @@ class Compiler:
         if key in self.globals:
             return self.globals[key]
         typ, value, is_array = slot[0], slot[1], slot[2]
+        if isinstance(typ, (MapType, SetType)):                 # a map or set whose keys and values the runtime has
+            from .interp import MapValue, SetValue
+            t = self.param_type(typ)
+            ok = t is not None and isinstance(value, (MapValue, SetValue)) and all(self.cell_for(k, t.args[0]) is not None for k in value.data) \
+                and (t.kind == "set" or all(self.cell_for(x, t.args[1]) is not None for x in value.data.values()))
+            g = (f"g{len(self.globals)}_{name}", t, value, name) if ok else None
+            self.globals[key] = g
+            return g
         t = self.param_type(typ) if isinstance(typ, str) and not is_array else None
-        ok = t is not None and t.rank == 0 and not t.optional and (t.kind in KINDS or t.kind in ("string", "file"))
+        ok = t is not None and t.rank == 0 and not t.optional and (t.kind in CKINDS or t.kind in ("string", "file") or isrec(t))
         if ok and t.kind == "file":                         # only one that is not open yet (it is opened by the program)
             from .interp import FileHandle
             ok = isinstance(value, FileHandle) and not value.is_open and value.name is None
+        elif ok and t.kind == "record":                     # a record of single numbers, logicals and texts
+            ok = self.record_global_ok(t.name, value)
+        elif ok and t.kind == "interface":
+            ok = False
         elif ok:
             ok = (t.kind == "string" and isinstance(value, str) and all(0 < ord(ch) < 128 for ch in value)) or \
-                 (t.kind == "logical" and type(value) is bool) or \
-                 (t.kind in ("int", "int32") and isinstance(value, int) and not isinstance(value, bool)) or \
-                 (t.kind in ("real", "real32") and isinstance(value, float) and value - value == 0)
+                 (t.kind != "string" and self.c_literal(t.kind, value) is not None)
+        elif isinstance(typ, str) and is_array and typ in CKINDS:        # an array of numbers or logicals: fixed, or allocatable
+            from .interp import Array
+            rank = slot[4] if len(slot) > 4 else (value.rank if isinstance(value, Array) else 0)
+            if value is None and len(slot) > 4:
+                t, ok = Type(typ, rank), 1 <= rank <= MAX_RANK       # allocatable, not allocated yet
+            elif isinstance(value, Array) and 1 <= value.rank <= MAX_RANK:
+                t = Type(typ, value.rank)
+                ok = all(self.c_literal(typ, x) is not None for x in value.data)
         g = (f"g{len(self.globals)}_{name}", t, value, name) if ok else None
         self.globals[key] = g
         return g
 
+    @staticmethod
+    def cell_for(x, kind):
+        """The runtime's cell (a map's key or value) holding `x` of the kind `kind`, or None."""
+        if kind == "string":
+            return f"rt_ks(RT_LIT({c_string(x)}))" if isinstance(x, str) and all(0 < ord(ch) < 128 for ch in x) else None
+        if kind == "int":
+            return f"rt_ki(INT64_C({int(x)}))" if isinstance(x, int) and not isinstance(x, bool) else None
+        if kind == "real":
+            return f"rt_vd({float(x)!r})" if isinstance(x, float) and x - x == 0 else None
+        if kind == "logical":
+            return f"rt_vb({'true' if x else 'false'})" if isinstance(x, bool) else None
+        return None
+
+    def record_global_ok(self, rn, value):
+        from .interp import Record
+        r = self.records.get(rn)
+        if r is None or not isinstance(value, Record) or not self.out_record_ok(rn):
+            return False
+        for fd in r.fields:
+            slot = value.fields.get(fd.name)
+            if slot is None or slot[1] is None:
+                return False
+            x = slot[1]
+            if fd.type == "string":
+                if not (isinstance(x, str) and all(0 < ord(ch) < 128 for ch in x)):
+                    return False
+            elif self.c_literal(fd.type, x) is None:
+                return False
+        return True
+
     def global_init(self, g):
         cname, t, v, _ = g
+        if t.kind in COLLECTIONS:
+            lines = [f"rt_map_reset(&{cname}, {KEYKINDS[t.args[0]]}, {VALKINDS[t.args[1]] if t.kind == 'map' else -1});"]
+            for k, x in v.data.items():
+                val = self.cell_for(x, t.args[1]) if t.kind == "map" else "rt_ki(0)"
+                lines.append(f"rt_map_put(&{cname}, {self.cell_for(k, t.args[0])}, {val}, 0);")
+            return "\n    ".join(lines)
+        if t.rank > 0:
+            if v is None:
+                return f"/* {cname}: not allocated */"
+            shape = list(v.shape) + [1] * (3 - len(v.shape))
+            lines = [f"rt_alloc_{t.kind}(&{cname}, {t.rank}, {shape[0]}, {shape[1]}, {shape[2]}, 0);"]
+            if v.data:
+                items = ", ".join((f"{{{x.real!r}, {x.imag!r}}}" if t.kind == "complex" else self.c_literal(t.kind, x)) for x in v.data)
+                lines.append(f"{{ static const {CSCALAR[t.kind]} init[] = {{{items}}}; memcpy({cname}.data, init, sizeof init); }}")
+            return "\n    ".join(lines)
+        if t.kind == "record":
+            lines = [f"{cname} = d_{t.name}();"]
+            for fd in self.records[t.name].fields:
+                x = v.fields[fd.name][1]
+                if fd.type == "string":
+                    lines.append(f"rt_str_set(&{cname}.m_{fd.name}, RT_LIT({c_string(x)}), 0);")
+                else:
+                    lines.append(f"{cname}.m_{fd.name} = {self.c_literal(fd.type, x)};")
+            return "\n    ".join(lines)
         if t.kind == "string":
             return f"rt_str_set(&{cname}, RT_LIT({c_string(v)}), 0);"
         if t.kind == "file":
             return f"{cname} = NULL;"
-        if t.kind == "logical":
-            lit = "true" if v else "false"
-        elif t.kind == "int":
-            lit = f"INT64_C({int(v)})"
-        elif t.kind == "int32":
-            lit = f"((int32_t){int(v)})"
-        elif t.kind == "real":
-            lit = repr(float(v))
-        else:
-            lit = f"((float){float(v)!r})"
-        return f"{cname} = {lit};"
+        return f"{cname} = {self.c_literal(t.kind, v)};"
 
     def globals_code(self):
         out = []
         for g in self.globals.values():
             if g is not None:
-                out.append(f"static {CSCALAR[g[1].kind]} {g[0]}{' = {0}' if g[1].kind == 'string' else ''};")
+                t = g[1]
+                ct = "rt_map" if t.kind in COLLECTIONS else f"rt_{akind(t)}_arr" if t.rank > 0 else f"r_{t.name}" if t.kind == "record" else CSCALAR[t.kind]
+                out.append(f"static {ct} {g[0]}{' = {0}' if t.rank > 0 or t.kind in ('string', 'record') or t.kind in COLLECTIONS else ''};")
         return out
 
     def check_records(self):
@@ -831,6 +915,14 @@ class Compiler:
         for d in statements_in(body):
             if isinstance(d, Decl) and d.name not in self.vtypes:
                 self.vtypes[d.name] = self.decl_type(d)
+        self.module_colls = {}                                  # the maps and sets this procedure sees from a module, by name
+        if self.scope is not None:
+            for n, slot in self.scope.consts.items():
+                if n not in self.locals_of_body and isinstance(slot[0], (MapType, SetType)):
+                    g = self.global_for(n, slot)
+                    if g is not None:
+                        self.module_colls[n] = g[1]
+                        self.vtypes[n] = g[1]
         self.typevars = {n.var for n in walk(body) if isinstance(n, SelectType) and n.var} | \
                         {n.var for n in walk(body) if isinstance(n, IsType) and n.var}
         self.allocs = self.allocs_of(body, f)
@@ -1172,7 +1264,7 @@ class Compiler:
         for d in statements_in(body):
             if isinstance(d, Decl) and d.name == name:
                 return self.decl_type(d)
-        return None
+        return self.module_colls.get(name)
 
     def is_optional_value(self, e):
         t = self.types.get(id(e))
@@ -1377,7 +1469,8 @@ class Compiler:
             if intent in ("out", "inout") and isinstance(a, Apply) and any(isinstance(x, Slice) for x in a.args):
                 self.refuse(f"a section of '{a.name}' passed as {intent}", s)
         for (typ, pname, intent), root in zip(f.params, roots):
-            if intent in ("out", "inout") and root in fixed:
+            if intent in ("out", "inout") and (root in fixed or (root is not None and root not in self.locals_of_body and self.scope is not None
+                                                                  and root in self.scope.consts and self.scope.consts[root][3] == "const")):
                 self.refuse(f"the constant or parameter '{root}' passed as {intent}", s)
             if intent in ("out", "inout") and root is not None and roots.count(root) > 1 and not self.entries_of_one_map(args, root, f.params):
                 self.refuse(f"'{root}' passed as {intent} and as another argument of the same call", s)
@@ -1486,9 +1579,12 @@ class Compiler:
 
     STATEMENTS = (Close, Where, MultiAssign, ReturnMany, Decl, Assign, If, Do, DoEach, DoWhile, Print, Call, Return, Stop, Exit, Cycle, Comment, Allocate, Deallocate, SelectType, Select, Break)
 
-    @staticmethod
-    def allocs_of(body, f):
-        return {d.name for d in statements_in(body) if isinstance(d, Decl) and d.allocatable}
+    def allocs_of(self, body, f):
+        mine = {d.name for d in statements_in(body) if isinstance(d, Decl) and d.allocatable}
+        shadowed = {d.name for d in statements_in(body) if isinstance(d, Decl)} | ({n for _, n, _ in f.params} if f is not None else set())
+        if self.scope is not None:                           # a module's allocatable array
+            mine |= {n for n, slot in self.scope.consts.items() if n not in shadowed and slot[2] and len(slot) > 4}
+        return mine
 
     # -- maps and sets ----------------------------------------------------------------------------------------------
     def chain_ok(self, b):
@@ -1511,7 +1607,7 @@ class Compiler:
             t = self.types.get(id(e))
             return e.args is None and not e.chain and t is not None and t.kind in COLLECTIONS and t.rank == 0 \
                 and not t.optional and self.chain_ok(e.base)
-        return isinstance(e, Var) and e.name in self.locals_of_body and self.vtypes.get(e.name) is not None \
+        return isinstance(e, Var) and (e.name in self.locals_of_body or e.name in self.module_colls) and self.vtypes.get(e.name) is not None \
             and self.vtypes[e.name].kind in COLLECTIONS
 
     def is_coll_result(self, e):
@@ -1823,7 +1919,7 @@ class Compiler:
                 self.check_entry_element(e)
             if any(isinstance(a, Slice) for a in e.args) and not e.bracket:
                 self.refuse("part of an array", e)
-            vt = self.vtypes.get(e.name) if e.name in self.locals_of_body else None
+            vt = self.vtypes.get(e.name) if (e.name in self.locals_of_body or e.name in self.module_colls) else None
             if e.bracket and vt is not None and vt.kind in COLLECTIONS:        # age["ann"]
                 if vt.kind != "map" or len(e.args) != 1 or isinstance(e.args[0], (Slice, NamedArg)):
                     self.refuse("a set, or a map with more than one key, subscripted", e)
