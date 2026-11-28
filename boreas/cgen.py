@@ -2016,6 +2016,8 @@ class Compiler:
                         continue
                     if at is not None and at.kind == "file" and not (e.name in ("read_line", "present") and at.rank == 0):
                         self.refuse(f"a file as an argument of '{e.name}'", e)
+                    if e.name in ("max", "min", "merge") and self.text_pick(e):
+                        continue
                     if at is not None and at.kind == "string" and at.rank > 0:
                         if e.name not in ("size", "allocated", "join"):
                             self.refuse(f"an array of texts as an argument of '{e.name}'", e)
@@ -2271,10 +2273,19 @@ class Compiler:
                 ok = ok and ts[0].rank in (1, 2) and ts[1].rank in (1, 2)
             if not ok:
                 self.refuse(f"{name}() of anything but two real or two int arrays of the right rank", e)
-        elif any(r != 0 for r in ranks):
+        elif any(r != 0 for r in ranks) and not (name in ("max", "min") and self.text_pick(e)):
             self.refuse(f"{name}() of an array", e)
         if name in ("mod", "min", "max", "int", "sign", "modulo", "dim", "atan2", "atan") and any(self.types[id(a)].kind in ("logical",) for a in e.args):
             self.refuse(f"{name}() of a logical", e)
+
+    def text_pick(self, e):
+        """max or min of texts, or merge of two texts: single ones or arrays."""
+        ts = [self.types.get(id(a)) for a in e.args]
+        if any(t is None or t.optional for t in ts) or any(self.is_optional_value(a) for a in e.args):
+            return False
+        if e.name == "merge":
+            return len(ts) == 3 and ts[0].kind == ts[1].kind == "string" and ts[2].kind == "logical"
+        return 2 <= len(ts) and all(t.kind == "string" for t in ts) and sum(t.rank > 0 for t in ts) <= 3
 
     def merge_kind(self, e):
         """The kind merge(a, b, mask) gives, or None when a and b differ (a real literal next to a real32 is a real32, a
@@ -3497,6 +3508,8 @@ class Compiler:
             b, mask = vals[1], vals[2]
             kind = self.merge_kind(e)
             arrays = [v for v in vals if v.t.rank > 0]
+            if kind == "string":
+                return self.pick_text(vals, arrays, line, lambda at: f"{at(mask, mask.t.rank)} ? {at(a, a.t.rank)} : {at(b, b.t.rank)}")
             if not arrays:
                 return V(Type(kind), self.tmp(CSCALAR[kind], f"({mask.atom} ? {self.cast(a.atom, a.t.kind, kind)} : {self.cast(b.atom, b.t.kind, kind)})"))
             if len(arrays) == 2:
@@ -3524,6 +3537,24 @@ class Compiler:
             self.emit(f"if ({n} > 0) for (int64_t {k} = 0; {k} < {res}.n; {k}++) {res}.data[{k}] = {src};")
             return V(Type(kind, a.t.rank), res)
         raise NotCompiled(f"{name}()", line)
+
+    def pick_text(self, vals, arrays, line, choose):
+        """A text (or an array of texts) chosen from `vals`, element by element: `choose(at)` gives the C expression of the chosen one,
+        where `at(value, rank)` is an argument's value for the element at hand. The answer is a copy."""
+        if not arrays:
+            chosen = choose(lambda v, rank: v.atom)
+            return V(Type("string"), self.tmp_str(f"rt_str_copy({chosen}, {line})"))
+        if len(arrays) == 2:
+            self.emit(f"rt_same_shape({arrays[0].atom}.shape, {arrays[0].atom}.rank, {arrays[1].atom}.shape, {arrays[1].atom}.rank, 0, {line});")
+        elif len(arrays) == 3:
+            self.emit(f"rt_same_shape3({', '.join(f'{v.atom}.shape, {v.atom}.rank' for v in arrays)}, {line});")
+        res = self.array_like(arrays[0], "string")
+        k = self.loop_var()
+        self.emit(f"for (int64_t {k} = 0; {k} < {res}.n; {k}++) {{")
+        chosen = choose(lambda v, rank: (f"{v.atom}.data[{k}]" if rank > 0 else v.atom))
+        self.emit(f"rt_str_set(&{res}.data[{k}], {chosen}, {line});")
+        self.emit("}")
+        return V(Type("string", arrays[0].t.rank), res)
 
     def locate(self, name, e, vals, line):
         """maxloc, minloc and findloc of an array, with the optional `dim` (written out; 0 is the whole array) and `back` (the last of equal
@@ -3852,6 +3883,13 @@ class Compiler:
         if name in ("min", "max") and len(atoms) >= 2:
             kind = self.types[id(e)].kind
             op = '>' if name == 'max' else '<'
+            if kind == "string":                      # the first of the greatest (or least) in the order of their characters
+                def best(at):
+                    out = self.tmp("rt_str", at(vals[0], vals[0].t.rank))
+                    for v in vals[1:]:
+                        self.emit(f"if (rt_str_cmp({at(v, v.t.rank)}, {out}) {op} 0) {out} = {at(v, v.t.rank)};")
+                    return out
+                return self.pick_text(vals, [v for v in vals if v.t.rank > 0], line, best)
             if kind == "real32" and any(k != "real32" for k in kinds):     # compared as the interpreter does: in double
                 xs = [self.cast(a, k, "real") for a, k in zip(atoms, kinds)]
                 best = self.tmp("double", xs[0])
