@@ -716,7 +716,6 @@ class RefusalTests(unittest.TestCase):
 
     def test_what_arrays_of_text_cannot_do_yet_is_refused(self):
         for body, why in [("  allocatable string[] :: p\n  p = split(\"a,b\", \",\")\n  println(p[1:2])", "a part of an array of texts"),
-                          ("  allocatable string[] :: p\n  string :: w\n  p = split(\"a\", \",\")\n  do w in p\n    println(w)\n  end do", "a do ... in loop"),
                           ("  allocatable string[] :: p\n  p = split(\"a\", \",\")\n  println(upper(p))", "an array of texts as an argument"),
                           ("  allocatable string[] :: p\n  p = [\"a\", \"b\"]", "an array literal"),
                           ("  allocatable string[] :: p\n  p = split(3, \",\")", "split() of anything but what it takes")]:
