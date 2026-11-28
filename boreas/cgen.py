@@ -1800,10 +1800,10 @@ class Compiler:
                 self.refuse("a do ... in loop over a map whose values are sets or arrays", s)
             self.coll_ok_nodes.add(id(src))
             kinds_ = [ct.args[0]] + ([ct.args[1]] if ct.kind == "map" else [])
-        elif st is not None and st.rank >= 1 and st.kind in ("int", "int32", "real", "real32", "logical"):
+        elif st is not None and st.rank >= 1 and st.kind in ("int", "int32", "real", "real32", "logical", "string"):
             kinds_ = [st.kind]
         else:
-            self.refuse("a do ... in loop over anything but a map or set variable or an array of numbers", s)
+            self.refuse("a do ... in loop over anything but a map or set variable or an array of numbers or texts", s)
         if len(s.vars) != len(kinds_) or len(set(s.vars)) != len(s.vars):
             self.refuse("a do ... in loop with the wrong number of variables", s)
         for name, want in zip(s.vars, kinds_):
@@ -4138,7 +4138,10 @@ class Compiler:
             kind = t.kind
             self.emit(f"rt_like_{kind}(&{sn}, {v.atom}.shape, {v.atom}.rank, {line});")
             k = self.loop_var()
-            self.emit(f"for (int64_t {k} = 0; {k} < {sn}.n; {k}++) {sn}.data[{k}] = {self.elem(v, k)};")
+            if kind == "string":                                      # each text is copied: the body may change the array
+                self.emit(f"for (int64_t {k} = 0; {k} < {sn}.n; {k}++) rt_str_set(&{sn}.data[{k}], {v.atom}.data[{k}], {line});")
+            else:
+                self.emit(f"for (int64_t {k} = 0; {k} < {sn}.n; {k}++) {sn}.data[{k}] = {self.elem(v, k)};")
             parts = [(None, kind)]
         label, ident = self.new_loop(s)
         self.emit(f"for (int64_t i{ident} = 0; i{ident} < {sn}.n; i{ident}++) {{")
@@ -4146,7 +4149,10 @@ class Compiler:
         for name, (which, kind) in zip(s.vars, parts):
             access = self.vars[name][1]
             if which is None:
-                self.emit(f"{access} = {sn}.data[i{ident}];")
+                if kind == "string":
+                    self.emit(f"rt_str_set(&{access}, {sn}.data[i{ident}], {line});")
+                else:
+                    self.emit(f"{access} = {sn}.data[i{ident}];")
                 continue
             cell = f"{sn}.{which}[i{ident}]"
             if kind == "string":
