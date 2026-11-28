@@ -1954,8 +1954,11 @@ class Compiler:
                     self.refuse(f"text with the operator '{e.op}'", e)
         if kind is Unary and e.op not in ("-", "+", "not"):
             self.refuse(f"the operator '{e.op}'", e)
-        if kind is Binary and e.op not in ("+", "-", "*", "/", "**", "==", "/=", "<", "<=", ">", ">=", "and", "or", "??"):
+        if kind is Binary and e.op not in ("+", "-", "*", "/", "**", "==", "/=", "<", "<=", ">", ">=", "and", "or", "??", "+%", "-%", "*%"):
             self.refuse(f"the operator '{e.op}'", e)
+        if kind is Binary and e.op in ("+%", "-%", "*%"):             # they wrap around, so only whole numbers
+            if any(self.types.get(id(x)) is None or self.types[id(x)].kind not in ("int", "int32") for x in (e, e.left, e.right)):
+                self.refuse(f"the operator '{e.op}' on anything but whole numbers", e)
         if kind is MatrixLit and isrec(self.types.get(id(e))):
             self.refuse("a matrix of records", e)
         if kind in (ArrayLit, MatrixLit):
@@ -2522,6 +2525,9 @@ class Compiler:
     # -- operators ------------------------------------------------------------------------------------------------------
     def scalar_op(self, op, kind, la, ra, flags, line):
         """The C expression for `la op ra` on two single values of the same `kind` (int, int32 or real)."""
+        if op in ("+%", "-%", "*%"):                          # wraps around: worked out unsigned, which C defines
+            bits = 64 if kind == "int" else 32
+            return f"((int{bits}_t)((uint{bits}_t)({la}) {op[0]} (uint{bits}_t)({ra})))"
         if kind == "int":
             call = {"+": "rt_add", "-": "rt_sub", "*": "rt_mul", "/": "rt_div", "**": "rt_ipow"}[op]
             return f"{call}({la}, {ra}, {line})"
